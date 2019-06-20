@@ -94,3 +94,14 @@ func GetOVSPortMACAddress(portName string) (net.HardwareAddr, error) {
 
 	return mac, nil
 }
+
+// GetNetworkPrefix returns the prefix of the giving networkName
+func GetNetworkPrefix(networkName string) (string) {
+	var prefix string
+	if networkName == "default" || networkName == "" {
+		prefix = ""
+	} else {
+		prefix = networkName + "_"
+	}
+	return prefix
+}

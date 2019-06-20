@@ -531,18 +531,20 @@ func (oc *Controller) handleLocalPodSelectorAddFuncOld(
 	obj interface{}) {
 	pod := obj.(*kapi.Pod)
 
-	ipAddress := oc.getIPFromOvnAnnotation(pod.Annotations["ovn"])
+	networkName := "default"
+	prefix := util.GetNetworkPrefix(networkName)
+	ipAddress := oc.getIPFromOvnAnnotation(pod.Annotations[prefix+"ovn"])
 	if ipAddress == "" {
 		return
 	}
 
-	logicalSwitch := pod.Spec.NodeName
+	logicalSwitch := prefix+pod.Spec.NodeName
 	if logicalSwitch == "" {
 		return
 	}
 
 	// Get the logical port name.
-	logicalPort := fmt.Sprintf("%s_%s", pod.Namespace, pod.Name)
+	logicalPort := fmt.Sprintf("%s_%s%s", pod.Namespace, prefix, pod.Name)
 
 	np.Lock()
 	defer np.Unlock()
@@ -574,13 +576,15 @@ func (oc *Controller) handleLocalPodSelectorDelFuncOld(
 	obj interface{}) {
 	pod := obj.(*kapi.Pod)
 
-	logicalSwitch := pod.Spec.NodeName
+	networkName := "default"
+	prefix := util.GetNetworkPrefix(networkName)
+	logicalSwitch := prefix+pod.Spec.NodeName
 	if logicalSwitch == "" {
 		return
 	}
 
 	// Get the logical port name.
-	logicalPort := fmt.Sprintf("%s_%s", pod.Namespace, pod.Name)
+	logicalPort := fmt.Sprintf("%s_%s%s", pod.Namespace, prefix, pod.Name)
 
 	np.Lock()
 	defer np.Unlock()
@@ -637,7 +641,9 @@ func (oc *Controller) handlePeerPodSelectorAddUpdateOld(
 	obj interface{}) {
 
 	pod := obj.(*kapi.Pod)
-	ipAddress := oc.getIPFromOvnAnnotation(pod.Annotations["ovn"])
+	networkName := "default"
+	prefix := util.GetNetworkPrefix(networkName)
+	ipAddress := oc.getIPFromOvnAnnotation(pod.Annotations[prefix+"ovn"])
 	if ipAddress == "" || addressMap[ipAddress] {
 		return
 	}
@@ -662,8 +668,9 @@ func (oc *Controller) handlePeerPodSelectorDeleteOld(
 	obj interface{}) {
 
 	pod := obj.(*kapi.Pod)
-
-	ipAddress := oc.getIPFromOvnAnnotation(pod.Annotations["ovn"])
+	networkName := "default"
+	prefix := util.GetNetworkPrefix(networkName)
+	ipAddress := oc.getIPFromOvnAnnotation(pod.Annotations[prefix+"ovn"])
 	if ipAddress == "" {
 		return
 	}

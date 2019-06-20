@@ -16,10 +16,11 @@ const (
 )
 
 // GetK8sClusterRouter returns back the OVN distibuted router
-func GetK8sClusterRouter() (string, error) {
+func GetK8sClusterRouter(networkName string) (string, error) {
+	prefix := GetNetworkPrefix(networkName)
 	k8sClusterRouter, stderr, err := RunOVNNbctl("--data=bare",
 		"--no-heading", "--columns=_uuid", "find", "logical_router",
-		"external_ids:k8s-cluster-router=yes")
+		"external_ids:k8s-cluster-router="+prefix+"yes")
 	if err != nil {
 		logrus.Errorf("Failed to get k8s cluster router, stderr: %q, "+
 			"error: %v", stderr, err)
@@ -49,10 +50,11 @@ func getNodeChassisID(nodeName string) (string, error) {
 
 // GetDefaultGatewayRouterIP returns the first gateway logical router name
 // and IP address as listed in the OVN database
-func GetDefaultGatewayRouterIP() (string, net.IP, error) {
+func GetDefaultGatewayRouterIP(networkName string) (string, net.IP, error) {
+	prefix := GetNetworkPrefix(networkName)
 	stdout, stderr, err := RunOVNNbctl("--data=bare", "--format=table",
 		"--no-heading", "--columns=name,options", "find", "logical_router",
-		"options:lb_force_snat_ip!=-")
+		"options:"+prefix+"lb_force_snat_ip!=-")
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to get logical routers, stdout: %q, "+
 			"stderr: %q, err: %v", stdout, stderr, err)
@@ -74,7 +76,7 @@ func GetDefaultGatewayRouterIP() (string, net.IP, error) {
 	for _, gwRouterLine := range gatewayRouters {
 		parts := strings.Fields(gwRouterLine)
 		for _, p := range parts {
-			const forceTag string = "lb_force_snat_ip="
+			var forceTag string = prefix+"lb_force_snat_ip="
 			if strings.HasPrefix(p, forceTag) {
 				ipStr := p[len(forceTag):]
 				if ip := net.ParseIP(ipStr); ip != nil {
@@ -96,12 +98,13 @@ func GetDefaultGatewayRouterIP() (string, net.IP, error) {
 	return routers[0].name, routers[0].ip, nil
 }
 
-func ensureGatewayPortAddress(portName string) (net.HardwareAddr, *net.IPNet, error) {
+func ensureGatewayPortAddress(portName string, networkName string) (net.HardwareAddr, *net.IPNet, error) {
+	prefix := GetNetworkPrefix(networkName)
 	mac, ip, _ := GetPortAddresses(portName, false)
 	if mac == nil || ip == nil {
 		// Create the gateway switch port in 'join' if it doesn't exist yet
 		stdout, stderr, err := RunOVNNbctl("--wait=sb",
-			"--may-exist", "lsp-add", "join", portName,
+			"--may-exist", "lsp-add", prefix+"join", portName,
 			"--", "--if-exists", "clear", "logical_switch_port", portName, "dynamic_addresses",
 			"--", "lsp-set-addresses", portName, "dynamic")
 		if err != nil {
@@ -123,19 +126,19 @@ func ensureGatewayPortAddress(portName string) (net.HardwareAddr, *net.IPNet, er
 
 	// Grab the 'join' switch prefix length to add to our gateway router's IP
 	cidrStr, stderr, err := RunOVNNbctl("--if-exists", "get",
-		"logical_switch", "join", "other-config:subnet")
+		"logical_switch", prefix+"join", "other-config:subnet")
 	if err != nil {
-		return nil, nil, fmt.Errorf("Failed to get 'join' switch external-ids: "+
-			"stderr: %q, %v", stderr, err)
+		return nil, nil, fmt.Errorf("Failed to get '%sjoin' switch external-ids: "+
+			"stderr: %q, %v", prefix, stderr, err)
 	}
 	_, cidr, err := net.ParseCIDR(cidrStr)
 	if err != nil {
-		return nil, nil, fmt.Errorf("Failed to parse 'join' switch subnet %q: %v",
-			cidrStr, err)
+		return nil, nil, fmt.Errorf("Failed to parse '%sjoin' switch subnet %q: %v",
+			prefix, cidrStr, err)
 	}
 	if !cidr.Contains(ip) {
 		return nil, nil, fmt.Errorf("gateway router port %q IP %q not "+
-			"contained in 'join' switch subnet %q", portName, ip, cidrStr)
+			"contained in '%sjoin' switch subnet %q", portName, ip, prefix, cidrStr)
 	}
 	cidr.IP = ip
 
@@ -166,8 +169,9 @@ func getGatewayLoadBalancers(gatewayRouter string) (string, string, error) {
 // GatewayInit creates a gateway router for the local chassis.
 func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddress,
 	defaultGW string, rampoutIPSubnet string, localnet bool, gatewayVLANId uint,
-	gatewayLBEnable bool) error {
+	gatewayLBEnable bool, networkName string) error {
 
+	prefix := GetNetworkPrefix(networkName)
 	ip, physicalIPNet, err := net.ParseCIDR(nicIP)
 	if err != nil {
 		return fmt.Errorf("error parsing %s (%v)", nicIP, err)
@@ -181,7 +185,7 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 		defaultGW = defaultgwByte.String()
 	}
 
-	k8sClusterRouter, err := GetK8sClusterRouter()
+	k8sClusterRouter, err := GetK8sClusterRouter(networkName)
 	if err != nil {
 		return err
 	}
@@ -192,7 +196,7 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 	}
 
 	// Create a gateway router.
-	gatewayRouter := "GR_" + nodeName
+	gatewayRouter := "GR_" + prefix + nodeName
 	stdout, stderr, err := RunOVNNbctl("--", "--may-exist", "lr-add",
 		gatewayRouter, "--", "set", "logical_router", gatewayRouter,
 		"options:chassis="+systemID, "external_ids:physical_ip="+physicalIP)
@@ -203,7 +207,7 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 
 	gwSwitchPort := "jtor-" + gatewayRouter
 	gwRouterPort := "rtoj-" + gatewayRouter
-	routerMac, routerCIDR, err := ensureGatewayPortAddress(gwSwitchPort)
+	routerMac, routerCIDR, err := ensureGatewayPortAddress(gwSwitchPort, networkName)
 	if err != nil {
 		return err
 	}
@@ -225,7 +229,7 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 	// heading to the logical space with the Gateway router's IP so that
 	// return traffic comes back to the same gateway router.
 	stdout, stderr, err = RunOVNNbctl("set", "logical_router",
-		gatewayRouter, "options:lb_force_snat_ip="+routerCIDR.IP.String())
+		gatewayRouter, "options:"+prefix+"lb_force_snat_ip="+routerCIDR.IP.String())
 	if err != nil {
 		return fmt.Errorf("Failed to set logical router, stdout: %q, "+
 			"stderr: %q, error: %v", stdout, stderr, err)
@@ -243,7 +247,7 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 	}
 
 	// Add a default route in distributed router with first GR as the nexthop.
-	_, defGatewayIP, err := GetDefaultGatewayRouterIP()
+	_, defGatewayIP, err := GetDefaultGatewayRouterIP(networkName)
 	if err != nil {
 		return err
 	}
@@ -255,7 +259,7 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 			stdout, stderr, err)
 	}
 
-	if gatewayLBEnable {
+	if (networkName == "default") && gatewayLBEnable {
 		// Create 2 load-balancers for north-south traffic for each gateway
 		// router.  One handles UDP and another handles TCP.
 		var k8sNSLbTCP, k8sNSLbUDP string
@@ -302,32 +306,32 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 	}
 
 	// Create the external switch for the physical interface to connect to.
-	externalSwitch := "ext_" + nodeName
+	externalSwitch := "ext_" + prefix + nodeName
 	stdout, stderr, err = RunOVNNbctl("--may-exist", "ls-add",
 		externalSwitch)
 	if err != nil {
-		return fmt.Errorf("Failed to create logical switch, stdout: %q, "+
-			"stderr: %q, error: %v", stdout, stderr, err)
+		return fmt.Errorf("Failed to create logical switch %s, stdout: %q, "+
+			"stderr: %q, error: %v", externalSwitch, stdout, stderr, err)
 	}
 
 	// Add external interface as a logical port to external_switch.
 	// This is a learning switch port with "unknown" address. The external
 	// world is accessed via this port.
-	cmdArgs := []string{"--", "--may-exist", "lsp-add", externalSwitch, ifaceID,
-		"--", "lsp-set-addresses", ifaceID, "unknown"}
+	cmdArgs := []string{"--", "--may-exist", "lsp-add", externalSwitch, prefix+ifaceID,
+		"--", "lsp-set-addresses", prefix+ifaceID, "unknown"}
 	if localnet {
-		cmdArgs = append(cmdArgs, "--", "lsp-set-type", ifaceID,
-			"localnet", "--", "lsp-set-options", ifaceID,
+		cmdArgs = append(cmdArgs, "--", "lsp-set-type", prefix+ifaceID,
+			"localnet", "--", "lsp-set-options", prefix+ifaceID,
 			"network_name="+PhysicalNetworkName)
 	}
 	if gatewayVLANId != 0 {
 		cmdArgs = append(cmdArgs, "--", "set", "logical_switch_port",
-			ifaceID, fmt.Sprintf("tag_request=%d", gatewayVLANId))
+			prefix+ifaceID, fmt.Sprintf("tag_request=%d", gatewayVLANId))
 	}
 	stdout, stderr, err = RunOVNNbctl(cmdArgs...)
 	if err != nil {
-		return fmt.Errorf("Failed to add logical port to switch, stdout: %q, "+
-			"stderr: %q, error: %v", stdout, stderr, err)
+		return fmt.Errorf("Failed to add logical port %s to switch %S, stdout: %q, "+
+			"stderr: %q, error: %v", prefix+ifaceID, externalSwitch, stdout, stderr, err)
 	}
 
 	// Connect GR to external_switch with mac address of external interface

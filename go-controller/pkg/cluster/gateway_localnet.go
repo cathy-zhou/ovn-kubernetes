@@ -106,70 +106,86 @@ func localnetGatewayNAT(ipt util.IPTablesHelper, ifname, ip string) error {
 }
 
 func initLocalnetGateway(nodeName string, clusterIPSubnet []string,
-	subnet string, nodePortEnable bool, wf *factory.WatchFactory) error {
+	subnet string, nodePortEnable bool, wf *factory.WatchFactory, networkName string) error {
 	ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
 	if err != nil {
 		return fmt.Errorf("failed to initialize iptables: %v", err)
 	}
 	return initLocalnetGatewayInternal(nodeName, clusterIPSubnet, subnet, ipt,
-		nodePortEnable, wf)
+		nodePortEnable, wf, networkName)
 }
 
 func initLocalnetGatewayInternal(nodeName string, clusterIPSubnet []string,
-	subnet string, ipt util.IPTablesHelper, nodePortEnable bool, wf *factory.WatchFactory) error {
-	// Create a localnet OVS bridge.
+	subnet string, ipt util.IPTablesHelper, nodePortEnable bool,
+	wf *factory.WatchFactory, networkName string) error {
+
 	localnetBridgeName := "br-local"
-	_, stderr, err := util.RunOVSVsctl("--may-exist", "add-br",
-		localnetBridgeName)
-	if err != nil {
-		return fmt.Errorf("Failed to create localnet bridge %s"+
-			", stderr:%s (%v)", localnetBridgeName, stderr, err)
-	}
-
-	_, _, err = util.RunIP("link", "set", localnetBridgeName, "up")
-	if err != nil {
-		return fmt.Errorf("failed to up %s (%v)", localnetBridgeName, err)
-	}
-
-	// Create a localnet bridge nexthop
 	localnetBridgeNextHop := "br-nexthop"
-	_, stderr, err = util.RunOVSVsctl("--may-exist", "add-port",
-		localnetBridgeName, localnetBridgeNextHop, "--", "set",
-		"interface", localnetBridgeNextHop, "type=internal")
-	if err != nil {
-		return fmt.Errorf("Failed to create localnet bridge next hop %s"+
-			", stderr:%s (%v)", localnetBridgeNextHop, stderr, err)
+	if networkName == "default" {
+		// Create a localnet OVS bridge.
+		_, stderr, err := util.RunOVSVsctl("--may-exist", "add-br",
+			localnetBridgeName)
+		if err != nil {
+			return fmt.Errorf("Failed to create localnet bridge %s"+
+				", stderr:%s (%v)", localnetBridgeName, stderr, err)
+		}
+
+		_, _, err = util.RunIP("link", "set", localnetBridgeName, "up")
+		if err != nil {
+			return fmt.Errorf("failed to up %s (%v)", localnetBridgeName, err)
+		}
+
+		// Create a localnet bridge nexthop
+		_, stderr, err = util.RunOVSVsctl("--may-exist", "add-port",
+			localnetBridgeName, localnetBridgeNextHop, "--", "set",
+			"interface", localnetBridgeNextHop, "type=internal")
+		if err != nil {
+			return fmt.Errorf("Failed to create localnet bridge next hop %s"+
+				", stderr:%s (%v)", localnetBridgeNextHop, stderr, err)
+		}
+		_, _, err = util.RunIP("link", "set", localnetBridgeNextHop, "up")
+		if err != nil {
+			return fmt.Errorf("failed to up %s (%v)", localnetBridgeNextHop, err)
+		}
+
+		// Flush IPv4 address of localnetBridgeNextHop.
+		_, _, err = util.RunIP("addr", "flush", "dev", localnetBridgeNextHop)
+		if err != nil {
+			return fmt.Errorf("failed to flush ip address of %s (%v)",
+				localnetBridgeNextHop, err)
+		}
+
+		// Set localnetBridgeNextHop with an IP address.
+		_, _, err = util.RunIP("addr", "add",
+			localnetGatewayNextHopSubnet,
+			"dev", localnetBridgeNextHop)
+		if err != nil {
+			return fmt.Errorf("failed to assign ip address to %s (%v)",
+				localnetBridgeNextHop, err)
+		}
 	}
-	_, _, err = util.RunIP("link", "set", localnetBridgeNextHop, "up")
+	// A OVS bridge's mac address can change when ports are added to it.
+	// We cannot let that happen, so make the bridge mac address permanent.
+	macAddress, err := util.GetOVSPortMACAddress(localnetBridgeName)
 	if err != nil {
-		return fmt.Errorf("failed to up %s (%v)", localnetBridgeNextHop, err)
+		return fmt.Errorf("failed to get mac address of %s: %v", localnetBridgeName, err)
 	}
 
-	// Flush IPv4 address of localnetBridgeNextHop.
-	_, _, err = util.RunIP("addr", "flush", "dev", localnetBridgeNextHop)
+	err = bridgedGatewayNodeSetup(nodeName, localnetBridgeName, macAddress)
 	if err != nil {
-		return fmt.Errorf("failed to flush ip address of %s (%v)",
-			localnetBridgeNextHop, err)
+		return fmt.Errorf("failed to set up localnet gateway: %v", err)
 	}
 
-	// Set localnetBridgeNextHop with an IP address.
-	_, _, err = util.RunIP("addr", "add",
-		localnetGatewayNextHopSubnet,
-		"dev", localnetBridgeNextHop)
-	if err != nil {
-		return fmt.Errorf("failed to assign ip address to %s (%v)",
-			localnetBridgeNextHop, err)
-	}
-
-	ifaceID, macAddress, err := bridgedGatewayNodeSetup(nodeName, localnetBridgeName)
-	if err != nil {
-		return fmt.Errorf("failed to set up shared interface gateway: %v", err)
-	}
+	ifaceID := localnetBridgeName + "_" + nodeName
 
 	err = util.GatewayInit(clusterIPSubnet, nodeName, ifaceID, localnetGatewayIP,
-		macAddress, localnetGatewayNextHop, subnet, true, 0, nodePortEnable)
+		macAddress.String(), localnetGatewayNextHop, subnet, true, 0, nodePortEnable, networkName)
 	if err != nil {
 		return fmt.Errorf("failed to localnet gateway: %v", err)
+	}
+
+	if networkName != "default" {
+		return nil
 	}
 
 	err = localnetGatewayNAT(ipt, localnetBridgeNextHop, localnetGatewayIP)

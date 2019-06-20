@@ -7,7 +7,8 @@ import (
 )
 
 func initSpareGateway(nodeName string, clusterIPSubnet []string,
-	subnet, gwNextHop, gwIntf string, gwVLANId uint, nodeportEnable bool) error {
+	subnet, gwNextHop, gwIntf string, gwVLANId uint, nodeportEnable bool,
+	networkName string) error {
 
 	// Now, we get IP address from physical interface. If IP does not
 	// exists error out.
@@ -22,18 +23,26 @@ func initSpareGateway(nodeName string, clusterIPSubnet []string,
 
 	// Connect physical interface to br-int. Get its mac address.
 	ifaceID := gwIntf + "_" + nodeName
-	addPortCmdArgs := []string{"--", "--may-exist", "add-port",
-		"br-int", gwIntf, "--", "set", "interface",
-		gwIntf, "external-ids:iface-id=" + ifaceID}
-	if gwVLANId != 0 {
-		addPortCmdArgs = append(addPortCmdArgs, "--", "set", "port", gwIntf,
-			fmt.Sprintf("tag=%d", gwVLANId))
+	if networkName == "default" {
+		addPortCmdArgs := []string{"--", "--may-exist", "add-port",
+			"br-int", gwIntf, "--", "set", "interface",
+			gwIntf, "external-ids:iface-id=" + ifaceID}
+		if gwVLANId != 0 {
+			addPortCmdArgs = append(addPortCmdArgs, "--", "set", "port", gwIntf,
+				fmt.Sprintf("tag=%d", gwVLANId))
+		}
+		stdout, stderr, err := util.RunOVSVsctl(addPortCmdArgs...)
+		if err != nil {
+			return fmt.Errorf("Failed to add port to br-int, stdout: %q, "+
+				"stderr: %q, error: %v", stdout, stderr, err)
+		}
+		// Flush the IP address of the physical interface.
+		_, _, err = util.RunIP("addr", "flush", "dev", gwIntf)
+		if err != nil {
+			return err
+		}
 	}
-	stdout, stderr, err := util.RunOVSVsctl(addPortCmdArgs...)
-	if err != nil {
-		return fmt.Errorf("Failed to add port to br-int, stdout: %q, "+
-			"stderr: %q, error: %v", stdout, stderr, err)
-	}
+
 	macAddress, stderr, err := util.RunOVSVsctl("--if-exists", "get",
 		"interface", gwIntf, "mac_in_use")
 	if err != nil {
@@ -41,14 +50,8 @@ func initSpareGateway(nodeName string, clusterIPSubnet []string,
 			stderr, err)
 	}
 
-	// Flush the IP address of the physical interface.
-	_, _, err = util.RunIP("addr", "flush", "dev", gwIntf)
-	if err != nil {
-		return err
-	}
-
 	err = util.GatewayInit(clusterIPSubnet, nodeName, ifaceID, ipAddress,
-		macAddress, gwNextHop, subnet, false, 0, nodeportEnable)
+		macAddress, gwNextHop, subnet, false, 0, nodeportEnable, networkName)
 	if err != nil {
 		return fmt.Errorf("failed to init spare interface gateway: %v", err)
 	}

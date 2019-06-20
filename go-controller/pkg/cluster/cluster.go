@@ -16,12 +16,14 @@ import (
 type OvnClusterController struct {
 	Kube                      kube.Interface
 	watchFactory              *factory.WatchFactory
-	masterSubnetAllocatorList []*netutils.SubnetAllocator
+	masterSubnetAllocatorList map[string][]*netutils.SubnetAllocator
+	MTU                       map[string]int
+	NetworkNameList           []string
 
 	TCPLoadBalancerUUID string
 	UDPLoadBalancerUUID string
 
-	ClusterIPNet []CIDRNetworkEntry
+	ClusterIPNet map[string][]CIDRNetworkEntry
 
 	GatewayInit      bool
 	GatewayIntf      string
@@ -29,7 +31,7 @@ type OvnClusterController struct {
 	GatewayNextHop   string
 	GatewaySpareIntf bool
 	GatewayVLANID    uint
-	NodePortEnable   bool
+	NodePortEnable   map[string]bool
 	OvnHA            bool
 	LocalnetGateway  bool
 }
@@ -55,8 +57,13 @@ const (
 // a given resource type (either Namespace or Node)
 func NewClusterController(kubeClient kubernetes.Interface, wf *factory.WatchFactory) *OvnClusterController {
 	return &OvnClusterController{
-		Kube:         &kube.Kube{KClient: kubeClient},
-		watchFactory: wf,
+		Kube:         	&kube.Kube{KClient: kubeClient},
+		watchFactory: 	wf,
+		masterSubnetAllocatorList: make(map[string][]*netutils.SubnetAllocator),
+		NetworkNameList: make([]string, 0),
+		ClusterIPNet: 	make(map[string][]CIDRNetworkEntry),
+		NodePortEnable: make(map[string]bool),
+		MTU:          	make(map[string]int),
 	}
 }
 

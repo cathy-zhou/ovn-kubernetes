@@ -8,14 +8,15 @@ import (
 )
 
 // GatewayCleanup removes all the NB DB objects created for a node's gateway
-func GatewayCleanup(nodeName string, gatewayLBEnable bool) error {
+func GatewayCleanup(nodeName string, gatewayLBEnable bool, networkName string) error {
 	// Get the cluster router
-	clusterRouter, err := GetK8sClusterRouter()
+	prefix := GetNetworkPrefix(networkName)
+	clusterRouter, err := GetK8sClusterRouter(networkName)
 	if err != nil {
 		return fmt.Errorf("failed to get cluster router")
 	}
 
-	gatewayRouter := fmt.Sprintf("GR_%s", nodeName)
+	gatewayRouter := fmt.Sprintf("GR_%s%s", prefix, nodeName)
 
 	// Get the gateway router port's IP address (connected to join switch)
 	var routerIP string
@@ -76,7 +77,7 @@ func GatewayCleanup(nodeName string, gatewayLBEnable bool) error {
 	}
 
 	// Remove external switch
-	externalSwitch := "ext_" + nodeName
+	externalSwitch := "ext_" + prefix + nodeName
 	_, stderr, err = RunOVNNbctl("--if-exist", "ls-del",
 		externalSwitch)
 	if err != nil {

@@ -201,13 +201,22 @@ func runOvnKube(ctx *cli.Context) error {
 		clusterController.LocalnetGateway = ctx.Bool("gateway-local")
 		clusterController.GatewayVLANID = ctx.Uint("gateway-vlanid")
 		clusterController.OvnHA = ctx.Bool("ha")
+		clusterController.NetworkNameList = append(clusterController.NetworkNameList, "default")
 
-		clusterController.ClusterIPNet, err = parseClusterSubnetEntries(ctx.String("cluster-subnet"))
+		clusterController.MTU["default"] = config.Default.MTU
+		clusterController.ClusterIPNet["default"], err = parseClusterSubnetEntries(ctx.String("cluster-subnet"))
 		if err != nil {
 			panic(err.Error())
 		}
+		clusterController.NodePortEnable["default"] = nodePortEnable
 
-		clusterController.NodePortEnable = nodePortEnable
+		//clusterController.NetworkNameList = append(clusterController.NetworkNameList, "net2")
+		//clusterController.MTU["net2"] = 8000
+		//clusterController.ClusterIPNet["net2"], err = parseClusterSubnetEntries("192.169.0.0/16/23")
+		//if err != nil {
+		//	panic(err.Error())
+		//}
+		//clusterController.NodePortEnable["net2"] = false
 
 		if master != "" {
 			if runtime.GOOS == "windows" {
@@ -236,7 +245,7 @@ func runOvnKube(ctx *cli.Context) error {
 	if netController {
 		ovnController := ovn.NewOvnController(clientset, factory, nodePortEnable)
 		if clusterController.OvnHA {
-			err := clusterController.RebuildOVNDatabase(master, ovnController)
+			err := clusterController.RebuildOVNDatabase(master, ovnController, "default")
 			if err != nil {
 				logrus.Errorf(err.Error())
 				panic(err.Error())

@@ -42,7 +42,7 @@ func (ovn *Controller) getDefaultGatewayLoadBalancer(protocol kapi.Protocol) str
 		return outStr
 	}
 
-	gw, _, err := util.GetDefaultGatewayRouterIP()
+	gw, _, err := util.GetDefaultGatewayRouterIP("default")
 	if err != nil {
 		logrus.Errorf(err.Error())
 		return ""

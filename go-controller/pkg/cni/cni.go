@@ -75,6 +75,8 @@ func (pr *PodRequest) cmdAdd() *PodResult {
 
 	// Get the IP address and MAC address from the API server.
 	// Exponential back off ~32 seconds + 7* t(api call)
+	networkName := pr.CNIConf.NetNm
+	prefix := util.GetNetworkPrefix(networkName)
 	var annotationBackoff = wait.Backoff{Duration: 1 * time.Second, Steps: 7, Factor: 1.5, Jitter: 0.1}
 	var annotation map[string]string
 	if err = wait.ExponentialBackoff(annotationBackoff, func() (bool, error) {
@@ -84,7 +86,7 @@ func (pr *PodRequest) cmdAdd() *PodResult {
 			logrus.Warningf("Error while obtaining pod annotations - %v", err)
 			return false, nil
 		}
-		if _, ok := annotation["ovn"]; ok {
+		if _, ok := annotation[prefix+"ovn"]; ok {
 			return true, nil
 		}
 		return false, nil
@@ -93,7 +95,7 @@ func (pr *PodRequest) cmdAdd() *PodResult {
 		return nil
 	}
 
-	ovnAnnotation, ok := annotation["ovn"]
+	ovnAnnotation, ok := annotation[prefix+"ovn"]
 	if !ok {
 		logrus.Errorf("failed to get ovn annotation from pod")
 		return nil
@@ -122,7 +124,7 @@ func (pr *PodRequest) cmdAdd() *PodResult {
 	}
 
 	var interfacesArray []*current.Interface
-	interfacesArray, err = pr.ConfigureInterface(namespace, podName, macAddress, ipAddress, gatewayIP, config.Default.MTU, ingress, egress)
+	interfacesArray, err = pr.ConfigureInterface(namespace, podName, macAddress, ipAddress, gatewayIP, pr.CNIConf.MTU, ingress, egress)
 	if err != nil {
 		logrus.Errorf("Failed to configure interface in pod: %v", err)
 		return nil

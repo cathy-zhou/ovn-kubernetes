@@ -10,17 +10,11 @@ import (
 // bridgedGatewayNodeSetup makes the bridge's MAC address permanent, sets up
 // the physical network name mappings for the bridge, and returns an ifaceID
 // created from the bridge name and the node name
-func bridgedGatewayNodeSetup(nodeName, bridgeInterface string) (string, string, error) {
-	// A OVS bridge's mac address can change when ports are added to it.
-	// We cannot let that happen, so make the bridge mac address permanent.
-	macAddress, err := util.GetOVSPortMACAddress(bridgeInterface)
-	if err != nil {
-		return "", "", err
-	}
+func bridgedGatewayNodeSetup(nodeName, bridgeInterface string, macAddress net.HardwareAddr) (error) {
 	stdout, stderr, err := util.RunOVSVsctl("set", "bridge",
 		bridgeInterface, "other-config:hwaddr="+macAddress.String())
 	if err != nil {
-		return "", "", fmt.Errorf("Failed to set bridge, stdout: %q, stderr: %q, "+
+		return fmt.Errorf("Failed to set bridge, stdout: %q, stderr: %q, "+
 			"error: %v", stdout, stderr, err)
 	}
 
@@ -29,12 +23,11 @@ func bridgedGatewayNodeSetup(nodeName, bridgeInterface string) (string, string, 
 	_, stderr, err = util.RunOVSVsctl("set", "Open_vSwitch", ".",
 		fmt.Sprintf("external_ids:ovn-bridge-mappings=%s:%s", util.PhysicalNetworkName, bridgeInterface))
 	if err != nil {
-		return "", "", fmt.Errorf("Failed to set ovn-bridge-mappings for ovs bridge %s"+
+		return fmt.Errorf("Failed to set ovn-bridge-mappings for ovs bridge %s"+
 			", stderr:%s (%v)", bridgeInterface, stderr, err)
 	}
 
-	ifaceID := bridgeInterface + "_" + nodeName
-	return ifaceID, macAddress.String(), nil
+	return nil
 }
 
 // getIPv4Address returns the ipv4 address for the network interface 'iface'.
@@ -66,10 +59,10 @@ loop:
 }
 
 func (cluster *OvnClusterController) initGateway(
-	nodeName string, clusterIPSubnet []string, subnet string) error {
+	nodeName string, clusterIPSubnet []string, subnet string, networkName string) error {
 	if cluster.LocalnetGateway {
 		return initLocalnetGateway(nodeName, clusterIPSubnet, subnet,
-			cluster.NodePortEnable, cluster.watchFactory)
+			cluster.NodePortEnable[networkName], cluster.watchFactory, networkName)
 	}
 
 	if cluster.GatewayNextHop == "" || cluster.GatewayIntf == "" {
@@ -91,12 +84,12 @@ func (cluster *OvnClusterController) initGateway(
 	if cluster.GatewaySpareIntf {
 		return initSpareGateway(nodeName, clusterIPSubnet, subnet,
 			cluster.GatewayNextHop, cluster.GatewayIntf, cluster.GatewayVLANID,
-			cluster.NodePortEnable)
+			cluster.NodePortEnable[networkName], networkName)
 	}
 
 	bridge, gwIntf, err := initSharedGateway(nodeName, clusterIPSubnet, subnet,
 		cluster.GatewayNextHop, cluster.GatewayIntf, cluster.GatewayVLANID,
-		cluster.NodePortEnable, cluster.watchFactory)
+		cluster.NodePortEnable[networkName], cluster.watchFactory, networkName)
 	if err != nil {
 		return err
 	}

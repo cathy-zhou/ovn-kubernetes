@@ -128,19 +128,19 @@ func (oc *Controller) WatchPods() error {
 		AddFunc: func(obj interface{}) {
 			pod := obj.(*kapi.Pod)
 			if pod.Spec.NodeName != "" {
-				oc.addLogicalPort(pod)
+				oc.addLogicalPort(pod, "default")
 			}
 		},
 		UpdateFunc: func(old, newer interface{}) {
 			podNew := newer.(*kapi.Pod)
 			podOld := old.(*kapi.Pod)
 			if podOld.Spec.NodeName == "" && podNew.Spec.NodeName != "" {
-				oc.addLogicalPort(podNew)
+				oc.addLogicalPort(podNew, "default")
 			}
 		},
 		DeleteFunc: func(obj interface{}) {
 			pod := obj.(*kapi.Pod)
-			oc.deleteLogicalPort(pod)
+			oc.deleteLogicalPort(pod, "default")
 		},
 	}, oc.syncPods)
 	return err

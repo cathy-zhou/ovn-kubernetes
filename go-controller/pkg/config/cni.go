@@ -10,6 +10,15 @@ import (
 	"github.com/containernetworking/cni/pkg/types"
 )
 
+type NetConf struct {
+	types.NetConf
+	NetCidr string `json:"net-cidr"`
+	// EncapIp string `json:"encap-ip"`
+	NetNm   string `json:"network"`
+	MTU     int    `json:"mtu"`
+}
+
+
 // WriteCNIConfig writes a CNI JSON config file to directory given by global config
 func WriteCNIConfig(ConfDir string, fileName string) error {
 	bytes, err := json.Marshal(&types.NetConf{
@@ -50,10 +59,16 @@ func WriteCNIConfig(ConfDir string, fileName string) error {
 }
 
 // ReadCNIConfig unmarshals a CNI JSON config into an NetConf structure
-func ReadCNIConfig(bytes []byte) (*types.NetConf, error) {
-	conf := &types.NetConf{}
+func ReadCNIConfig(bytes []byte) (*NetConf, error) {
+	conf := &NetConf{}
 	if err := json.Unmarshal(bytes, conf); err != nil {
 		return nil, err
+	}
+	if conf.NetNm == "" {
+		conf.NetNm = "default"
+	}
+	if conf.MTU == 0 {
+		conf.MTU = Default.MTU
 	}
 	return conf, nil
 }

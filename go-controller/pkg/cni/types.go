@@ -3,7 +3,7 @@ package cni
 import (
 	"net/http"
 
-	"github.com/containernetworking/cni/pkg/types"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 )
 
 // serverRunDir is the default directory for CNIServer runtime files
@@ -49,7 +49,7 @@ type PodRequest struct {
 	// Interface name to be configured
 	IfName string
 	// CNI conf obtained from stdin conf
-	CNIConf *types.NetConf
+	CNIConf *config.NetConf
 	// Channel for returning the operation result to the Server
 	Result chan *PodResult
 }

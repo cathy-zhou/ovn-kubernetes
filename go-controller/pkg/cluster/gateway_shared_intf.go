@@ -254,7 +254,8 @@ func addDefaultConntrackRules(nodeName, gwBridge, gwIntf string) error {
 }
 
 func addStaticRouteToHost(nodeName, nicIP string) error {
-	k8sClusterRouter, err := util.GetK8sClusterRouter()
+	// only needed to do once for the default network namespace
+	k8sClusterRouter, err := util.GetK8sClusterRouter("default")
 	if err != nil {
 		return err
 	}
@@ -278,11 +279,12 @@ func addStaticRouteToHost(nodeName, nicIP string) error {
 func initSharedGateway(
 	nodeName string, clusterIPSubnet []string, subnet,
 	gwNextHop, gwIntf string, gwVLANId uint, nodeportEnable bool,
-	wf *factory.WatchFactory) (string, string, error) {
+	wf *factory.WatchFactory, networkName string) (string, string, error) {
 	var bridgeName string
+	var err error
 
 	// Check to see whether the interface is OVS bridge.
-	if _, _, err := util.RunOVSVsctl("--", "br-exists", gwIntf); err != nil {
+	if _, _, err = util.RunOVSVsctl("--", "br-exists", gwIntf); err != nil {
 		// This is not a OVS bridge. We need to create a OVS bridge
 		// and add cluster.GatewayIntf as a port of that bridge.
 		bridgeName, err = util.NicToBridge(gwIntf)
@@ -298,6 +300,14 @@ func initSharedGateway(
 		bridgeName = gwIntf
 		gwIntf = intfName
 	}
+	// A OVS bridge's mac address can change when ports are added to it.
+	// We cannot let that happen, so make the bridge mac address permanent.
+	macAddress, err := util.GetOVSPortMACAddress(bridgeName)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get mac address of %s: %v", bridgeName, err)
+	}
+
+	ifaceID := bridgeName + "_" + nodeName
 
 	// Now, we get IP address from OVS bridge. If IP does not exist,
 	// error out.
@@ -310,28 +320,30 @@ func initSharedGateway(
 		return "", "", fmt.Errorf("%s does not have a ipv4 address", bridgeName)
 	}
 
-	ifaceID, macAddress, err := bridgedGatewayNodeSetup(nodeName, bridgeName)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to set up shared interface gateway: %v", err)
-	}
-
 	err = util.GatewayInit(clusterIPSubnet, nodeName, ifaceID, ipAddress,
-		macAddress, gwNextHop, subnet, true, gwVLANId, nodeportEnable)
+		macAddress.String(), gwNextHop, subnet, true, gwVLANId, nodeportEnable, networkName)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to init shared interface gateway: %v", err)
 	}
 
-	// Add static routes to OVN Cluster Router to enable pods on this Node to
-	// reach the host IP
-	err = addStaticRouteToHost(nodeName, ipAddress)
-	if err != nil {
-		return "", "", err
-	}
+	if networkName == "default" {
+		err := bridgedGatewayNodeSetup(nodeName, bridgeName, macAddress)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to set up shared interface gateway: %v", err)
+		}
 
-	// Program cluster.GatewayIntf to let non-pod traffic to go to host
-	// stack
-	if err := addDefaultConntrackRules(nodeName, bridgeName, gwIntf); err != nil {
-		return "", "", err
+		// Add static routes to OVN Cluster Router to enable pods on this Node to
+		// reach the host IP, this is only needed done once by the default network
+		err = addStaticRouteToHost(nodeName, ipAddress)
+		if err != nil {
+			return "", "", err
+		}
+
+		// Program cluster.GatewayIntf to let non-pod traffic to go to host
+		// stack, this is also only needed to be done once by the default network
+		if err := addDefaultConntrackRules(nodeName, bridgeName, gwIntf); err != nil {
+			return "", "", err
+		}
 	}
 
 	if nodeportEnable {

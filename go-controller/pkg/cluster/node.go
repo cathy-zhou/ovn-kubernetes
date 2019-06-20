@@ -29,54 +29,60 @@ func (cluster *OvnClusterController) StartClusterNode(name string) error {
 	var clusterSubnets []string
 	var cidr string
 
-	for _, clusterSubnet := range cluster.ClusterIPNet {
-		clusterSubnets = append(clusterSubnets, clusterSubnet.CIDR.String())
-	}
+	for _, networkName := range cluster.NetworkNameList {
+		prefix := util.GetNetworkPrefix(networkName)
+		for _, clusterSubnet := range cluster.ClusterIPNet[networkName] {
+			clusterSubnets = append(clusterSubnets, clusterSubnet.CIDR.String())
+		}
 
-	// First wait for the node logical switch to be created by the Master, timeout is 300s.
-	if err := wait.PollImmediate(500*time.Millisecond, 300*time.Second, func() (bool, error) {
-		node, err = cluster.Kube.GetNode(name)
+		// First wait for the node logical switch to be created by the Master, timeout is 300s.
+		if err := wait.PollImmediate(500*time.Millisecond, 300*time.Second, func() (bool, error) {
+			node, err = cluster.Kube.GetNode(name)
+			if err != nil {
+				logrus.Errorf("Error starting node %s, no node found - %v", name, err)
+				return false, nil
+			}
+			if cidr, _, err = util.RunOVNNbctl("get", "logical_switch", prefix+node.Name, "other-config:subnet"); err != nil {
+				return false, nil
+			}
+			return true, nil
+		}); err != nil {
+			logrus.Errorf("timed out waiting for node %q network %q logical switch: %v", name, networkName, err)
+			return err
+		}
+
+		_, subnet, err = net.ParseCIDR(cidr)
 		if err != nil {
-			logrus.Errorf("Error starting node %s, no node found - %v", name, err)
-			return false, nil
+			logrus.Errorf("Invalid hostsubnet found for node %s network %s - %v", node.Name, networkName, err)
+			return err
 		}
-		if cidr, _, err = util.RunOVNNbctl("get", "logical_switch", node.Name, "other-config:subnet"); err != nil {
-			return false, nil
+
+		logrus.Infof("Node %s network %s ready for ovn initialization with subnet %s", node.Name, networkName, subnet.String())
+
+		if cluster.GatewayInit {
+			err = cluster.initGateway(node.Name, clusterSubnets, subnet.String(), networkName)
+			if err != nil {
+				logrus.Errorf("failed to initialize gateway for node %s network %s: %v", node.Name, networkName, err)
+				return err
+			}
 		}
-		return true, nil
-	}); err != nil {
-		logrus.Errorf("timed out waiting for node %q logical switch: %v", name, err)
-		return err
-	}
 
-	_, subnet, err = net.ParseCIDR(cidr)
-	if err != nil {
-		logrus.Errorf("Invalid hostsubnet found for node %s - %v", node.Name, err)
-		return err
 	}
-
-	logrus.Infof("Node %s ready for ovn initialization with subnet %s", node.Name, subnet.String())
 
 	err = cluster.watchConfigEndpoints()
 	if err != nil {
 		return err
 	}
-
 	err = setupOVNNode(name)
 	if err != nil {
+		logrus.Errorf("failed to setupOVNNode for %s: %v", node.Name, err)
 		return err
 	}
 
 	err = ovn.CreateManagementPort(node.Name, subnet.String(), clusterSubnets)
 	if err != nil {
+		logrus.Errorf("failed to CreateManagementPort for %s: %v", node.Name, err)
 		return err
-	}
-
-	if cluster.GatewayInit {
-		err = cluster.initGateway(node.Name, clusterSubnets, subnet.String())
-		if err != nil {
-			return err
-		}
 	}
 
 	confFile := filepath.Join(config.CNI.ConfDir, config.CNIConfFileName)
@@ -84,10 +90,12 @@ func (cluster *OvnClusterController) StartClusterNode(name string) error {
 	if os.IsNotExist(err) {
 		err = config.WriteCNIConfig(config.CNI.ConfDir, config.CNIConfFileName)
 		if err != nil {
+			logrus.Errorf("failed to WriteCNIConfig for %s: %v", node.Name, err)
 			return err
 		}
 	}
 
+	logrus.Infof("Start CNI server for %s", node.Name)
 	// start the cni server
 	cniServer := cni.NewCNIServer("")
 	err = cniServer.Start(cni.HandleCNIRequest)

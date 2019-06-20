@@ -385,18 +385,20 @@ func (oc *Controller) handleLocalPodSelectorAddFunc(
 	obj interface{}) {
 	pod := obj.(*kapi.Pod)
 
-	ipAddress := oc.getIPFromOvnAnnotation(pod.Annotations["ovn"])
+	networkName := "default"
+	prefix := util.GetNetworkPrefix(networkName)
+	ipAddress := oc.getIPFromOvnAnnotation(pod.Annotations[prefix+"ovn"])
 	if ipAddress == "" {
 		return
 	}
 
-	logicalSwitch := pod.Spec.NodeName
+	logicalSwitch := prefix+pod.Spec.NodeName
 	if logicalSwitch == "" {
 		return
 	}
 
 	// Get the logical port name.
-	logicalPort := fmt.Sprintf("%s_%s", pod.Namespace, pod.Name)
+	logicalPort := fmt.Sprintf("%s_%s%s", pod.Namespace, prefix, pod.Name)
 	logicalPortUUID := oc.getLogicalPortUUID(logicalPort)
 	if logicalPortUUID == "" {
 		return
@@ -435,13 +437,15 @@ func (oc *Controller) handleLocalPodSelectorDelFunc(
 	obj interface{}) {
 	pod := obj.(*kapi.Pod)
 
-	logicalSwitch := pod.Spec.NodeName
+	networkName := "default"
+	prefix := util.GetNetworkPrefix(networkName)
+	logicalSwitch := prefix+pod.Spec.NodeName
 	if logicalSwitch == "" {
 		return
 	}
 
 	// Get the logical port name.
-	logicalPort := fmt.Sprintf("%s_%s", pod.Namespace, pod.Name)
+	logicalPort := fmt.Sprintf("%s_%s%s", pod.Namespace, prefix, pod.Name)
 	logicalPortUUID := oc.getLogicalPortUUID(logicalPort)
 
 	np.Lock()
@@ -554,8 +558,10 @@ func (oc *Controller) handlePeerPodSelectorAddUpdate(
 	addressMap map[string]bool, addressSet string,
 	obj interface{}) {
 
+	networkName := "default"
+	prefix := util.GetNetworkPrefix(networkName)
 	pod := obj.(*kapi.Pod)
-	ipAddress := oc.getIPFromOvnAnnotation(pod.Annotations["ovn"])
+	ipAddress := oc.getIPFromOvnAnnotation(pod.Annotations[prefix+"ovn"])
 	if ipAddress == "" || addressMap[ipAddress] {
 		return
 	}
@@ -582,7 +588,9 @@ func (oc *Controller) handlePeerPodSelectorDelete(
 
 	pod := obj.(*kapi.Pod)
 
-	ipAddress := oc.getIPFromOvnAnnotation(pod.Annotations["ovn"])
+	networkName := "default"
+	prefix := util.GetNetworkPrefix(networkName)
+	ipAddress := oc.getIPFromOvnAnnotation(pod.Annotations[prefix+"ovn"])
 	if ipAddress == "" {
 		return
 	}
