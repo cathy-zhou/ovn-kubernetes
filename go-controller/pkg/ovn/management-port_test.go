@@ -65,7 +65,6 @@ var _ = Describe("Management Port Operations", func() {
 				serviceCIDR   string = serviceIPNet + "/24"
 				mtu           string = "1400"
 				gwIP          string = "10.1.1.1"
-				lrpMAC        string = "00:00:00:00:00:03"
 			)
 
 			fexec := ovntest.NewFakeExec()
@@ -79,10 +78,6 @@ var _ = Describe("Management Port Operations", func() {
 			})
 			fexec.AddFakeCmd(&ovntest.ExpectedCmd{
 				Cmd: "ovn-nbctl --timeout=15 -- --may-exist lsp-add " + nodeName + " " + mgtPort + " -- lsp-set-addresses " + mgtPort + " " + mgtPortMAC + " " + mgtPortIP,
-			})
-			fexec.AddFakeCmd(&ovntest.ExpectedCmd{
-				Cmd:    "ovn-nbctl --timeout=15 lsp-get-addresses stor-" + nodeName,
-				Output: lrpMAC,
 			})
 
 			if runtime.GOOS == windowsOS {
@@ -115,7 +110,6 @@ var _ = Describe("Management Port Operations", func() {
 					"ip route add " + clusterCIDR + " via " + gwIP,
 					"ip route flush " + serviceCIDR,
 					"ip route add " + serviceCIDR + " via " + gwIP,
-					"ip neigh add " + gwIP + " dev " + mgtPort + " lladdr " + lrpMAC,
 				})
 			}
 

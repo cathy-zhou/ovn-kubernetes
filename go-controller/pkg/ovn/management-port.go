@@ -3,7 +3,6 @@ package ovn
 import (
 	"fmt"
 	"net"
-	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -127,7 +126,7 @@ func configureManagementPortWindows(clusterSubnet []string, routerIP,
 	return nil
 }
 
-func configureManagementPort(clusterSubnet []string, routerIP, routerMac,
+func configureManagementPort(clusterSubnet []string, routerIP,
 	interfaceName, interfaceIP string) error {
 	if runtime.GOOS == windowsOS {
 		// Return here for Windows, the commands for enabling the interface, setting the IP and adding the
@@ -176,16 +175,6 @@ func configureManagementPort(clusterSubnet []string, routerIP, routerMac,
 	// Create a route for the services subnet.
 	_, _, err = util.RunIP("route", "add", config.Kubernetes.ServiceCIDR, "via", routerIP)
 	if err != nil {
-		return err
-	}
-
-	// Add a neighbour entry on the K8s node to map routerIP with routerMAC. This is
-	// required because in certain cases ARP requests from the K8s Node to the routerIP
-	// arrives on OVN Logical Router pipeline with ARP source protocol address set to
-	// K8s Node IP. OVN Logical Router pipeline drops such packets since it expects
-	// source protocol address to be in the Logical Switch's subnet.
-	_, _, err = util.RunIP("neigh", "add", routerIP, "dev", interfaceName, "lladdr", routerMac)
-	if err != nil && os.IsNotExist(err) {
 		return err
 	}
 
@@ -260,13 +249,6 @@ func CreateManagementPort(nodeName, localSubnet string, clusterSubnet []string) 
 		logrus.Errorf("Failed to add logical port to switch, stdout: %q, stderr: %q, error: %v", stdout, stderr, err)
 		return err
 	}
-	// switch-to-router ports only have MAC address and nothing else.
-	routerMac, stderr, err := util.RunOVNNbctl("lsp-get-addresses", "stor-"+nodeName)
-	if err != nil {
-		logrus.Errorf("Failed to retrieve the MAC address of the logical port, stderr: %q, error: %v",
-			stderr, err)
-		return err
-	}
-	err = configureManagementPort(clusterSubnet, routerIP, routerMac, interfaceName, portIPMask)
+	err = configureManagementPort(clusterSubnet, routerIP, interfaceName, portIPMask)
 	return err
 }
