@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/openshift/origin/pkg/util/netutils"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -253,6 +254,107 @@ func addDefaultConntrackRules(nodeName, gwBridge, gwIntf string) error {
 	return nil
 }
 
+
+// CreateManagementPort creates a management port attached to the node switch
+// that lets the node access its pods via their private IP address. This is used
+// for health checking and other management tasks.
+func createLocalnetPort(nodeName, localSubnet string) error {
+	// Make sure br-int is created.
+	stdout, stderr, err := util.RunOVSVsctl("--", "--may-exist", "add-br", "br-int")
+	if err != nil {
+		logrus.Errorf("Failed to create br-int, stdout: %q, stderr: %q, error: %v", stdout, stderr, err)
+		return err
+	}
+
+	// Create a OVS internal localnet interface.
+	portName := "lcl-" + strings.ToLower(nodeName)
+	interfaceName := portName[:15]
+
+	stdout, stderr, err = util.RunOVSVsctl("--", "--may-exist", "add-port",
+		"br-int", interfaceName, "--", "set", "interface", interfaceName,
+		"type=internal", "mtu_request="+fmt.Sprintf("%d", config.Default.MTU))
+	if err != nil {
+		logrus.Errorf("Failed to add port to br-int, stdout: %q, stderr: %q, error: %v", stdout, stderr, err)
+		return err
+	}
+	mac, stderr, err := util.RunOVSVsctl("--if-exists", "get", "interface", interfaceName, "mac_in_use")
+	if err != nil {
+		logrus.Errorf("Failed to get mac address of %v, stderr: %q, error: %v", interfaceName, stderr, err)
+		return err
+	}
+	if mac == "[]" {
+		return fmt.Errorf("Failed to get mac address of %v", interfaceName)
+	}
+
+	// Create the gateway switch port in 'join' if it doesn't exist yet
+	stdout, stderr, err = RunOVNNbctl("--wait=sb",
+		"--may-exist", "lsp-add", "join", portName,
+		"--", "--if-exists", "clear", "logical_switch_port", portName, "dynamic_addresses",
+		"--", "lsp-set-addresses", portName, mac+" "+"dynamic")
+	if err != nil {
+		return fmt.Errorf("failed to add logical switch "+
+			"port %s, stdout: %q, stderr: %q, error: %v",
+			portName, stdout, stderr, err)
+	}
+
+	// Should have an address already since we waited for the SB above
+	mac, ip, err := util.GetPortAddresses(portName)
+	if err != nil {
+		return fmt.Errorf("error while waiting for addresses "+
+			"for localnet switch port %q: %v", portName, err)
+	}
+	if mac == nil || ip == nil {
+		return fmt.Errorf("empty addresses for localnet "+
+			"switch port %q", portName)
+	}
+
+	// Up the interface.
+	_, _, err = util.RunIP("link", "set", interfaceName, "up")
+	if err != nil {
+		return fmt.Errorf("error while bringing up interface %q: %v", interfaceName, err)
+	}
+
+	// The interface may already exist, in which case delete the routes and IP.
+	_, _, err = util.RunIP("addr", "flush", "dev", interfaceName)
+	if err != nil {
+		return fmt.Errorf("error while flushing up addresses on interface %q: %v", interfaceName, err)
+	}
+
+	// Assign IP address to the internal interface.
+	_, _, err = util.RunIP("addr", "add", ip, "dev", interfaceName)
+	if err != nil {
+		return fmt.Errorf("error while bringing up address on interface %q: %v", interfaceName, err)
+	}
+
+	// Flush the route for the node IP (in case it was added before).
+	_, _, err = util.RunIP("route", "flush", localSubnet)
+	if err != nil {
+		return fmt.Errorf("error while flushing route for local subnet %q: %v", localSubnet, err)
+	}
+
+	// Create a route for the local subnet.
+	_, _, err = util.RunIP("route", "add", localSubnet, "via", ip)
+	if err != nil {
+		return fmt.Errorf("error while adding route for local subnet %q: %v", localSubnet, err)
+	}
+
+	// Create a static arp for the ip.
+	_, _, err = util.RunIP("neigh", "add", ip, "lladdr", mac, "dev", interfaceName)
+	if err != nil {
+		return fmt.Errorf("error while adding static ARP: %v", err)
+	}
+
+	// Create the lr route to nodeIP
+	nodeIP, err := netutils.GetNodeIP(nodeName)
+	stdout, stderr, err = RunOVNNbctl("--may-exist", "lr-route-add", "ovn_cluster_router", nodeIP+"/32", ip)
+	if err != nil {
+		return fmt.Errorf("failed to add route for %v on logical router ovn_cluster_route stdout: %q"+
+			", stderr: %q, error: %v", nodeName, stdout, stderr, err)
+	}
+
+	return nil
+}
+
 func initSharedGateway(
 	nodeName string, clusterIPSubnet []string, subnet,
 	gwNextHop, gwIntf string, wf *factory.WatchFactory) error {
@@ -296,6 +398,11 @@ func initSharedGateway(
 	if config.Gateway.VLANID > 0 {
 		lspArgs = []string{"--", "set", "logical_switch_port",
 			ifaceID, fmt.Sprintf("tag_request=%d", config.Gateway.VLANID)}
+	}
+
+	err = createLocalnetPort(nodeName, subnet)
+	if err != nil {
+		return err
 	}
 
 	err = util.GatewayInit(clusterIPSubnet, nodeName, ifaceID, ipAddress,
