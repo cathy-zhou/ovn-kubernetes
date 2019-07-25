@@ -287,7 +287,7 @@ func createLocalnetPort(nodeName, localSubnet string) error {
 	}
 
 	// Create the gateway switch port in 'join' if it doesn't exist yet
-	stdout, stderr, err = RunOVNNbctl("--wait=sb",
+	stdout, stderr, err = util.RunOVNNbctl("--wait=sb",
 		"--may-exist", "lsp-add", "join", portName,
 		"--", "--if-exists", "clear", "logical_switch_port", portName, "dynamic_addresses",
 		"--", "lsp-set-addresses", portName, mac+" "+"dynamic")
@@ -298,12 +298,12 @@ func createLocalnetPort(nodeName, localSubnet string) error {
 	}
 
 	// Should have an address already since we waited for the SB above
-	mac, ip, err := util.GetPortAddresses(portName)
+	_, ip, err := util.GetPortAddresses(portName)
 	if err != nil {
 		return fmt.Errorf("error while waiting for addresses "+
 			"for localnet switch port %q: %v", portName, err)
 	}
-	if mac == nil || ip == nil {
+	if ip == nil {
 		return fmt.Errorf("empty addresses for localnet "+
 			"switch port %q", portName)
 	}
@@ -321,7 +321,7 @@ func createLocalnetPort(nodeName, localSubnet string) error {
 	}
 
 	// Assign IP address to the internal interface.
-	_, _, err = util.RunIP("addr", "add", ip, "dev", interfaceName)
+	_, _, err = util.RunIP("addr", "add", ip.String(), "dev", interfaceName)
 	if err != nil {
 		return fmt.Errorf("error while bringing up address on interface %q: %v", interfaceName, err)
 	}
@@ -333,20 +333,20 @@ func createLocalnetPort(nodeName, localSubnet string) error {
 	}
 
 	// Create a route for the local subnet.
-	_, _, err = util.RunIP("route", "add", localSubnet, "via", ip)
+	_, _, err = util.RunIP("route", "add", localSubnet, "via", ip.String())
 	if err != nil {
 		return fmt.Errorf("error while adding route for local subnet %q: %v", localSubnet, err)
 	}
 
 	// Create a static arp for the ip.
-	_, _, err = util.RunIP("neigh", "add", ip, "lladdr", mac, "dev", interfaceName)
+	_, _, err = util.RunIP("neigh", "add", ip.String(), "lladdr", mac, "dev", interfaceName)
 	if err != nil {
 		return fmt.Errorf("error while adding static ARP: %v", err)
 	}
 
 	// Create the lr route to nodeIP
 	nodeIP, err := netutils.GetNodeIP(nodeName)
-	stdout, stderr, err = RunOVNNbctl("--may-exist", "lr-route-add", "ovn_cluster_router", nodeIP+"/32", ip)
+	stdout, stderr, err = util.RunOVNNbctl("--may-exist", "lr-route-add", "ovn_cluster_router", nodeIP+"/32", ip.String())
 	if err != nil {
 		return fmt.Errorf("failed to add route for %v on logical router ovn_cluster_route stdout: %q"+
 			", stderr: %q, error: %v", nodeName, stdout, stderr, err)
