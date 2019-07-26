@@ -273,7 +273,7 @@ func createLocalnetPort(nodeName, localSubnet string) error {
 	stdout, stderr, err = util.RunOVSVsctl("--", "--may-exist", "add-port",
 		"br-int", interfaceName, "--", "set", "interface", interfaceName,
 		"type=internal", "mtu_request="+fmt.Sprintf("%d", config.Default.MTU),
-		"external-ids:iface-id="+interfaceName)
+		"external-ids:iface-id="+portName)
 	if err != nil {
 		logrus.Errorf("Failed to add port to br-int, stdout: %q, stderr: %q, error: %v", stdout, stderr, err)
 		return err
