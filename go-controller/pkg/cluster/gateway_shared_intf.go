@@ -322,7 +322,7 @@ func createLocalnetPort(nodeName, localSubnet string) error {
 	}
 
 	// Assign IP address to the internal interface.
-	_, _, err = util.RunIP("addr", "add", ip.String(), "dev", interfaceName)
+	_, _, err = util.RunIP("addr", "add", ip.String()+"/16", "dev", interfaceName)
 	if err != nil {
 		return fmt.Errorf("error while bringing up address on interface %q: %v", interfaceName, err)
 	}
