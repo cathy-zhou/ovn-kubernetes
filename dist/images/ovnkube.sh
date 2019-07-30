@@ -189,9 +189,9 @@ wait_for_event () {
 ready_to_start_node () {
 
   # See if ep is available ...
-  ovn_db_host=$(kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} \
-    get ep -n ${ovn_kubernetes_namespace} ovnkube-db 2>/dev/null | grep 6642 | sed 's/:/ /' | awk '/ovnkube-db/{ print $2 }')
-  if [[ ${ovn_db_host} == "" ]] ; then
+  IFS=" " read -a ovn_db_hosts <<< "$(kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} \
+    get ep -n ovn-kubernetes ovnkube-db -o=jsonpath='{range .subsets[0].addresses[*]}{.ip}{" "}')"
+  if [[ ${#ovn_db_hosts[@]} == 0 ]] ; then
       return 1
   fi
   get_ovn_db_vars
@@ -221,9 +221,25 @@ check_ovn_daemonset_version () {
 get_ovn_db_vars () {
   # OVN_NORTH and OVN_SOUTH override derived host
   # Currently limited to tcp (ssl is not supported yet)
-  ovn_nbdb=${OVN_NORTH:-tcp://${ovn_db_host}:6641}
-  ovn_sbdb=${OVN_SOUTH:-tcp://${ovn_db_host}:6642}
-  ovn_nbdb_test=$(echo ${ovn_nbdb} | sed 's;//;;')
+  ovn_nbdb_str=""
+  ovn_sbdb_str=""
+  for i in ${!ovn_db_hosts[@]}; do
+    if [[ ${i} -ne 0 ]]; then
+      ovn_nbdb_str=${ovn_nbdb_str}","
+      ovn_sbdb_str=${ovn_sbdb_str}","
+    fi
+    ovn_nbdb_str=${ovn_nbdb_str}"tcp://"${ovn_db_hosts[${i}]}":6641"
+    ovn_sbdb_str=${ovn_sbdb_str}"tcp://"${ovn_db_hosts[${i}]}":6642"
+    echo ovn_nbdb_str=$ovn_nbdb_str
+    echo ovn_sbdb_str=$ovn_sbdb_str
+  done
+  ovn_nbdb=${OVN_NORTH:-$ovn_nbdb_str}
+  ovn_sbdb=${OVN_SOUTH:-$ovn_sbdb_str}
+
+  echo ovn_nbdb=$ovn_nbdb
+  echo ovn_sbdb=$ovn_sbdb
+  ovn_nbdb_test=$(echo ${ovn_nbdb} | sed 's://::g')
+  echo ovn_nbdb_test=$ovn_nbdb_test
 }
 
 # OVS must be up before OVN comes up.
@@ -429,7 +445,7 @@ ovn_debug () {
   ovs-ofctl dump-flows br-int
   echo " "
   echo "=========== ovn-sbctl show ============="
-  ovn_sbdb_test=$(echo ${ovn_sbdb} | sed 's;//;;')
+  ovn_sbdb_test=$(echo ${ovn_sbdb} | sed 's://::g')
   echo "=========== ovn-sbctl --db=${ovn_sbdb_test} show ============="
   ovn-sbctl --db=${ovn_sbdb_test} show
   echo " "
@@ -527,13 +543,15 @@ cleanup-ovs-server () {
 
 # create the ovnkube_db endpoint for other pods to query the OVN DB IP
 create_ovnkube_db_ep () {
+  ips=("$@")
+
   # delete any endpoint by name ovnkube-db
   kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} \
     delete ep -n ${ovn_kubernetes_namespace} ovnkube-db 2>/dev/null
 
   # create a new endpoint for the headless onvkube-db service without selectors
   # using the current host has the endpoint IP
-  ovn_db_host=$(getent ahosts $(hostname) | head -1 | awk '{ print $1 }')
+  echo create_ovnkube_db_ep in ${ips[@]}
   kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} create -f - << EOF
 apiVersion: v1
 kind: Endpoints
@@ -542,7 +560,7 @@ metadata:
   namespace: ${ovn_kubernetes_namespace}
 subsets:
   - addresses:
-      - ip: ${ovn_db_host}
+`for ip in ${ips[@]}; do printf "      - ip: ${ip}\n"; done`
     ports:
     - name: north
       port: 6641
@@ -555,6 +573,122 @@ EOF
         echo "Failed to create endpoint with host ${ovn_db_host} for ovnkube-db service"
         exit 1
     fi
+}
+
+prepare-ovsdb-raft () {
+  check_ovn_daemonset_version "3"
+
+  table=$1
+  port=$2
+  # Make sure /var/lib/openvswitch exists
+  mkdir -p /var/lib/openvswitch
+
+  local_ip=$(getent ahosts $(hostname) | head -1 | awk '{ print $1 }')
+  # get all the nodes that are participating in hosting the OVN DBs
+  cluster_nodes=$(kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} \
+    get nodes --selector=openvswitch.org/ovnkube-db=true \
+    -o=jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null)
+  echo cluster_nodes=$cluster_nodes
+  read -a nodes <<< "$cluster_nodes"
+  nnodes=${#nodes[@]}
+  echo nnodes=$nnodes
+  if [[ $nnodes -lt 3 || ($(($nnodes/2)) -eq 0) ]]; then
+    echo "at least 3 nodes need to be configured, and it must be odd number of nodes"
+    exit 1
+  fi
+
+  # Sort the all the node IPs and pick the first one to create the RAFT cluster
+  # The others join this one
+  IFS=$'\n' nodes=($(sort <<<"${nodes[*]}")); unset IFS
+  init_node=${nodes[0]}
+  echo init_node=$init_node
+
+  opts=""
+  for i in ${!nodes[@]}; do
+    opts=$opts" -- --id=@uuid"$((i+1))" create connection target=\"ptcp:"${port}":"${nodes[${i}]}"\" inactivity_probe=0"
+  done
+  opts=$opts" -- set "${table}" . connections="
+  for i in ${!nodes[@]}; do
+    if [[ ${i} -ne 0 ]]; then
+      opts=$opts","
+    fi
+    opts=$opts'@uuid'$((i+1))
+  done
+}
+
+# v3 - create nb_ovsdb cluster in a separate container
+nb-ovsdb-raft () {
+  trap 'kill $(jobs -p); exit 0' TERM
+
+  rm -f /var/run/openvswitch/ovnnb_db.pid
+  prepare-ovsdb-raft "NB_Global" "6641"
+
+  echo "=============== run nb-ovsdb-raft =========="
+  echo "ovn_log_nb=${ovn_log_nb} ovn_nb_log_file=${ovn_nb_log_file}"
+  if [[ $init_node == $local_ip ]]; then
+    /usr/share/openvswitch/scripts/ovn-ctl run_nb_ovsdb --no-monitor \
+    --db-nb-create-insecure-remote=yes --db-nb-cluster-local-addr=${local_ip} \
+    --ovn-nb-logfile=${ovn_nb_log_file} --ovn-nb-log="${ovn_log_nb}" &
+  else
+    /usr/share/openvswitch/scripts/ovn-ctl run_nb_ovsdb --no-monitor \
+    --db-nb-create-insecure-remote=yes --db-nb-cluster-local-addr=${local_ip} \
+    --db-nb-cluster-remote-addr=${init_node} \
+    --ovn-nb-logfile=${ovn_nb_log_file} --ovn-nb-log="${ovn_log_nb}" &
+  fi
+
+  wait_for_event process_ready ovnnb_db
+  echo "=============== nb-ovsdb-raft ========== RUNNING"
+  sleep 3
+
+  if [[ $init_node == $local_ip ]]; then
+    echo ovn-nbctl ${opts}
+    ovn-nbctl ${opts}
+    echo ovn-nbctl ${opts} return $?
+  fi
+
+  tail --follow=name ${ovn_nb_log_file} &
+  ovn_tail_pid=$!
+
+  process_healthy ovnnb_db ${ovn_tail_pid}
+  echo "=============== run nb_ovsdb-raft ========== terminated"
+}
+
+# v3 - create nb_ovsdb cluster in a separate container
+sb-ovsdb-raft () {
+  trap 'kill $(jobs -p); exit 0' TERM
+
+  rm -f /var/run/openvswitch/ovnsb_db.pid
+  prepare-ovsdb-raft "SB_Global" "6642"
+
+  echo "=============== run sb-ovsdb-raft =========="
+  echo "ovn_log_sb=${ovn_log_sb} ovn_sb_log_file=${ovn_sb_log_file}"
+  if [[ $init_node == $local_ip ]]; then
+    /usr/share/openvswitch/scripts/ovn-ctl run_sb_ovsdb --no-monitor \
+    --db-sb-create-insecure-remote=yes --db-sb-cluster-local-addr=${local_ip} \
+    --ovn-sb-logfile=${ovn_sb_log_file} --ovn-sb-log="${ovn_log_sb}" &
+  else
+    /usr/share/openvswitch/scripts/ovn-ctl run_sb_ovsdb --no-monitor \
+    --db-sb-create-insecure-remote=yes --db-sb-cluster-local-addr=${local_ip} \
+    --db-sb-cluster-remote-addr=${init_node} \
+    --ovn-sb-logfile=${ovn_sb_log_file} --ovn-sb-log="${ovn_log_sb}" &
+  fi
+
+  wait_for_event process_ready ovnsb_db
+  echo "=============== sb-ovsdb-raft ========== RUNNING"
+  sleep 3
+
+  if [[ $init_node == $local_ip ]]; then
+    echo ovn-sbctl ${opts}
+    ovn-sbctl ${opts}
+  fi
+  echo create_ovnkube_db_ep out ${nodes[@]}
+  create_ovnkube_db_ep ${nodes[@]}
+
+  tail --follow=name ${ovn_sb_log_file} &
+  ovn_tail_pid=$!
+
+  process_healthy ovnsb_db ${ovn_tail_pid}
+  echo "=============== run sb_ovsdb-raft ========== terminated"
 }
 
 # v3 - run nb_ovsdb in a separate container
@@ -609,7 +743,8 @@ sb-ovsdb () {
   ovn-sbctl set-connection ptcp:6642 -- set connection . inactivity_probe=0
 
   # create the ovnkube_db endpoint for other pods to query the OVN DB IP
-  create_ovnkube_db_ep
+  ovn_db_host=$(getent ahosts $(hostname) | head -1 | awk '{ print $1 }')
+  create_ovnkube_db_ep ${ovn_db_host}
 
   tail --follow=name ${ovn_sb_log_file} &
   ovn_tail_pid=$!
@@ -640,8 +775,8 @@ run-ovn-northd () {
 
   # no monitor (and no detach), start northd which connects to the
   # ovnkube-db service
-  ovn_nbdb_i=$(echo ${ovn_nbdb} | sed 's;//;;')
-  ovn_sbdb_i=$(echo ${ovn_sbdb} | sed 's;//;;')
+  ovn_nbdb_i=$(echo ${ovn_nbdb} | sed 's://::g')
+  ovn_sbdb_i=$(echo ${ovn_sbdb} | sed 's://::g')
   run_as_ovs_user_if_needed \
       /usr/share/openvswitch/scripts/ovn-ctl start_northd \
       --no-monitor --ovn-manage-ovsdb=no \
@@ -861,6 +996,7 @@ start_ovn () {
   echo "=============== wait for ovs"
   wait_for_event ovs_ready
 
+  ovn_db_hosts=(${ovn_db_host})
   get_ovn_db_vars
   # on the master only
   if [[ ${ovn_master} = "true" ]]
@@ -946,6 +1082,12 @@ echo "================== ovnkube.sh --- version: ${ovnkube_version} ============
     "sb-ovsdb")        # pod ovnkube-db container sb-ovsdb
 	sb-ovsdb
     ;;
+    "nb-ovsdb-raft")   # pod ovnkube-db container nb-ovsdb-raft
+	nb-ovsdb-raft
+    ;;
+    "sb-ovsdb-raft")   # pod ovnkube-db container sb-ovsdb-raft
+	sb-ovsdb-raft
+    ;;
     "run-ovn-northd")  # pod ovnkube-master container run-ovn-northd
 	run-ovn-northd
     ;;
@@ -996,7 +1138,7 @@ echo "================== ovnkube.sh --- version: ${ovnkube_version} ============
 	echo "invalid command ${cmd}"
 	echo "valid v1 commands: start-ovn display_env display ovn_debug"
 	echo "valid v2 commands: ovn-northd ovn-master ovn-controller ovn-node display_env display ovn_debug"
-	echo "valid v3 commands: ovs-server nb-ovsdb sb-ovsdb run-ovn-northd ovn-master ovn-controller ovn-node display_env display ovn_debug cleanup-ovs-server cleanup-ovn-node"
+	echo "valid v3 commands: ovs-server nb-ovsdb sb-ovsdb run-ovn-northd ovn-master ovn-controller ovn-node display_env display ovn_debug cleanup-ovs-server cleanup-ovn-node nb-ovsdb-raft sb-ovsdb-raft"
 	exit 0
   esac
 

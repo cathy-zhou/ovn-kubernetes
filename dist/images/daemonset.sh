@@ -131,6 +131,10 @@ s,${ovn_db_replicas_repl},${ovn_db_replicas},
 s,${ovn_db_vip_repl},${ovn_db_vip},
 s,${policy_str},${policy}," ../templates/ovnkube-db-vip.yaml.j2 > ../yaml/ovnkube-db-vip.yaml
 
+sed "s,${image_str},${image},
+s,${ovn_db_replicas_repl},${ovn_db_replicas},
+s,${policy_str},${policy}," ../templates/ovnkube-db-raft.yaml.j2 > ../yaml/ovnkube-db-raft.yaml
+
 # ovn-setup.yaml
 # net_cidr=10.128.0.0/14/23
 # svc_cidr=172.30.0.0/16
