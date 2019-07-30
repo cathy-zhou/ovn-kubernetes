@@ -334,15 +334,24 @@ func createLocalnetPort(nodeName, localSubnet string) error {
 	}
 
 	// Create a route for the local subnet.
-	_, _, err = util.RunIP("route", "add", localSubnet, "via", ip.String())
+	_, _, err = util.RunIP("route", "add", localSubnet, "via", "100.64.0.1", "dev", interfaceName)
 	if err != nil {
 		return fmt.Errorf("error while adding route for local subnet %q: %v", localSubnet, err)
 	}
 
 	// Create a static arp for the ip.
-	_, _, err = util.RunIP("neigh", "add", ip.String(), "lladdr", mac, "dev", interfaceName)
+	mac, stderr, err = util.RunOVNNbctl("--if-exists", "get", "logical_router_port", "rtoj-ovn_cluster_router", "mac")
 	if err != nil {
-		return fmt.Errorf("error while adding static ARP: %v", err)
+		logrus.Errorf("Failed to get mac address of logical router port rtoj-ovn_cluster_router, stderr: %q, error: %v", stderr, err)
+		return err
+	}
+	if mac == "" {
+		return fmt.Errorf("Failed to get mac address of logical router port rtoj-ovn_cluster_router")
+	}
+
+	_, _, err = util.RunIP("neigh", "add", "100.64.0.1", "lladdr", mac, "dev", interfaceName)
+	if err != nil {
+		return fmt.Errorf("error running ip neigh add 100.64.0.1 lladdr %v dev %v: %v", mac, interfaceName, err)
 	}
 
 	// Create the lr route to nodeIP
