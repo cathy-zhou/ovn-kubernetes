@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/openshift/origin/pkg/util/netutils"
+
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 )
 
@@ -15,6 +17,7 @@ const (
 	// PhysicalNetworkName is the name that maps to an OVS bridge that provides
 	// access to physical/external network
 	PhysicalNetworkName = "physnet"
+	LocalNetworkName = "locnet"
 )
 
 // GetK8sClusterRouter returns back the OVN distibuted router
@@ -167,7 +170,9 @@ func getGatewayLoadBalancers(gatewayRouter string) (string, string, error) {
 
 // GatewayInit creates a gateway router for the local chassis.
 func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddress,
-	defaultGW string, rampoutIPSubnet string, localnet bool, lspArgs []string) error {
+	defaultGW string, rampoutIPSubnet string, localnet bool, islocal bool, lspArgs []string) error {
+
+	var gatewayRouter, externalSwitch string
 
 	ip, physicalIPNet, err := net.ParseCIDR(nicIP)
 	if err != nil {
@@ -193,7 +198,11 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 	}
 
 	// Create a gateway router.
-	gatewayRouter := "GR_" + nodeName
+	if islocal {
+		gatewayRouter = "GR_" + "local_" + nodeName
+	} else {
+		gatewayRouter = "GR_" + nodeName
+	}
 	stdout, stderr, err := RunOVNNbctl("--", "--may-exist", "lr-add",
 		gatewayRouter, "--", "set", "logical_router", gatewayRouter,
 		"options:chassis="+systemID, "external_ids:physical_ip="+physicalIP)
@@ -244,19 +253,33 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 	}
 
 	// Add a default route in distributed router with first GR as the nexthop.
-	_, defGatewayIP, err := GetDefaultGatewayRouterIP()
-	if err != nil {
-		return err
-	}
-	stdout, stderr, err = RunOVNNbctl("--may-exist", "lr-route-add",
-		k8sClusterRouter, "0.0.0.0/0", defGatewayIP.String())
-	if err != nil {
-		return fmt.Errorf("Failed to add a default route in distributed router "+
-			"with first GR as the nexthop, stdout: %q, stderr: %q, error: %v",
-			stdout, stderr, err)
+	if islocal {
+		nodeIP, err := netutils.GetNodeIP(nodeName)
+		if err != nil {
+			return fmt.Errorf("failed to obtain local IP from hostname %q: %v", nodeName, err)
+		}
+		stdout, stderr, err = RunOVNNbctl("--may-exist", "lr-route-add",
+			k8sClusterRouter, nodeIP+"/32", routerCIDR.IP.String())
+		if err != nil {
+			return fmt.Errorf("Failed to add a route to nodeIP in router "+
+				"with local_node GR as the nexthop, stdout: %q, stderr: %q, error: %v",
+				stdout, stderr, err)
+		}
+	} else {
+		_, defGatewayIP, err := GetDefaultGatewayRouterIP()
+		if err != nil {
+			return err
+		}
+		stdout, stderr, err = RunOVNNbctl("--may-exist", "lr-route-add",
+			k8sClusterRouter, "0.0.0.0/0", defGatewayIP.String())
+		if err != nil {
+			return fmt.Errorf("Failed to add a default route in distributed router "+
+				"with first GR as the nexthop, stdout: %q, stderr: %q, error: %v",
+				stdout, stderr, err)
+		}
 	}
 
-	if config.Gateway.NodeportEnable {
+	if !islocal && config.Gateway.NodeportEnable {
 		// Create 2 load-balancers for north-south traffic for each gateway
 		// router.  One handles UDP and another handles TCP.
 		var k8sNSLbTCP, k8sNSLbUDP string
@@ -303,7 +326,11 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 	}
 
 	// Create the external switch for the physical interface to connect to.
-	externalSwitch := "ext_" + nodeName
+	if islocal {
+		externalSwitch = "ext_" + "local_" + nodeName
+	} else {
+		externalSwitch = "ext_" + nodeName
+	}
 	stdout, stderr, err = RunOVNNbctl("--may-exist", "ls-add",
 		externalSwitch)
 	if err != nil {
@@ -316,10 +343,14 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 	// world is accessed via this port.
 	cmdArgs := []string{"--", "--may-exist", "lsp-add", externalSwitch, ifaceID,
 		"--", "lsp-set-addresses", ifaceID, "unknown"}
-	if localnet {
+	if localnet && !islocal {
 		cmdArgs = append(cmdArgs, "--", "lsp-set-type", ifaceID,
 			"localnet", "--", "lsp-set-options", ifaceID,
 			"network_name="+PhysicalNetworkName)
+	} else if localnet && islocal {
+		cmdArgs = append(cmdArgs, "--", "lsp-set-type", ifaceID,
+			"localnet", "--", "lsp-set-options", ifaceID,
+			"network_name="+LocalNetworkName)
 	}
 	cmdArgs = append(cmdArgs, lspArgs...)
 	stdout, stderr, err = RunOVNNbctl(cmdArgs...)
@@ -383,7 +414,7 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 			routerCIDR.IP.String(), stdout, stderr, err)
 	}
 
-	if rampoutIPSubnet != "" {
+	if !islocal && rampoutIPSubnet != "" {
 		rampoutIPSubnets := strings.Split(rampoutIPSubnet, ",")
 		for _, rampoutIPSubnet = range rampoutIPSubnets {
 			_, _, err = net.ParseCIDR(rampoutIPSubnet)

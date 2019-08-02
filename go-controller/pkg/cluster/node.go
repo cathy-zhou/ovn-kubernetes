@@ -186,5 +186,10 @@ func (cluster *OvnClusterController) CleanupClusterNode(name string) error {
 		logrus.Errorf("Failed to delete bridge br-int, stdout: %q, stderr: %q, error: %v", stdout, stderr, err)
 	}
 
+	stdout, stderr, err = util.RunOVSVsctl("--", "--if-exists", "remove", "Open_vSwitch", ".", "external_ids", "ovn-bridge-mappings")
+	if err != nil {
+		logrus.Errorf("Failed to delete ovn-bridge-mappings, stdout: %q, stderr: %q, error: %v", stdout, stderr, err)
+	}
+
 	return nil
 }

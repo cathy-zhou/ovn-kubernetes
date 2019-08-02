@@ -3,6 +3,7 @@ package cluster
 import (
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -11,7 +12,7 @@ import (
 // bridgedGatewayNodeSetup makes the bridge's MAC address permanent, sets up
 // the physical network name mappings for the bridge, and returns an ifaceID
 // created from the bridge name and the node name
-func bridgedGatewayNodeSetup(nodeName, bridgeInterface string) (string, string, error) {
+func bridgedGatewayNodeSetup(nodeName, bridgeInterface string, physicalNetworkName string) (string, string, error) {
 	// A OVS bridge's mac address can change when ports are added to it.
 	// We cannot let that happen, so make the bridge mac address permanent.
 	macAddress, err := util.GetOVSPortMACAddress(bridgeInterface)
@@ -27,8 +28,29 @@ func bridgedGatewayNodeSetup(nodeName, bridgeInterface string) (string, string, 
 
 	// ovn-bridge-mappings maps a physical network name to a local ovs bridge
 	// that provides connectivity to that network.
+	stdout, stderr, err = util.RunOVSVsctl("--if-exists", "get", "Open_vSwitch", ".",
+		"external_ids:ovn-bridge-mappings")
+	if err != nil {
+		return "", "", fmt.Errorf("Failed to get ovn-bridge-mappings stderr:%s (%v)", stderr, err)
+	}
+	mapString := ""
+	bridge_mappings := strings.Split(stdout, ",")
+	for _, bridge_mapping := range bridge_mappings {
+		m := strings.Split(bridge_mapping, ":")
+		if network := m[0]; network != physicalNetworkName {
+			if len(mapString) != 0 {
+				mapString += ","
+			}
+			mapString += bridge_mapping
+		}
+	}
+	if len(mapString) != 0 {
+		mapString += ","
+	}
+	mapString += physicalNetworkName+":"+bridgeInterface
+
 	_, stderr, err = util.RunOVSVsctl("set", "Open_vSwitch", ".",
-		fmt.Sprintf("external_ids:ovn-bridge-mappings=%s:%s", util.PhysicalNetworkName, bridgeInterface))
+		fmt.Sprintf("external_ids:ovn-bridge-mappings=%s", mapString))
 	if err != nil {
 		return "", "", fmt.Errorf("Failed to set ovn-bridge-mappings for ovs bridge %s"+
 			", stderr:%s (%v)", bridgeInterface, stderr, err)
@@ -114,10 +136,11 @@ func (cluster *OvnClusterController) initGateway(
 func (cluster *OvnClusterController) cleanupGateway(nodeName string) error {
 	switch config.Gateway.Mode {
 	case config.GatewayModeLocal:
-		return cleanupLocalnetGateway()
+		return cleanupLocalnetGateway(false)
 	case config.GatewayModeSpare:
 		return cleanupSpareGateway(config.Gateway.Interface, nodeName)
 	case config.GatewayModeShared:
+		cleanupLocalnetGateway(true)
 		return cleanupSharedGateway()
 	}
 	return nil
