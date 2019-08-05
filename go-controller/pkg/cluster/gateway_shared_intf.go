@@ -2,9 +2,11 @@ package cluster
 
 import (
 	"fmt"
+	"net"
 	"regexp"
 	"strings"
 
+	"github.com/coreos/go-iptables/iptables"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -310,8 +312,39 @@ func initSharedGateway(
 		return err
 	}
 
-	if err = initLocalnetGatewayInternal(nodeName, clusterIPSubnet, subnet, nil, true, wf); err != nil {
+	ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
+	if err != nil {
+		return fmt.Errorf("failed to initialize iptables: %v", err)
+	}
+
+	if err = initLocalnetGatewayInternal(nodeName, clusterIPSubnet, subnet, ipt, true, wf); err != nil {
 		return err
+	}
+
+	ip, _, err := net.ParseCIDR(subnet)
+	if err != nil {
+		return fmt.Errorf("Failed to parse local subnet %s: %v", subnet, err)
+	}
+	ip = util.NextIP(util.NextIP(ip))
+	portIP := ip.String()
+	k8sMgmtIntfName := util.GetK8sMgmtIntfName(nodeName)
+	rules := make([]iptRule, 0)
+	// NAT for the interface
+	rules = append(rules, iptRule{
+		table: "nat",
+		chain: "OVN-KUBE-LOCAL",
+		args:  []string{"-o", k8sMgmtIntfName, "-j", "SNAT", "--to-source", portIP},
+	})
+
+	rules = append(rules, iptRule{
+		table: "nat",
+		chain: "POSTROUTING",
+		args:  []string{"-j", "OVN-KUBE-LOCAL"},
+	})
+
+	err = addIptRules(ipt, rules)
+	if err != nil {
+		return fmt.Errorf("Failed to add NAT rules for localnet gateway (%v)", err)
 	}
 
 	if config.Gateway.NodeportEnable {
@@ -325,6 +358,12 @@ func initSharedGateway(
 }
 
 func cleanupSharedGateway() error {
+	ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
+	if err != nil {
+		return fmt.Errorf("failed to initialize iptables: %v", err)
+	}
+	_ = ipt.ClearChain("nat", "OVN-KUBE-LOCAL")
+
 	// NicToBridge() may be created before-hand, only delete the patch port here
 	stdout, stderr, err := util.RunOVSVsctl("--columns=name", "--no-heading", "find", "port",
 		"external_ids:ovn-localnet-port!=_")
