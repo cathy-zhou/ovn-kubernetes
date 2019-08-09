@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 
 	// "github.com/containernetworking/cni/pkg/types"
-
 	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni/types"
 )
 

@@ -45,6 +45,7 @@ var (
 	// CNI holds CNI-related parsed config file parameters and command-line overrides
 	CNI = CNIConfig{
 		ConfDir:         "/etc/cni/net.d",
+		CNINetConf:      "{\"cniVersion\":\"0.3.1\",\"name\":\"ovn-kubernetes\",\"type\":\"ovn-k8s-cni-overlay\",\"ipam\":{},\"dns\":{}}",
 		Plugin:          "ovn-k8s-cni-overlay",
 		WinHNSNetworkID: "",
 	}
@@ -109,7 +110,7 @@ type LoggingConfig struct {
 type CNIConfig struct {
 	// ConfDir specifies the CNI config directory in which to write the overlay CNI config file
 	ConfDir string `gcfg:"conf-dir"`
-	// CniNetConf specifies the CNI config directory in which to write the overlay CNI config file
+	// CNINetConf specifies the CNI config file contents
 	CNINetConf string `gcfg:"cni-network-config"`
 	// Plugin specifies the name of the CNI plugin
 	Plugin string `gcfg:"plugin"`
@@ -839,6 +840,7 @@ func initConfigWithPath(ctx *cli.Context, exec kexec.Interface, saPath string, d
 		defaults = &Defaults{}
 	}
 
+	logrus.Infof("Parsed cli config: %+v", cliConfig)
 	// Build config that needs no special processing
 	overrideFields(&CNI, &cfg.CNI)
 	overrideFields(&CNI, &cliConfig.CNI)

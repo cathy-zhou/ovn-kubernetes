@@ -81,6 +81,7 @@ func (cluster *OvnClusterController) StartClusterNode(name string) error {
 		}
 	}
 
+	logrus.Debugf("config.WriteCNIConfig confdir %v filename %v config.CNI.CNINetConf %v", config.CNI.ConfDir, config.CNIConfFileName, config.CNI.CNINetConf)
 	err = config.WriteCNIConfig(config.CNI.ConfDir, config.CNIConfFileName)
 	if err != nil {
 		return err

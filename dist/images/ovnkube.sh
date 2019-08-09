@@ -798,7 +798,7 @@ ovn-node () {
       --loglevel=${ovnkube_loglevel} \
       --gateway-mode=${ovn_gateway_mode} ${ovn_gateway_opts}  \
       --pidfile /var/run/openvswitch/ovnkube.pid \
-      --logfile /var/log/ovn-kubernetes/ovnkube.log
+      --logfile /var/log/ovn-kubernetes/ovnkube.log \
       --cni-network-config ${ovn_cni_network_config} &
 
   wait_for_event process_ready ovnkube
