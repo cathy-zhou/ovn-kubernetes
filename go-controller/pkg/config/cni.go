@@ -14,14 +14,7 @@ import (
 
 // WriteCNIConfig writes a CNI JSON config file to directory given by global config
 func WriteCNIConfig(ConfDir string, fileName string) error {
-	bytes, err := json.Marshal(&types.NetConf{
-		CNIVersion: "0.3.1",
-		Name:       "ovn-kubernetes",
-		Type:       CNI.Plugin,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to marshal CNI config JSON: %v", err)
-	}
+	bytes := []byte(config.CNI.CNINetConf)
 
 	// Install the CNI config file after all initialization is done
 	// MkdirAll() returns no error if the path already exists

@@ -126,6 +126,7 @@ net_cidr=${OVN_NET_CIDR:-10.128.0.0/14/23}
 svc_cidr=${OVN_SVC_CIDR:-172.30.0.0/16}
 
 ovn_kubernetes_namespace=${OVN_KUBERNETES_NAMESPACE:-ovn-kubernetes}
+ovn_cni_network_config=${OVN_CNI_NETWORK_CONFIG:-"{\"cniVersion\":\"0.3.1\",\"name\":\"ovn-kubernetes\",\"type\":\"ovn-k8s-cni-overlay\",\"ipam\":{},\"dns\":{}}"}
 
 # host on which ovnkube-db POD is running and this POD contains both
 # OVN NB and SB DB running in their own container
@@ -797,7 +798,8 @@ ovn-node () {
       --loglevel=${ovnkube_loglevel} \
       --gateway-mode=${ovn_gateway_mode} ${ovn_gateway_opts}  \
       --pidfile /var/run/openvswitch/ovnkube.pid \
-      --logfile /var/log/ovn-kubernetes/ovnkube.log &
+      --logfile /var/log/ovn-kubernetes/ovnkube.log
+      --cni-network-config ${ovn_cni_network_config} &
 
   wait_for_event process_ready ovnkube
   setup_cni

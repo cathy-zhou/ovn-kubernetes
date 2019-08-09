@@ -267,6 +267,11 @@ spec:
           value: "{{ ovn_gateway_mode }}"
         - name: OVN_GATEWAY_OPTS
           value: "{{ ovn_gateway_opts }}"
+        - name: OVN_CNI_NETWORK_CONFIG
+          valueFrom:
+            configMapKeyRef:
+              name: ovn-config
+              key: cni_network_config
 
         ports:
         - name: healthz

@@ -109,6 +109,8 @@ type LoggingConfig struct {
 type CNIConfig struct {
 	// ConfDir specifies the CNI config directory in which to write the overlay CNI config file
 	ConfDir string `gcfg:"conf-dir"`
+	// CniNetConf specifies the CNI config directory in which to write the overlay CNI config file
+	CNINetConf string `gcfg:"cni-network-config"`
 	// Plugin specifies the name of the CNI plugin
 	Plugin string `gcfg:"plugin"`
 	// Windows ONLY, specifies the ID of the HNS Network to which the containers will be attached
@@ -399,6 +401,10 @@ var CNIFlags = []cli.Flag{
 		Destination: &cliConfig.CNI.ConfDir,
 	},
 	cli.StringFlag{
+		Name:        "cni-network-config",
+		Usage:       "the CNI network config file content",
+		Destination: &cliConfig.CNI.CNINetConf,
+	},	cli.StringFlag{
 		Name:        "cni-plugin",
 		Usage:       "the name of the CNI plugin (default: ovn-k8s-cni-overlay)",
 		Destination: &cliConfig.CNI.Plugin,

@@ -30,6 +30,7 @@ func (cluster *OvnClusterController) StartClusterNode(name string) error {
 	var clusterSubnets []string
 	var cidr string
 
+	logrus.Debugf("config.CNI.CNINetConf %v", config.CNI.CNINetConf)
 	for _, clusterSubnet := range config.Default.ClusterSubnets {
 		clusterSubnets = append(clusterSubnets, clusterSubnet.CIDR.String())
 	}
@@ -81,12 +82,9 @@ func (cluster *OvnClusterController) StartClusterNode(name string) error {
 	}
 
 	confFile := filepath.Join(config.CNI.ConfDir, config.CNIConfFileName)
-	_, err = os.Stat(confFile)
-	if os.IsNotExist(err) {
-		err = config.WriteCNIConfig(config.CNI.ConfDir, config.CNIConfFileName)
-		if err != nil {
-			return err
-		}
+	err = config.WriteCNIConfig(config.CNI.ConfDir, config.CNIConfFileName)
+	if err != nil {
+		return err
 	}
 
 	// start the cni server
