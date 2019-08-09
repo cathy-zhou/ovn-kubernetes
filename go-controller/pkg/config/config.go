@@ -836,6 +836,7 @@ func initConfigWithPath(ctx *cli.Context, exec kexec.Interface, saPath string, d
 		logrus.Infof("Parsed config: %+v", cfg)
 	}
 
+	logrus.Infof("CZ Parsed cli: %+v", cliConfig)
 	if defaults == nil {
 		defaults = &Defaults{}
 	}
@@ -848,6 +849,9 @@ func initConfigWithPath(ctx *cli.Context, exec kexec.Interface, saPath string, d
 	overrideFields(&Logging, &cfg.Logging)
 	overrideFields(&Logging, &cliConfig.Logging)
 	logrus.SetLevel(logrus.Level(Logging.Level))
+	logrus.Debugf("CZ CLI: %+v", cliConfig)
+	logrus.Debugf("CZ len: %v", len(cliConfig.CNI.CNINetConf))
+	logrus.Debugf("CZ: %s", cliConfig.CNI.CNINetConf)
 	if Logging.File != "" {
 		var file *os.File
 		if _, err = os.Stat(filepath.Dir(Logging.File)); os.IsNotExist(err) {
@@ -894,8 +898,8 @@ func initConfigWithPath(ctx *cli.Context, exec kexec.Interface, saPath string, d
 	logrus.Debugf("Kubernetes config: %+v", Kubernetes)
 	logrus.Debugf("OVN North config: %+v", OvnNorth)
 	logrus.Debugf("OVN South config: %+v", OvnSouth)
-	logrus.Debugf("CNI.CNINetConf len: %v", len(CNI.CNINetConf))
-	logrus.Debugf("%+v", len(CNI.CNINetConf), CNI.CNINetConf)
+	logrus.Debugf("CZ CNINetConf len: %v", len(CNI.CNINetConf))
+	logrus.Debugf("CZ: %s", CNI.CNINetConf)
 
 	return retConfigFile, nil
 }

@@ -785,7 +785,7 @@ ovn-node () {
   wait_for_event process_ready ovn-controller
   sleep 1
 
-  echo "=============== ovn-node   --init-node"
+  echo "=============== ovn-node   --init-node --cni-network-config ${ovn_cni_network_config}"
   # TEMP HACK - WORKAROUND
   # --gateway-mode=local works around a problem that
   # results in loss of network connectivity when docker is
