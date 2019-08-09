@@ -3,7 +3,7 @@ package cluster
 import (
 	"net"
 	// "os"
-	"path/filepath"
+	// "path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
