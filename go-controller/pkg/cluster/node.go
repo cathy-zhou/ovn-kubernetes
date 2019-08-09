@@ -81,7 +81,6 @@ func (cluster *OvnClusterController) StartClusterNode(name string) error {
 		}
 	}
 
-	confFile := filepath.Join(config.CNI.ConfDir, config.CNIConfFileName)
 	err = config.WriteCNIConfig(config.CNI.ConfDir, config.CNIConfFileName)
 	if err != nil {
 		return err
