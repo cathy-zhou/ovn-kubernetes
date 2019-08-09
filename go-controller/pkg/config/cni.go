@@ -2,23 +2,23 @@ package config
 
 import (
 	"encoding/json"
-	"fmt"
+	// "fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 
-	"github.com/containernetworking/cni/pkg/types"
+	// "github.com/containernetworking/cni/pkg/types"
 
 	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni/types"
 )
 
 // WriteCNIConfig writes a CNI JSON config file to directory given by global config
 func WriteCNIConfig(ConfDir string, fileName string) error {
-	bytes := []byte(config.CNI.CNINetConf)
+	bytes := []byte(CNI.CNINetConf)
 
 	// Install the CNI config file after all initialization is done
 	// MkdirAll() returns no error if the path already exists
-	err = os.MkdirAll(ConfDir, os.ModeDir)
+	err := os.MkdirAll(ConfDir, os.ModeDir)
 	if err != nil {
 		return err
 	}
