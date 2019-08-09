@@ -840,7 +840,6 @@ func initConfigWithPath(ctx *cli.Context, exec kexec.Interface, saPath string, d
 		defaults = &Defaults{}
 	}
 
-	logrus.Infof("Parsed cli config: %+v", cliConfig)
 	// Build config that needs no special processing
 	overrideFields(&CNI, &cfg.CNI)
 	overrideFields(&CNI, &cliConfig.CNI)
@@ -895,6 +894,8 @@ func initConfigWithPath(ctx *cli.Context, exec kexec.Interface, saPath string, d
 	logrus.Debugf("Kubernetes config: %+v", Kubernetes)
 	logrus.Debugf("OVN North config: %+v", OvnNorth)
 	logrus.Debugf("OVN South config: %+v", OvnSouth)
+	logrus.Debugf("CNI.CNINetConf len: %v", len(CNI.CNINetConf))
+	logrus.Debugf("%+v", len(CNI.CNINetConf), CNI.CNINetConf)
 
 	return retConfigFile, nil
 }
