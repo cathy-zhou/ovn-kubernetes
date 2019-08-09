@@ -2,7 +2,7 @@ package cluster
 
 import (
 	"net"
-	"os"
+	// "os"
 	"path/filepath"
 	"reflect"
 	"strconv"
