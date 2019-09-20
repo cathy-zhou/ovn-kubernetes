@@ -578,7 +578,7 @@ func (oc *Controller) deleteNode(nodeName string, nodeSubnet *net.IPNet) error {
 	}
 
 	if nodeSubnet != nil {
-		if err := util.GatewayCleanup(nodeName, nodeSubnet); err != nil {
+		if err := util.GatewayCleanup(nodeName); err != nil {
 			return fmt.Errorf("Failed to clean up node %s gateway: (%v)", nodeName, err)
 		}
 	}

@@ -477,7 +477,7 @@ func (oc *Controller) handleNodeGateway(node *kapi.Node) error {
 	}
 
 	if !gatewayConfigured {
-		if err := util.GatewayCleanup(node.Name, subnet); err != nil {
+		if err := util.GatewayCleanup(node.Name); err != nil {
 			return fmt.Errorf("error cleaning up gateway for node %s: %v", node.Name, err)
 		}
 	}
