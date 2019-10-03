@@ -23,20 +23,27 @@ const (
 )
 
 // GetK8sClusterRouter returns back the OVN distibuted router
-func GetK8sClusterRouter() (string, error) {
-	k8sClusterRouter, stderr, err := RunOVNNbctl("--data=bare",
-		"--no-heading", "--columns=_uuid", "find", "logical_router",
+func GetK8sClusterRouter(netName string) (string, error) {
+	logrus.Debugf("CATHY GetK8sClusterRouter for network: %s", netName)
+	k8sClusterRouters, stderr, err := RunOVNNbctl("--data=bare",
+		"--no-heading", "--colum=_uuid,external_ids", "find", "logical_router",
 		"external_ids:k8s-cluster-router=yes")
 	if err != nil {
 		logrus.Errorf("Failed to get k8s cluster router, stderr: %q, "+
 			"error: %v", stderr, err)
 		return "", err
 	}
-	if k8sClusterRouter == "" {
-		return "", fmt.Errorf("Failed to get k8s cluster router")
+	for _, k8sClusterRouter := range strings.Split(k8sClusterRouters, "\n\n") {
+		items := strings.Split(k8sClusterRouter, "\n")
+		if len(items) < 2 || len(items[0]) == 0 {
+			logrus.Warningf("CATHYZ Unexpected logical router result %v", k8sClusterRouter)
+			continue
+		}
+		if GetDbValByKey(items[1], "network_name") == netName {
+			return items[0], nil
+		}
 	}
-
-	return k8sClusterRouter, nil
+	return "", fmt.Errorf("Failed to get k8s cluster router")
 }
 
 // GetDefaultGatewayRouterIP returns the first gateway logical router name
@@ -172,7 +179,7 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 		defaultGW = defaultgwByte.String()
 	}
 
-	k8sClusterRouter, err := GetK8sClusterRouter()
+	k8sClusterRouter, err := GetK8sClusterRouter("")
 	if err != nil {
 		return err
 	}
@@ -246,6 +253,7 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 			stdout, stderr, err)
 	}
 
+	// default netName only
 	if config.Gateway.NodeportEnable {
 		// Create 2 load-balancers for north-south traffic for each gateway
 		// router.  One handles UDP and another handles TCP.
@@ -418,7 +426,7 @@ func LocalGatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMac
 		defaultGW = defaultgwByte.String()
 	}
 
-	k8sClusterRouter, err := GetK8sClusterRouter()
+	k8sClusterRouter, err := GetK8sClusterRouter("")
 	if err != nil {
 		return err
 	}

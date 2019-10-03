@@ -181,7 +181,7 @@ func (oc *Controller) AddNamespace(ns *kapi.Namespace) {
 	} else {
 		for _, pod := range existingPods.Items {
 			if pod.Status.PodIP != "" {
-				portName := podLogicalPortName(&pod)
+				portName := podLogicalPortName(&pod, "")
 				oc.namespaceAddressSet[ns.Name][pod.Status.PodIP] = portName
 			}
 		}

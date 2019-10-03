@@ -9,11 +9,15 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	knetattachment "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
+	networkclient "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned"
+	networkinformers "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/informers/externalversions"
 	kapi "k8s.io/api/core/v1"
 	knet "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	informerfactory "k8s.io/client-go/informers"
+
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 )
@@ -62,7 +66,6 @@ type WatchFactory struct {
 	// requirements with atomic accesses
 	handlerCounter uint64
 
-	iFactory  informerfactory.SharedInformerFactory
 	informers map[reflect.Type]*informer
 	stopChan  chan struct{}
 }
@@ -88,35 +91,48 @@ var (
 	policyType    reflect.Type = reflect.TypeOf(&knet.NetworkPolicy{})
 	namespaceType reflect.Type = reflect.TypeOf(&kapi.Namespace{})
 	nodeType      reflect.Type = reflect.TypeOf(&kapi.Node{})
+	netattachType reflect.Type = reflect.TypeOf(&knetattachment.NetworkAttachmentDefinition{})
 )
 
 // NewWatchFactory initializes a new watch factory
-func NewWatchFactory(c kubernetes.Interface, stopChan chan struct{}) (*WatchFactory, error) {
+func NewWatchFactory(c kubernetes.Interface, nc networkclient.Interface, stopChan chan struct{}) (*WatchFactory, error) {
+	var ifactory informerfactory.SharedInformerFactory
+	var efactory networkinformers.SharedInformerFactory
+
 	// resync time is 12 hours, none of the resources being watched in ovn-kubernetes have
 	// any race condition where a resync may be required e.g. cni executable on node watching for
 	// events on pods and assuming that an 'ADD' event will contain the annotations put in by
 	// ovnkube master (currently, it is just a 'get' loop)
 	// the downside of making it tight (like 10 minutes) is needless spinning on all resources
 	wf := &WatchFactory{
-		iFactory:  informerfactory.NewSharedInformerFactory(c, resyncInterval),
 		informers: make(map[reflect.Type]*informer),
 		stopChan:  stopChan,
 	}
 
+	ifactory = informerfactory.NewSharedInformerFactory(c, resyncInterval)
+	efactory = networkinformers.NewSharedInformerFactory(nc, resyncInterval)
+
 	// Create shared informers we know we'll use
-	wf.informers[podType] = newInformer(podType, wf.iFactory.Core().V1().Pods().Informer())
-	wf.informers[serviceType] = newInformer(serviceType, wf.iFactory.Core().V1().Services().Informer())
-	wf.informers[endpointsType] = newInformer(endpointsType, wf.iFactory.Core().V1().Endpoints().Informer())
-	wf.informers[policyType] = newInformer(policyType, wf.iFactory.Networking().V1().NetworkPolicies().Informer())
-	wf.informers[namespaceType] = newInformer(namespaceType, wf.iFactory.Core().V1().Namespaces().Informer())
-	wf.informers[nodeType] = newInformer(nodeType, wf.iFactory.Core().V1().Nodes().Informer())
+	wf.informers[podType] = newInformer(podType, ifactory.Core().V1().Pods().Informer())
+	wf.informers[serviceType] = newInformer(serviceType, ifactory.Core().V1().Services().Informer())
+	wf.informers[endpointsType] = newInformer(endpointsType, ifactory.Core().V1().Endpoints().Informer())
+	wf.informers[policyType] = newInformer(policyType, ifactory.Networking().V1().NetworkPolicies().Informer())
+	wf.informers[namespaceType] = newInformer(namespaceType, ifactory.Core().V1().Namespaces().Informer())
+	wf.informers[nodeType] = newInformer(nodeType, ifactory.Core().V1().Nodes().Informer())
+	wf.informers[netattachType] = newInformer(netattachType, efactory.K8sCniCncfIo().V1().NetworkAttachmentDefinitions().Informer())
 
 	for _, informer := range wf.informers {
 		informer.inf.AddEventHandler(wf.newFederatedHandler(informer))
 	}
 
-	wf.iFactory.Start(stopChan)
-	for oType, synced := range wf.iFactory.WaitForCacheSync(stopChan) {
+	ifactory.Start(stopChan)
+	res := ifactory.WaitForCacheSync(stopChan)
+	efactory.Start(stopChan)
+	eres := efactory.WaitForCacheSync(stopChan)
+	for k, v := range eres {
+		res[k] = v
+	}
+	for oType, synced := range res {
 		if !synced {
 			return nil, fmt.Errorf("error in syncing cache for %v informer", oType)
 		}
@@ -200,6 +216,10 @@ func getObjectMeta(objType reflect.Type, obj interface{}) (*metav1.ObjectMeta, e
 	case nodeType:
 		if node, ok := obj.(*kapi.Node); ok {
 			return &node.ObjectMeta, nil
+		}
+	case netattachType:
+		if netattachdef, ok := obj.(*knetattachment.NetworkAttachmentDefinition); ok {
+			return &netattachdef.ObjectMeta, nil
 		}
 	}
 	return nil, fmt.Errorf("cannot get ObjectMeta from type %v", objType)
@@ -375,4 +395,14 @@ func (wf *WatchFactory) AddNodeHandler(handlerFuncs cache.ResourceEventHandler, 
 // RemoveNodeHandler removes a Node object event handler function
 func (wf *WatchFactory) RemoveNodeHandler(handler *Handler) error {
 	return wf.removeHandler(nodeType, handler)
+}
+
+// AddNetworkAttachmentDefinitionHandler adds a handler function that will be executed on NetworkAttachmentDefinition object changes
+func (wf *WatchFactory) AddNetworkAttachmentDefinitionHandler(handlerFuncs cache.ResourceEventHandler, processExisting func([]interface{})) (*Handler, error) {
+	return wf.addHandler(netattachType, "", nil, handlerFuncs, processExisting)
+}
+
+// RemoveNodeHandler removes a NetworkAttachmentDefinition object event handler function
+func (wf *WatchFactory) RemoveNetworkAttachmentDefinitionHandler(handler *Handler) error {
+	return wf.removeHandler(netattachType, handler)
 }

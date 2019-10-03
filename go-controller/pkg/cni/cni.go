@@ -60,18 +60,28 @@ func extractPodBandwidthResources(podAnnotations map[string]string) (int64, int6
 func (pr *PodRequest) cmdAdd() *PodResult {
 	namespace := pr.PodNamespace
 	podName := pr.PodName
+	netName := ""
+	mtu := config.Default.MTU
+	if pr.CNIConf.NotDefault {
+		netName = pr.CNIConf.Name
+		if pr.CNIConf.MTU != 0 {
+			mtu = pr.CNIConf.MTU
+		}
+	}
+	netPrefix := util.GetNetworkPrefix(netName)
 	if namespace == "" || podName == "" {
 		logrus.Errorf("required CNI variable missing")
 		return nil
 	}
 
-	clientset, err := util.NewClientset(&config.Kubernetes)
+	clientset, _, err := util.NewClientset(&config.Kubernetes)
 	if err != nil {
 		logrus.Errorf("Could not create clientset for kubernetes: %v", err)
 		return nil
 	}
 	kubecli := &kube.Kube{KClient: clientset}
 
+	logrus.Debugf("CATHY cmdAdd tries to get POD %s's annotation %s", namespace+"/"+podName, netPrefix+"ovn")
 	// Get the IP address and MAC address from the API server.
 	// Exponential back off ~32 seconds + 7* t(api call)
 	var annotationBackoff = wait.Backoff{Duration: 1 * time.Second, Steps: 7, Factor: 1.5, Jitter: 0.1}
@@ -83,7 +93,7 @@ func (pr *PodRequest) cmdAdd() *PodResult {
 			logrus.Warningf("Error while obtaining pod annotations - %v", err)
 			return false, nil
 		}
-		if _, ok := annotation["ovn"]; ok {
+		if _, ok := annotation[netPrefix+"ovn"]; ok {
 			return true, nil
 		}
 		return false, nil
@@ -92,7 +102,7 @@ func (pr *PodRequest) cmdAdd() *PodResult {
 		return nil
 	}
 
-	ovnAnnotation, ok := annotation["ovn"]
+	ovnAnnotation, ok := annotation[netPrefix+"ovn"]
 	if !ok {
 		logrus.Errorf("failed to get ovn annotation from pod")
 		return nil
@@ -111,9 +121,10 @@ func (pr *PodRequest) cmdAdd() *PodResult {
 	}
 	podInterfaceInfo := &PodInterfaceInfo{
 		PodAnnotation: *podInfo,
-		MTU:           config.Default.MTU,
+		MTU:           mtu,
 		Ingress:       ingress,
 		Egress:        egress,
+		NetworkName:   netName,
 	}
 	podResult := &PodResult{}
 	response := &Response{}

@@ -10,9 +10,13 @@ import (
 )
 
 // GatewayCleanup removes all the NB DB objects created for a node's gateway
-func GatewayCleanup(nodeName string) error {
+func GatewayCleanup(nodeName, netName string) error {
+	// TBD
+	if netName != "" {
+		return nil
+	}
 	// Get the cluster router
-	clusterRouter, err := GetK8sClusterRouter()
+	clusterRouter, err := GetK8sClusterRouter(netName)
 	if err != nil {
 		return fmt.Errorf("failed to get cluster router")
 	}
@@ -67,6 +71,11 @@ func GatewayCleanup(nodeName string) error {
 			"error: %v", externalSwitch, stderr, err)
 	}
 
+	if netName != "" {
+		return nil
+	}
+
+	// default netName only
 	if routerIP != "" && defRouteUUID != "" {
 		// need update the default GW route since the node will be deleted.
 		_, defGatewayIP, err := GetDefaultGatewayRouterIP()
