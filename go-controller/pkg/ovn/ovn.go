@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
+	knetattachment "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
+	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
@@ -35,34 +38,56 @@ type ServiceVIPKey struct {
 	protocol kapi.Protocol
 }
 
+type networkAttachmentDefinitionConfig struct {
+	isDefault                 bool
+	masterSubnetAllocatorList []*allocator.SubnetAllocator
+	cidr                      string
+	mtu                       int
+	enableGateway             bool
+	pods                      map[string]bool
+}
+
 // Controller structure is the object which holds the controls for starting
 // and reacting upon the watched resources (e.g. pods, endpoints)
 type Controller struct {
 	kube         kube.Interface
 	watchFactory *factory.WatchFactory
 
-	masterSubnetAllocatorList []*allocator.SubnetAllocator
+	netAttchmtDefs map[string]*networkAttachmentDefinitionConfig
+	// A mutex for netAttchmtDefs
+	netMutex *sync.Mutex
 
+	// key is node name, value is map of subnet whose key is network name
+	nodeCache map[string]map[string]string
+	// A mutex for nodeCache, held before netMutex
+	nodeMutex *sync.Mutex
+
+	// LoadBalance for K8S service access, default netName only
 	TCPLoadBalancerUUID string
 	UDPLoadBalancerUUID string
 
+	// XXX CATHY gateway IP, key is logical switch name of netPrefix+nodeName
 	gatewayCache map[string]string
 	// For TCP and UDP type traffic, cache OVN load-balancers used for the
-	// cluster's east-west traffic.
+	// cluster's east-west traffic. For K8S service access, default netName
+	// only. key is protocol ("TCP" or "UDP")
 	loadbalancerClusterCache map[string]string
 
 	// For TCP and UDP type traffice, cache OVN load balancer that exists on the
-	// default gateway
+	// default gateway. For nodePort service access, default netName only
+	// key is protocol ("TCP" or "UDP")
 	loadbalancerGWCache map[string]string
 	defGatewayRouter    string
 
-	// A cache of all logical switches seen by the watcher
+	// XXX CATHY Existence of node Switch, key is netPrefix+nodeName. A cache of all logical switches seen by the watcher
 	logicalSwitchCache map[string]bool
 
+	// XXX CATHY Logical switch of the Pod connect to, key is the logical switch port name of the Pod
 	// A cache of all logical ports seen by the watcher and
 	// its corresponding logical switch
 	logicalPortCache map[string]string
 
+	// XXX CATHY For policy use, UUID of logical port of Pod. default netName only for now.
 	// A cache of all logical ports and its corresponding uuids.
 	logicalPortUUIDCache map[string]string
 
@@ -129,6 +154,8 @@ func NewOvnController(kubeClient kubernetes.Interface, wf *factory.WatchFactory)
 	return &Controller{
 		kube:                     &kube.Kube{KClient: kubeClient},
 		watchFactory:             wf,
+		netAttchmtDefs:           make(map[string]*networkAttachmentDefinitionConfig),
+		netMutex:                 &sync.Mutex{},
 		logicalSwitchCache:       make(map[string]bool),
 		logicalPortCache:         make(map[string]string),
 		logicalPortUUIDCache:     make(map[string]string),
@@ -146,6 +173,7 @@ func NewOvnController(kubeClient kubernetes.Interface, wf *factory.WatchFactory)
 		multicastEnabled:         make(map[string]bool),
 		serviceVIPToName:         make(map[ServiceVIPKey]types.NamespacedName),
 		serviceVIPToNameLock:     sync.Mutex{},
+		nodeMutex:                &sync.Mutex{},
 	}
 }
 
@@ -153,11 +181,17 @@ func NewOvnController(kubeClient kubernetes.Interface, wf *factory.WatchFactory)
 func (oc *Controller) Run(stopChan chan struct{}) error {
 	startOvnUpdater()
 
-	// WatchNodes must be started first so that its initial Add will
+	// watchNetworkAttachmentDefinition needs to be called before WatchNodes()
+	// so that the masterSubnetAllocatorList for each netName can correctly
+	// take into account all the existing subnet range of the existing Nodes;
+	//
+	// Then WatchNodes must be started first so that its initial Add will
 	// create all node logical switches, which other watches may depend on.
 	// https://github.com/ovn-org/ovn-kubernetes/pull/859
-	if err := oc.WatchNodes(); err != nil {
-		return err
+	for _, f := range []func() error{oc.watchNetworkAttachmentDefinition, oc.WatchNodes} {
+		if err := f(); err != nil {
+			return err
+		}
 	}
 
 	for _, f := range []func() error{oc.WatchPods, oc.WatchServices, oc.WatchEndpoints,
@@ -346,7 +380,7 @@ func (oc *Controller) WatchPods() error {
 			}
 
 			if podScheduled(pod) {
-				if err := oc.addLogicalPort(pod); err != nil {
+				if err := oc.addPod(pod); err != nil {
 					logrus.Errorf(err.Error())
 					retryPods.Insert(string(pod.UID))
 				}
@@ -362,7 +396,7 @@ func (oc *Controller) WatchPods() error {
 			}
 
 			if podScheduled(pod) && retryPods.Has(string(pod.UID)) {
-				if err := oc.addLogicalPort(pod); err != nil {
+				if err := oc.addPod(pod); err != nil {
 					logrus.Errorf(err.Error())
 				} else {
 					retryPods.Delete(string(pod.UID))
@@ -371,7 +405,7 @@ func (oc *Controller) WatchPods() error {
 		},
 		DeleteFunc: func(obj interface{}) {
 			pod := obj.(*kapi.Pod)
-			oc.deleteLogicalPort(pod)
+			oc.deletePod(pod)
 			retryPods.Delete(string(pod.UID))
 		},
 	}, oc.syncPods)
@@ -475,13 +509,10 @@ func (oc *Controller) WatchNamespaces() error {
 	return err
 }
 
-func (oc *Controller) syncNodeGateway(node *kapi.Node, subnet *net.IPNet) error {
-	if subnet == nil {
-		subnet, _ = parseNodeHostSubnet(node)
-	}
+func (oc *Controller) syncNodeGateway(node *kapi.Node, subnet *net.IPNet, netName string) error {
 	mode := node.Annotations[OvnNodeGatewayMode]
 	if mode == string(config.GatewayModeDisabled) {
-		if err := util.GatewayCleanup(node.Name, subnet); err != nil {
+		if err := util.GatewayCleanup(node.Name, netName); err != nil {
 			return fmt.Errorf("error cleaning up gateway for node %s: %v", node.Name, err)
 		}
 	} else if subnet != nil {
@@ -500,32 +531,64 @@ func (oc *Controller) WatchNodes() error {
 		AddFunc: func(obj interface{}) {
 			node := obj.(*kapi.Node)
 			logrus.Debugf("Added event for Node %q", node.Name)
-			hostSubnet, err := oc.addNode(node)
+			subnets, err := oc.addNode(node)
 			if err != nil {
 				logrus.Errorf("error creating subnet for node %s: %v", node.Name, err)
 				return
 			}
-
-			err = oc.syncNodeManagementPort(node, hostSubnet)
-			if err != nil {
-				logrus.Errorf("error creating Node Management Port for node %s: %v", node.Name, err)
+			for netName, subnet := range subnets {
+				err = oc.syncNodeManagementPort(node, subnet, netName)
+				if err != nil {
+					logrus.Errorf("error creating Node Management Port for node %s: %v", node.Name, err)
+				}
+				if err := oc.syncNodeGateway(node, subnet, netName); err != nil {
+					gatewaysFailed[node.Name] = true
+					logrus.Errorf(err.Error())
+				}
 			}
 
-			if err := oc.syncNodeGateway(node, hostSubnet); err != nil {
-				gatewaysFailed[node.Name] = true
-				logrus.Errorf(err.Error())
-			}
 		},
 		UpdateFunc: func(old, new interface{}) {
 			oldNode := old.(*kapi.Node)
 			node := new.(*kapi.Node)
-			oldMacAddress := oldNode.Annotations[OvnNodeManagementPortMacAddress]
-			macAddress := node.Annotations[OvnNodeManagementPortMacAddress]
-			logrus.Debugf("Updated event for Node %q", node.Name)
-			if oldMacAddress != macAddress {
-				err := oc.syncNodeManagementPort(node, nil)
+			oc.nodeMutex.Lock()
+			oc.netMutex.Lock()
+			subnets := make(map[string]*net.IPNet)
+			for netName := range oc.netAttchmtDefs {
+				subnet, err := oc.getHostSubnet(node.Name, netName, false)
 				if err != nil {
-					logrus.Errorf("error update Node Management Port for node %s: %v", node.Name, err)
+					logrus.Errorf("failed to get subnet for node %s netName %s: %v", node.Name, netName, err)
+					continue
+				}
+				subnets[netName] = subnet
+			}
+			oc.netMutex.Unlock()
+			oc.nodeMutex.Unlock()
+
+			for netName, subnet := range subnets {
+				netPrefix := util.GetNetworkPrefix(netName)
+				oldMacAddress, _ := oldNode.Annotations[netPrefix+OvnNodeManagementPortMacAddress]
+				macAddress, _ := node.Annotations[netPrefix+OvnNodeManagementPortMacAddress]
+				if oldMacAddress != macAddress {
+					logrus.Debugf("Updated event for Node %q of network %s, old mac %v, new mac %v",
+						node.Name, netName, oldMacAddress, macAddress)
+					err := oc.syncNodeManagementPort(node, subnet, netName)
+					if err != nil {
+						logrus.Errorf("error update Node Management Port for node %s: %v", node.Name, err)
+					}
+				}
+				if !config.Gateway.NodeportEnable {
+					return
+				}
+
+				if gatewaysFailed[node.Name] || gatewayChanged(oldNode, node) {
+					if err := oc.syncNodeGateway(node, subnet, netName); err != nil {
+						gatewaysFailed[node.Name] = true
+						logrus.Errorf(err.Error())
+					} else {
+						// TBD
+						delete(gatewaysFailed, node.Name)
+					}
 				}
 			}
 
@@ -533,36 +596,27 @@ func (oc *Controller) WatchNodes() error {
 				oc.clearInitialNodeNetworkUnavailableCondition(node)
 			}
 
-			if gatewaysFailed[node.Name] || gatewayChanged(oldNode, node) {
-				if err := oc.syncNodeGateway(node, nil); err != nil {
-					gatewaysFailed[node.Name] = true
-					logrus.Errorf(err.Error())
-				} else {
-					delete(gatewaysFailed, node.Name)
-				}
-			}
 		},
 		DeleteFunc: func(obj interface{}) {
 			node := obj.(*kapi.Node)
 			logrus.Debugf("Delete event for Node %q. Removing the node from "+
 				"various caches", node.Name)
 
-			nodeSubnet, _ := parseNodeHostSubnet(node)
-			err := oc.deleteNode(node.Name, nodeSubnet)
+			logrus.Debugf("Delete event for Node %q", node.Name)
+			err := oc.deleteNode(node.Name)
 			if err != nil {
 				logrus.Error(err)
 			}
-			oc.lsMutex.Lock()
-			delete(oc.gatewayCache, node.Name)
-			delete(oc.logicalSwitchCache, node.Name)
-			oc.lsMutex.Unlock()
 			delete(gatewaysFailed, node.Name)
+			oc.lsMutex.Lock()
+			// TBD
 			if oc.defGatewayRouter == "GR_"+node.Name {
 				delete(oc.loadbalancerGWCache, TCP)
 				delete(oc.loadbalancerGWCache, UDP)
 				oc.defGatewayRouter = ""
 				oc.handleExternalIPsLB()
 			}
+			oc.lsMutex.Unlock()
 		},
 	}, oc.syncNodes)
 	return err
@@ -611,4 +665,210 @@ func gatewayChanged(oldNode, newNode *kapi.Node) bool {
 	}
 
 	return false
+}
+
+func (oc *Controller) addNetworkAttachDefinition(netattachdef *knetattachment.NetworkAttachmentDefinition) error {
+	var networkAttDef *networkAttachmentDefinitionConfig
+
+	logrus.Debugf("addNetworkAttachDefinition %s", netattachdef.Name)
+	netConf := &ovntypes.NetConf{}
+	err := json.Unmarshal([]byte(netattachdef.Spec.Config), &netConf)
+	if err != nil {
+		logrus.Errorf("AddNetworkAttachDefinition: failed to unmarshal Spec.Config of NetworkAttachmentDefinition %s: %v", netattachdef.Name, err)
+		return fmt.Errorf("AddNetworkAttachDefinition: failed to unmarshal Spec.Config of NetworkAttachmentDefinition %s: %v", netattachdef.Name, err)
+	}
+	// Even if this is the NetworkAttachmentDefinition for the default network, add it to the map, so it is easy to
+	// look it up when creating a pod
+	if !netConf.NotDefault {
+		oc.nodeMutex.Lock()
+		oc.netMutex.Lock()
+		oc.netAttchmtDefs[netattachdef.Name] = &networkAttachmentDefinitionConfig{
+			isDefault:                 true,
+			cidr:                      "",
+			masterSubnetAllocatorList: nil,
+			mtu:                       0,
+			enableGateway:             false,
+			pods:                      nil,
+		}
+		oc.netMutex.Unlock()
+		oc.nodeMutex.Unlock()
+		return nil
+	}
+
+	// In case name in the json defintion is different from the resource name
+	netConf.Name = netattachdef.Name
+	networkAttDef, err = oc.SetupMaster(netConf)
+	if err != nil {
+		logrus.Errorf("AddNetworkAttachDefinition failure: %v", err)
+		return err
+	}
+
+	subnets := make(map[string]*net.IPNet)
+	oc.nodeMutex.Lock()
+	oc.netMutex.Lock()
+	oc.netAttchmtDefs[netattachdef.Name] = networkAttDef
+	oc.initSubnetAllocator(netattachdef.Name)
+	for nodeName := range oc.nodeCache {
+		subnet, err := oc.getHostSubnet(nodeName, netattachdef.Name, true)
+		if err != nil {
+			subnets[nodeName] = subnet
+		}
+	}
+	oc.netMutex.Unlock()
+	oc.nodeMutex.Unlock()
+
+	for nodeName, subnet := range subnets {
+		_ = oc.ensureNodeLogicalNetwork(nodeName, subnet, netattachdef.Name)
+	}
+	return nil
+}
+
+func (oc *Controller) deleteNetworkAttachDefinition(netattachdef *knetattachment.NetworkAttachmentDefinition) {
+	logrus.Debugf("deleteNetworkAttachDefinition %s", netattachdef.Name)
+	netConf := &ovntypes.NetConf{}
+	err := json.Unmarshal([]byte(netattachdef.Spec.Config), &netConf)
+	if err != nil {
+		logrus.Errorf("deleteNetworkAttachDefinition: failed to unmarshal Spec.Config of NetworkAttachmentDefinition %s: %v", netattachdef.Name, err)
+	}
+
+	oc.nodeMutex.Lock()
+	oc.netMutex.Lock()
+	if len(oc.netAttchmtDefs[netattachdef.Name].pods) != 0 {
+		logrus.Errorf("Error: Pods %v still on network %s", oc.netAttchmtDefs[netattachdef.Name].pods, netattachdef.Name)
+	}
+	delete(oc.netAttchmtDefs, netattachdef.Name)
+	nodeNames := oc.nodeCache
+	oc.netMutex.Unlock()
+	oc.nodeMutex.Unlock()
+
+	// If this is the NetworkAttachmentDefinition for the default network, skip it
+	if !netConf.NotDefault {
+		return
+	}
+
+	oc.deleteMaster(netattachdef.Name)
+	for nodeName := range nodeNames {
+		if err := oc.deleteNodeLogicalNetwork(nodeName, netattachdef.Name); err != nil {
+			logrus.Errorf("Error deleting logical entities for network %s nodeName %s: %v", netattachdef.Name, nodeName, err)
+		}
+
+		if err := util.GatewayCleanup(nodeName, netattachdef.Name); err != nil {
+			logrus.Errorf("Failed to clean up network %s node %s gateway: (%v)", netattachdef.Name, nodeName, err)
+		}
+	}
+}
+
+// syncNetworkAttachDefinition() delete OVN logical entities of the obsoleted netNames.
+func (oc *Controller) syncNetworkAttachDefinition(netattachdefs []interface{}) {
+
+	// Get all the existing non-default netNames
+	expectedNetworks := make(map[string]bool)
+	for _, netattachdefIntf := range netattachdefs {
+		netattachdef, ok := netattachdefIntf.(*knetattachment.NetworkAttachmentDefinition)
+		if !ok {
+			logrus.Errorf("Spurious object in syncNetworkAttachDefinition: %v", netattachdefIntf)
+			continue
+		}
+		netConf := &ovntypes.NetConf{}
+		err := json.Unmarshal([]byte(netattachdef.Spec.Config), &netConf)
+		if err != nil {
+			logrus.Errorf("Unrecognized Spec.Config of NetworkAttachmentDefinition %s: %v", netattachdef.Name, err)
+			continue
+		}
+		// If this is the NetworkAttachmentDefinition for the default network, skip it
+		if !netConf.NotDefault {
+			continue
+		}
+		expectedNetworks[netattachdef.Name] = true
+	}
+
+	// Find all the logical node switches for the non-default networks and delete the ones that belong to the
+	// obsolete networks
+	nodeSwitches, stderr, err := util.RunOVNNbctl("--data=bare", "--no-heading",
+		"--columns=name,external_ids", "find", "logical_switch", "external_ids:network_name!=_")
+	if err != nil {
+		logrus.Errorf("Failed to get logical switches with non-default network: stderr: %q, error: %v", stderr, err)
+		return
+	}
+	for _, result := range strings.Split(nodeSwitches, "\n\n") {
+		items := strings.Split(result, "\n")
+		if len(items) < 2 || len(items[0]) == 0 {
+			continue
+		}
+
+		netName := util.GetDbValByKey(items[1], "network_name")
+		if _, ok := expectedNetworks[netName]; ok {
+			// network still exists, no cleanup to do
+			continue
+		}
+
+		// items[0] is the switch name, which should be prefixed with netName
+		if netName == "" || !strings.HasPrefix(items[0], netName) {
+			logrus.Warningf("CATHYZ syncNetworkAttachDefinition Unexpected logical switch %s: (%v)", items[0], items)
+			continue
+		}
+
+		nodeName := strings.TrimPrefix(items[0], netName+"_")
+		if nodeName == OvnJoinSwitch {
+			// This is the join switch for this network, skip, it will be deleted later below
+			continue
+		}
+
+		if err := oc.deleteNodeLogicalNetwork(nodeName, netName); err != nil {
+			logrus.Errorf("Error deleting node %s logical network: %v", nodeName, err)
+		}
+
+		if err = util.GatewayCleanup(nodeName, netName); err != nil {
+			logrus.Errorf("Failed to clean up node %s gateway: (%v)", nodeName, err)
+		}
+	}
+	clusterRouters, stderr, err := util.RunOVNNbctl("--data=bare", "--no-heading",
+		"--columns=name,external_ids", "find", "logical_router", "external_ids:network_name!=_")
+	if err != nil {
+		logrus.Errorf("Failed to get logical routers with non-default network name: stderr: %q, error: %v",
+			stderr, err)
+		return
+	}
+	for _, result := range strings.Split(clusterRouters, "\n\n") {
+		items := strings.Split(result, "\n")
+		if len(items) < 2 || len(items[0]) == 0 {
+			continue
+		}
+
+		netName := util.GetDbValByKey(items[1], "network_name")
+		if _, ok := expectedNetworks[netName]; ok {
+			// network still exists, no cleanup to do
+			continue
+		}
+
+		// items[0] is the router name, which should be prefixed with netName
+		if netName == "" || !strings.HasPrefix(items[0], netName) {
+			logrus.Warningf("CATHYZ syncNetworkAttachDefinition Unexpected logical router %s: %v", items[0], result)
+			continue
+		}
+
+		oc.deleteMaster(netName)
+	}
+}
+
+func (oc *Controller) watchNetworkAttachmentDefinition() error {
+	var err error
+
+	_, err = oc.watchFactory.AddNetworkAttachmentDefinitionHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			netattachdef := obj.(*knetattachment.NetworkAttachmentDefinition)
+			logrus.Debugf("netattachdef add event for %q spec %q", netattachdef.Name, netattachdef.Spec.Config)
+			err = oc.addNetworkAttachDefinition(netattachdef)
+			if err != nil {
+				logrus.Errorf("error adding new NetworkAttachmentDefintition %s: %v", netattachdef.Name, err)
+			}
+		},
+		UpdateFunc: func(old, new interface{}) {},
+		DeleteFunc: func(obj interface{}) {
+			netattachdef := obj.(*knetattachment.NetworkAttachmentDefinition)
+			logrus.Debugf("netattachdef delete event for for netattachdef %q", netattachdef.Name, netattachdef.Spec.Config)
+			oc.deleteNetworkAttachDefinition(netattachdef)
+		},
+	}, oc.syncNetworkAttachDefinition)
+	return err
 }
