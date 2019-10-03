@@ -12,9 +12,11 @@ import (
 	"sync"
 	"time"
 
+	knetattachment "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	"github.com/sirupsen/logrus"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni"
+	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
@@ -75,11 +77,7 @@ func isOVNControllerReady(name string) (bool, error) {
 // and calls the SetupNode script which establishes the logical switch
 func (cluster *OvnClusterController) StartClusterNode(name string) error {
 	var err error
-	var node *kapi.Node
-	var subnet *net.IPNet
 	var clusterSubnets []string
-	var cidr string
-	var wg sync.WaitGroup
 
 	if config.MasterHA.ManageDBServers {
 		var readyChan = make(chan bool, 1)
@@ -99,6 +97,12 @@ func (cluster *OvnClusterController) StartClusterNode(name string) error {
 		}
 	}
 
+	cluster.nodeName = name
+	err = cluster.watchNetworkAttachmentDefinition()
+	if err != nil {
+		return err
+	}
+
 	err = setupOVNNode(name)
 	if err != nil {
 		return err
@@ -108,98 +112,12 @@ func (cluster *OvnClusterController) StartClusterNode(name string) error {
 		clusterSubnets = append(clusterSubnets, clusterSubnet.CIDR.String())
 	}
 
-	messages := make(chan error)
-
-	// First wait for the node logical switch to be created by the Master, timeout is 300s.
-	err = wait.PollImmediate(500*time.Millisecond, 300*time.Second, func() (bool, error) {
-		if node, err = cluster.Kube.GetNode(name); err != nil {
-			logrus.Errorf("error retrieving node %s: %v", name, err)
-			return false, nil
-		}
-		if cidr, _, err = util.RunOVNNbctl("get", "logical_switch", node.Name, "other-config:subnet"); err != nil {
-			logrus.Errorf("error retrieving logical switch: %v", err)
-			return false, nil
-		}
-		return true, nil
-	})
-	if err != nil {
-		return fmt.Errorf("timed out waiting for node's: %q logical switch: %v", name, err)
-	}
-
-	_, subnet, err = net.ParseCIDR(cidr)
-	if err != nil {
-		return fmt.Errorf("invalid hostsubnet found for node %s: %v", node.Name, err)
-	}
-
-	logrus.Infof("Node %s ready for ovn initialization with subnet %s", node.Name, subnet.String())
-
 	if _, err = isOVNControllerReady(name); err != nil {
 		return err
 	}
 
-	type readyFunc func(string, string) (bool, error)
-	var readyFuncs []readyFunc
-	var nodeAnnotations map[string]string
-	var postReady postReadyFn
-
-	// If gateway is enabled, get gateway annotations
-	if config.Gateway.Mode != config.GatewayModeDisabled {
-		nodeAnnotations, postReady, err = cluster.initGateway(node.Name, subnet.String(), config.Gateway)
-		if err != nil {
-			return err
-		}
-		readyFuncs = append(readyFuncs, GatewayReady)
-	}
-
-	// Get management port annotations
-	mgmtPortAnnotations, err := CreateManagementPort(node.Name, subnet, clusterSubnets)
-	if err != nil {
+	if err = cluster.initNodeGateway(name, config.Gateway.Mode, "", clusterSubnets); err != nil {
 		return err
-	}
-
-	readyFuncs = append(readyFuncs, ManagementPortReady)
-
-	// Combine mgmtPortAnnotations with any existing gwyAnnotations
-	for k, v := range mgmtPortAnnotations {
-		nodeAnnotations[k] = v
-	}
-
-	wg.Add(len(readyFuncs))
-
-	// Set node annotations
-	err = cluster.Kube.SetAnnotationsOnNode(node, nodeAnnotations)
-	if err != nil {
-		return fmt.Errorf("Failed to set node %s annotation: %v", node.Name, nodeAnnotations)
-	}
-
-	portName := "k8s-" + node.Name
-
-	// Wait for the portMac to be created
-	for _, f := range readyFuncs {
-		go func(rf readyFunc) {
-			defer wg.Done()
-			err := wait.PollImmediate(500*time.Millisecond, 300*time.Second, func() (bool, error) {
-				return rf(node.Name, portName)
-			})
-			messages <- err
-		}(f)
-	}
-	go func() {
-		wg.Wait()
-		close(messages)
-	}()
-
-	for i := range messages {
-		if i != nil {
-			return fmt.Errorf("Timeout error while obtaining addresses for %s (%v)", portName, i)
-		}
-	}
-
-	if postReady != nil {
-		err = postReady()
-		if err != nil {
-			return err
-		}
 	}
 
 	confFile := filepath.Join(config.CNI.ConfDir, config.CNIConfFileName)
@@ -238,6 +156,108 @@ func updateOVNConfig(ep *kapi.Endpoints, readyChan chan bool) error {
 	return nil
 }
 
+func (cluster *OvnClusterController) initNodeGateway(name, gatewayMode, netName string, clusterSubnets []string) error {
+	var node *kapi.Node
+	var subnet *net.IPNet
+	var cidr string
+	var err error
+	var wg sync.WaitGroup
+
+	messages := make(chan error)
+
+	netPrefix := util.GetNetworkPrefix(netName)
+	// First wait for the node logical switch to be created by the Master, timeout is 300s.
+	err = wait.PollImmediate(500*time.Millisecond, 300*time.Second, func() (bool, error) {
+		if node, err = cluster.Kube.GetNode(name); err != nil {
+			logrus.Errorf("error retrieving node %s: %v", name, err)
+			return false, nil
+		}
+		if cidr, _, err = util.RunOVNNbctl("get", "logical_switch", netPrefix + node.Name, "other-config:subnet"); err != nil {
+			logrus.Errorf("error retrieving logical switch: %v", err)
+			return false, nil
+		}
+		return true, nil
+	})
+	if err != nil {
+		return fmt.Errorf("timed out waiting for node's: %q logical switch: %v", name, err)
+	}
+
+	_, subnet, err = net.ParseCIDR(cidr)
+	if err != nil {
+		return fmt.Errorf("invalid hostsubnet found for node %s network %s: %v", node.Name, netName, err)
+	}
+
+	logrus.Infof("Node %s network %s ready for ovn initialization with subnet %s", node.Name, netName, subnet.String())
+
+	type readyFunc func(string, string) (bool, error)
+	var readyFuncs []readyFunc
+	var nodeAnnotations map[string]string
+	var postReady postReadyFn
+
+	// If gateway is enabled, get gateway annotations
+	if gatewayMode != config.GatewayModeDisabled {
+		nodeAnnotations, postReady, err = cluster.initGateway(node.Name, subnet.String(), netName)
+		if err != nil {
+			return err
+		}
+		readyFuncs = append(readyFuncs, GatewayReady)
+	}
+
+	// Get management port annotations for only default network
+	if netName == "" {
+		mgmtPortAnnotations, err := CreateManagementPort(node.Name, subnet, clusterSubnets)
+		if err != nil {
+			return err
+		}
+
+		readyFuncs = append(readyFuncs, ManagementPortReady)
+
+		// Combine mgmtPortAnnotations with any existing gwyAnnotations
+		for k, v := range mgmtPortAnnotations {
+			nodeAnnotations[k] = v
+		}
+	}
+
+	wg.Add(len(readyFuncs))
+
+	// Set node annotations
+	err = cluster.Kube.SetAnnotationsOnNode(node, nodeAnnotations)
+	if err != nil {
+		return fmt.Errorf("Failed to set node %s annotation: %v", node.Name, nodeAnnotations)
+	}
+
+	portName := netPrefix + "k8s-" + node.Name
+
+	// Wait for the portMac to be created
+	for _, f := range readyFuncs {
+		go func(rf readyFunc) {
+			defer wg.Done()
+			err := wait.PollImmediate(500*time.Millisecond, 300*time.Second, func() (bool, error) {
+				return rf(node.Name, portName, netName)
+			})
+			messages <- err
+		}(f)
+	}
+	go func() {
+		wg.Wait()
+		close(messages)
+	}()
+
+	for i := range messages {
+		if i != nil {
+			return fmt.Errorf("Timeout error while obtaining addresses for %s (%v)", portName, i)
+		}
+	}
+
+	if postReady != nil {
+		err = postReady()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 //watchConfigEndpoints starts the watching of Endpoint resource and calls back to the appropriate handler logic
 func (cluster *OvnClusterController) watchConfigEndpoints(readyChan chan bool) error {
 	_, err := cluster.watchFactory.AddFilteredEndpointsHandler(config.Kubernetes.OVNConfigNamespace, nil,
@@ -262,3 +282,85 @@ func (cluster *OvnClusterController) watchConfigEndpoints(readyChan chan bool) e
 		}, nil)
 	return err
 }
+
+func (cluster *OvnClusterController) addNetworkAttachDefinition(netattachdef *knetattachment.NetworkAttachmentDefinition) error {
+
+	logrus.Debugf("addNetworkAttachDefinition %s", netattachdef.Name)
+	netConf := &ovntypes.NetConf{}
+	err := json.Unmarshal([]byte(netattachdef.Spec.Config), &netConf)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal Spec.Config of NetworkAttachmentDefinition %s: %v", netattachdef.Name, err)
+	}
+	// Even if this is the NetworkAttachmentDefinition for the default network, add it to the map, so it is easy to
+	// look it up when creating a pod
+	if !netConf.NotDefault || netConf.GatewayMode == "" || netConf.GatewayMode == config.GatewayModeDisabled {
+		return nil
+	}
+
+	// In case name in the json defintion is different from the resource name
+	netConf.Name = netattachdef.Name
+	if err = cluster.initNodeGateway(netattachdef.Name, netConf.GatewayMode, netattachdef.Name, nil); err != nil {
+		return err
+	}
+
+    return nil
+}
+
+func (cluster *OvnClusterController) deleteNetworkAttachDefinition(netattachdef *knetattachment.NetworkAttachmentDefinition) {
+	logrus.Debugf("deleteNetworkAttachDefinition %s", netattachdef.Name)
+	netConf := &ovntypes.NetConf{}
+	err := json.Unmarshal([]byte(netattachdef.Spec.Config), &netConf)
+	if err != nil {
+		logrus.Errorf("deleteNetworkAttachDefinition: failed to unmarshal Spec.Config of NetworkAttachmentDefinition %s: %v", netattachdef.Name, err)
+	}
+
+	oc.nodeMutex.Lock()
+	oc.netMutex.Lock()
+	if len(oc.netAttchmtDefs[netattachdef.Name].pods) != 0 {
+		logrus.Errorf("Error: Pods %v still on network %s", oc.netAttchmtDefs[netattachdef.Name].pods, netattachdef.Name)
+	}
+	delete(oc.netAttchmtDefs, netattachdef.Name)
+	nodeNames := oc.nodeCache
+	oc.netMutex.Unlock()
+	oc.nodeMutex.Unlock()
+
+	// If this is the NetworkAttachmentDefinition for the default network, skip it
+	if !netConf.NotDefault {
+		return
+	}
+
+	oc.deleteMaster(netattachdef.Name)
+	for nodeName := range nodeNames {
+		if err := oc.deleteNodeLogicalNetwork(nodeName, netattachdef.Name); err != nil {
+			logrus.Errorf("Error deleting logical entities for network %s nodeName %s: %v", netattachdef.Name, nodeName, err)
+		}
+
+		if err := util.GatewayCleanup(nodeName, netattachdef.Name); err != nil {
+			logrus.Errorf("Failed to clean up network %s node %s gateway: (%v)", netattachdef.Name, nodeName, err)
+		}
+	}
+}
+
+//watchNetworkAttachmentDefinition adds handler of network attachment definition resource events
+func (cluster *OvnClusterController) watchNetworkAttachmentDefinition() error {
+	var err error
+
+	_, err = cluster.watchFactory.AddNetworkAttachmentDefinitionHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			netattachdef := obj.(*knetattachment.NetworkAttachmentDefinition)
+			logrus.Debugf("netattachdef add event for %q spec %q", netattachdef.Name, netattachdef.Spec.Config)
+			err = cluster.addNetworkAttachDefinition(netattachdef)
+			if err != nil {
+				logrus.Errorf("error adding new NetworkAttachmentDefintition %s: %v", netattachdef.Name, err)
+			}
+		},
+		UpdateFunc: func(old, new interface{}) {},
+		DeleteFunc: func(obj interface{}) {
+			netattachdef := obj.(*knetattachment.NetworkAttachmentDefinition)
+			logrus.Debugf("netattachdef delete event for for netattachdef %q", netattachdef.Name, netattachdef.Spec.Config)
+			cluster.deleteNetworkAttachDefinition(netattachdef)
+		},
+	}, nil)
+	return err
+}
+

@@ -15,6 +15,7 @@ import (
 type OvnClusterController struct {
 	Kube         kube.Interface
 	watchFactory *factory.WatchFactory
+	nodeName     string
 }
 
 // NewClusterController creates a new controller for IP subnet allocation to

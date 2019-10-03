@@ -102,6 +102,12 @@ func (p *Plugin) CmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("invalid stdin args")
 	}
 
+	if conf.NotDefault {
+		if conf.NetCidr == "" {
+			return fmt.Errorf("netcidr needs to be specified in Network Attachment Definition for non-default network")
+		}
+	}
+
 	req := newCNIRequest(args)
 
 	body, err := p.doCNI("http://dummy/", req)

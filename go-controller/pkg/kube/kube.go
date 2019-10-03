@@ -20,7 +20,7 @@ import (
 type Interface interface {
 	SetAnnotationOnPod(pod *kapi.Pod, key, value string) error
 	SetAnnotationsOnPod(pod *kapi.Pod, annotations map[string]string) error
-	SetAnnotationOnNode(node *kapi.Node, key, value string) error
+	SetAnnotationOnNode(nodeName, key, value string) error
 	SetAnnotationsOnNode(node *kapi.Node, annotations map[string]string) error
 	UpdateNodeStatus(node *kapi.Node) error
 	GetAnnotationsOnPod(namespace, name string) (map[string]string, error)
@@ -84,12 +84,12 @@ func (k *Kube) SetAnnotationsOnPod(pod *kapi.Pod, annotations map[string]string)
 }
 
 // SetAnnotationOnNode takes the node object and key/value string pair to set it as an annotation
-func (k *Kube) SetAnnotationOnNode(node *kapi.Node, key, value string) error {
-	logrus.Infof("Setting annotations %s=%s on node %s", key, value, node.Name)
+func (k *Kube) SetAnnotationOnNode(nodeName, key, value string) error {
+	logrus.Infof("Setting annotations %s=%s on node %s", key, value, nodeName)
 	patchData := fmt.Sprintf(`{"metadata":{"annotations":{"%s":"%s"}}}`, key, value)
-	_, err := k.KClient.CoreV1().Nodes().Patch(node.Name, types.MergePatchType, []byte(patchData))
+	_, err := k.KClient.CoreV1().Nodes().Patch(nodeName, types.MergePatchType, []byte(patchData))
 	if err != nil {
-		logrus.Errorf("Error in setting annotation on node %s: %v", node.Name, err)
+		logrus.Errorf("Error in setting annotation on node %s: %v", nodeName, err)
 	}
 	return err
 }

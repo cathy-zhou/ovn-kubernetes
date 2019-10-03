@@ -60,16 +60,26 @@ func extractPodBandwidthResources(podAnnotations map[string]string) (int64, int6
 func (pr *PodRequest) cmdAdd() ([]byte, error) {
 	namespace := pr.PodNamespace
 	podName := pr.PodName
+	podDesc := namespace + "/" + podName
+	netName := ""
+	mtu := config.Default.MTU
+	if pr.CNIConf.NotDefault {
+		netName = pr.CNIConf.Name
+		if pr.CNIConf.MTU != 0 {
+			mtu = pr.CNIConf.MTU
+		}
+	}
 	if namespace == "" || podName == "" {
 		return nil, fmt.Errorf("required CNI variable missing (namespace: %q, name %q)", namespace, podName)
 	}
 
-	clientset, err := util.NewClientset(&config.Kubernetes)
+	clientset, _, err := util.NewClientset(&config.Kubernetes)
 	if err != nil {
 		return nil, fmt.Errorf("Could not create kubernetes clientset: %v", err)
 	}
 	kubecli := &kube.Kube{KClient: clientset}
 
+	logrus.Debugf("CATHY cmdAdd tries to get POD %s's annotation for network %s", podDesc, netName)
 	// Get the IP address and MAC address from the API server.
 	// Exponential back off ~32 seconds + 7* t(api call)
 	var annotationBackoff = wait.Backoff{Duration: 1 * time.Second, Steps: 7, Factor: 1.5, Jitter: 0.1}
@@ -83,28 +93,31 @@ func (pr *PodRequest) cmdAdd() ([]byte, error) {
 		}
 		if _, ok := annotations[util.OvnPodAnnotationName]; ok {
 			return true, nil
-		} else if _, ok := annotations[util.OvnPodAnnotationLegacyName]; ok {
-			return true, nil
+		} else if netName == "" {
+			if _, ok := annotations[util.OvnPodAnnotationLegacyName]; ok {
+				return true, nil
+			}
 		}
 		return false, nil
 	}); err != nil {
-		return nil, fmt.Errorf("failed to get pod annotation: %v", err)
+		return nil, fmt.Errorf("failed to get pod %s/%s's annotation: %v", podDesc, netName, err)
 	}
 
-	podInfo, err := util.UnmarshalPodAnnotation(annotations)
+	podInfo, err := util.UnmarshalPodAnnotation(annotations, netName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal ovn annotation: %v", err)
+		return nil, fmt.Errorf("failed to unmarshal Pod %s's annotation for network %s: %v", podDesc, netName, err)
 	}
 
 	ingress, egress, err := extractPodBandwidthResources(annotations)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse bandwidth request: %v", err)
+		return nil, fmt.Errorf("failed to parse bandwidth request for pod %s: %v", podDesc, err)
 	}
 	podInterfaceInfo := &PodInterfaceInfo{
 		PodAnnotation: *podInfo,
-		MTU:           config.Default.MTU,
+		MTU:           mtu,
 		Ingress:       ingress,
 		Egress:        egress,
+		NetworkName:   netName,
 	}
 	response := &Response{}
 	if !config.UnprivilegedMode {

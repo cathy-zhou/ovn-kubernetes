@@ -14,6 +14,8 @@ import (
 	"github.com/containernetworking/plugins/pkg/ip"
 	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/vishvananda/netlink"
+
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 )
 
 func renameLink(curName, newName string) error {
@@ -69,7 +71,7 @@ func setupNetwork(link netlink.Link, ifInfo *PodInterfaceInfo) error {
 		}
 	}
 
-	if !foundDefault {
+	if !foundDefault && ifInfo.NetworkName == "" {
 		// If the pod routes did not include a default route,
 		// add a "default" default route via the pod's gateway, if
 		// one exists
@@ -86,12 +88,14 @@ func setupNetwork(link netlink.Link, ifInfo *PodInterfaceInfo) error {
 func setupInterface(netns ns.NetNS, containerID, ifName string, ifInfo *PodInterfaceInfo) (*current.Interface, *current.Interface, error) {
 	hostIface := &current.Interface{}
 	contIface := &current.Interface{}
+	ifnameSuffix := ""
 
 	var oldHostVethName string
 	err := netns.Do(func(hostNS ns.NetNS) error {
 		// create the veth pair in the container and move host end into host netns
 		hostVeth, containerVeth, err := ip.SetupVeth(ifName, ifInfo.MTU, hostNS)
 		if err != nil {
+			logrus.Errorf("CATHY SetupVeth(%s, %d, %v) failed %v", err, ifName, ifInfo.MTU, hostNS)
 			return err
 		}
 		hostIface.Mac = hostVeth.HardwareAddr.String()
@@ -99,11 +103,13 @@ func setupInterface(netns ns.NetNS, containerID, ifName string, ifInfo *PodInter
 
 		link, err := netlink.LinkByName(contIface.Name)
 		if err != nil {
+			logrus.Errorf("CATHY failed to lookup %s: %v", contIface.Name, err)
 			return fmt.Errorf("failed to lookup %s: %v", contIface.Name, err)
 		}
 
 		err = setupNetwork(link, ifInfo)
 		if err != nil {
+			logrus.Errorf("CATHY failed to setupNetwork(%v, %v): %v", link, ifInfo, err)
 			return err
 		}
 		contIface.Mac = ifInfo.MAC.String()
@@ -111,14 +117,19 @@ func setupInterface(netns ns.NetNS, containerID, ifName string, ifInfo *PodInter
 
 		oldHostVethName = hostVeth.Name
 
+		// to generate the unique host interface name, postfix it with the podInterface index for non-default network
+		if ifInfo.NetworkName != "" {
+			ifnameSuffix = fmt.Sprintf("_%d", containerVeth.Index)
+		}
+
 		return nil
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// rename the host end of veth pair
-	hostIface.Name = containerID[:15]
+	hostIface.Name = containerID[:(15-len(ifnameSuffix))] + ifnameSuffix
+	logrus.Debugf("CATHY rename interface %s to %s", oldHostVethName, hostIface.Name)
 	if err := renameLink(oldHostVethName, hostIface.Name); err != nil {
 		return nil, nil, fmt.Errorf("failed to rename %s to %s: %v", oldHostVethName, hostIface.Name, err)
 	}
@@ -258,6 +269,7 @@ func (pr *PodRequest) ConfigureInterface(namespace string, podName string, ifInf
 	var hostIface, contIface *current.Interface
 
 	logrus.Debugf("CNI Conf %v", pr.CNIConf)
+	logrus.Debugf("CATHY COnfigureInterface for pod %s/%s podInfo %v", namespace, podName, ifInfo)
 	if pr.CNIConf.DeviceID != "" {
 		// SR-IOV Case
 		hostIface, contIface, err = setupSriovInterface(netns, pr.SandboxID, pr.IfName, ifInfo, pr.CNIConf.DeviceID)
@@ -267,10 +279,12 @@ func (pr *PodRequest) ConfigureInterface(namespace string, podName string, ifInf
 		hostIface, contIface, err = setupInterface(netns, pr.SandboxID, pr.IfName, ifInfo)
 	}
 	if err != nil {
+		logrus.Errorf("CATHY setupInterface failed %v", err)
 		return nil, err
 	}
 
-	ifaceID := fmt.Sprintf("%s_%s", namespace, podName)
+	netPrefix := util.GetNetworkPrefix(ifInfo.NetworkName)
+	ifaceID := fmt.Sprintf("%s%s_%s", netPrefix, namespace, podName)
 
 	// Find and remove any existing OVS port with this iface-id. Pods can
 	// have multiple sandboxes if some are waiting for garbage collection,
@@ -293,20 +307,24 @@ func (pr *PodRequest) ConfigureInterface(namespace string, podName string, ifInf
 	}
 
 	if out, err := ovsExec(ovsArgs...); err != nil {
+		logrus.Errorf("CATHY failure in plugging pod interface: %v %q", err, out)
 		return nil, fmt.Errorf("failure in plugging pod interface: %v\n  %q", err, out)
 	}
 
 	if err := clearPodBandwidth(pr.SandboxID); err != nil {
+		logrus.Errorf("CATHY failure in clearPodBandwidth: %v", err)
 		return nil, err
 	}
 
 	if ifInfo.Ingress > 0 || ifInfo.Egress > 0 {
 		l, err := netlink.LinkByName(hostIface.Name)
 		if err != nil {
+			logrus.Errorf("CATHY failed to find host veth interface %s: %v", hostIface.Name, err)
 			return nil, fmt.Errorf("failed to find host veth interface %s: %v", hostIface.Name, err)
 		}
 		err = netlink.LinkSetTxQLen(l, 1000)
 		if err != nil {
+			logrus.Errorf("CATHY failed to set host veth txqlen: %v", err)
 			return nil, fmt.Errorf("failed to set host veth txqlen: %v", err)
 		}
 
