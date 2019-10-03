@@ -19,9 +19,10 @@ const serverTCPAddress string = "127.0.0.1:3996"
 type PodInterfaceInfo struct {
 	util.PodAnnotation
 
-	MTU     int   `json:"mtu"`
-	Ingress int64 `json:"ingress"`
-	Egress  int64 `json:"egress"`
+	MTU         int    `json:"mtu"`
+	Ingress     int64  `json:"ingress"`
+	Egress      int64  `json:"egress"`
+	NetworkName string `json:"network"`
 }
 
 // Explicit type for CNI commands the server handles

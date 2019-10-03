@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
@@ -25,6 +26,23 @@ func GetK8sMgmtIntfName(nodeName string) string {
 		return "k8s-" + (nodeName[:11])
 	}
 	return "k8s-" + nodeName
+}
+
+func GetNetworkPrefix(netName string) string {
+	if netName == "" {
+		return ""
+	}
+	return netName + "_"
+}
+
+func GetDbValByKey(keyValString, key string) string {
+	keyVals := strings.Fields(keyValString)
+	for _, keyVal := range keyVals {
+		if strings.HasPrefix(keyVal, key+"=") {
+			return strings.TrimPrefix(keyVal, key+"=")
+		}
+	}
+	return ""
 }
 
 // GetNodeChassisID returns the machine's OVN chassis ID
