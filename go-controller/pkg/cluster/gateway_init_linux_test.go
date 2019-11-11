@@ -47,12 +47,10 @@ func addNodeportLBs(fexec *ovntest.FakeExec, nodeName, tcpLBUUID, udpLBUUID stri
 	})
 }
 
-func initLocalOnlyGatewayTest(fexec *ovntest.FakeExec, nodeName, clusterCIDR, clusterRouterUUID,
-	systemID, lrpMAC, lrpIP string) {
+func initLocalOnlyGatewayTest(fexec *ovntest.FakeExec, nodeName string) {
 	const (
 		brLocalnetMAC string = "11:22:33:44:55:66"
 	)
-	gwRouter := "GR_local_" + nodeName
 	fexec.AddFakeCmdsNoOutputNoError([]string{
 		"ovs-vsctl --timeout=15 --may-exist add-br br-local",
 		"ip link set br-local up",
@@ -75,57 +73,13 @@ func initLocalOnlyGatewayTest(fexec *ovntest.FakeExec, nodeName, clusterCIDR, cl
 	fexec.AddFakeCmdsNoOutputNoError([]string{
 		"ovs-vsctl --timeout=15 set Open_vSwitch . external_ids:ovn-bridge-mappings=" + util.PhysicalNetworkName + ":breth0" + "," + util.LocalNetworkName + ":br-local",
 	})
-
-	fexec.AddFakeCmd(&ovntest.ExpectedCmd{
-		Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=_uuid find logical_router external_ids:k8s-cluster-router=yes",
-		Output: clusterRouterUUID,
-	})
-	fexec.AddFakeCmd(&ovntest.ExpectedCmd{
-		Cmd:    "ovs-vsctl --timeout=15 --if-exists get Open_vSwitch . external_ids:system-id",
-		Output: systemID,
-	})
-	fexec.AddFakeCmdsNoOutputNoError([]string{
-		"ovn-nbctl --timeout=15 -- --may-exist lr-add " + gwRouter + " -- set logical_router " + gwRouter + " options:chassis=" + systemID + " external_ids:physical_ip=169.254.33.2",
-	})
-	fexec.AddFakeCmd(&ovntest.ExpectedCmd{
-		Cmd:    "ovn-nbctl --timeout=15 get logical_switch_port jtor-" + gwRouter + " dynamic_addresses",
-		Output: "",
-	})
-	fexec.AddFakeCmdsNoOutputNoError([]string{
-		"ovn-nbctl --timeout=15 --wait=sb --may-exist lsp-add join jtor-" + gwRouter + " -- --if-exists clear logical_switch_port jtor-" + gwRouter + " dynamic_addresses -- lsp-set-addresses jtor-" + gwRouter + " dynamic",
-	})
-	fexec.AddFakeCmd(&ovntest.ExpectedCmd{
-		Cmd:    "ovn-nbctl --timeout=15 get logical_switch_port jtor-" + gwRouter + " dynamic_addresses",
-		Output: lrpMAC + " " + lrpIP,
-	})
-	fexec.AddFakeCmd(&ovntest.ExpectedCmd{
-		Cmd:    "ovn-nbctl --timeout=15 --if-exists get logical_switch join other-config:subnet",
-		Output: "\"100.64.0.1/16\"",
-	})
-	fexec.AddFakeCmdsNoOutputNoError([]string{
-		"ovn-nbctl --timeout=15 -- --may-exist lrp-add " + gwRouter + " rtoj-" + gwRouter + " " + lrpMAC + " " + lrpIP + "/16" + " -- set logical_switch_port jtor-" + gwRouter + " type=router options:router-port=rtoj-" + gwRouter + " addresses=router",
-		"ovn-nbctl --timeout=15 --may-exist lr-route-add " + gwRouter + " " + clusterCIDR + " 100.64.0.1",
-	})
-	fexec.AddFakeCmdsNoOutputNoError([]string{
-		"ovn-nbctl --timeout=15 --may-exist lr-route-add " + clusterRouterUUID + " " + nodeName + "/32 " + lrpIP,
-	})
-	fexec.AddFakeCmdsNoOutputNoError([]string{
-		"ovn-nbctl --timeout=15 --may-exist ls-add ext_local_" + nodeName,
-	})
-	fexec.AddFakeCmdsNoOutputNoError([]string{
-		"ovn-nbctl --timeout=15 -- --may-exist lsp-add ext_local_" + nodeName + " br-local_" + nodeName + " -- lsp-set-addresses br-local_" + nodeName + " unknown -- lsp-set-type br-local_" + nodeName + " localnet -- lsp-set-options br-local_" + nodeName + " network_name=" + util.LocalNetworkName,
-		"ovn-nbctl --timeout=15 -- --if-exists lrp-del rtoe-" + gwRouter + " -- lrp-add " + gwRouter + " rtoe-" + gwRouter + " " + brLocalnetMAC + " 169.254.33.2/24 -- set logical_router_port rtoe-" + gwRouter + " external-ids:gateway-physical-ip=yes",
-		"ovn-nbctl --timeout=15 -- --may-exist lsp-add ext_local_" + nodeName + " etor-" + gwRouter + " -- set logical_switch_port etor-" + gwRouter + " type=router options:router-port=rtoe-" + gwRouter + " addresses=\"" + brLocalnetMAC + "\"",
-		"ovn-nbctl --timeout=15 --may-exist lr-route-add " + gwRouter + " 0.0.0.0/0 169.254.33.1 rtoe-" + gwRouter,
-		"ovn-nbctl --timeout=15 --may-exist lr-nat-add " + gwRouter + " snat 169.254.33.2 " + clusterCIDR,
-	})
 }
 
 func shareGatewayInterfaceTest(app *cli.App, testNS ns.NetNS,
 	eth0Name, eth0MAC, eth0IP, eth0GWIP, eth0CIDR string, gatewayVLANID uint) {
 	app.Action = func(ctx *cli.Context) error {
 		const (
-			nodeName          string = "10.1.1.15"
+			nodeName          string = "10.2.2.15"
 			lrpMAC            string = "00:00:00:05:46:c3"
 			lrpIP             string = "100.64.0.3"
 			lrpCIDR           string = lrpIP + "/16"
@@ -185,8 +139,11 @@ func shareGatewayInterfaceTest(app *cli.App, testNS ns.NetNS,
 		fexec.AddFakeCmdsNoOutputNoError([]string{
 			"ovs-vsctl --timeout=15 set Open_vSwitch . external_ids:ovn-bridge-mappings=" + util.PhysicalNetworkName + ":breth0",
 		})
+
+		initLocalOnlyGatewayTest(fexec, nodeName)
+
 		fexec.AddFakeCmd(&ovntest.ExpectedCmd{
-			Cmd:    "ovs-vsctl --timeout=15 wait-until Interface patch-breth0_node1-to-br-int ofport>0 -- get Interface patch-breth0_node1-to-br-int ofport",
+			Cmd:    "ovs-vsctl --timeout=15 wait-until Interface patch-breth0_" + nodeName + "-to-br-int ofport>0 -- get Interface patch-breth0_" + nodeName + "-to-br-int ofport",
 			Output: "5",
 		})
 		fexec.AddFakeCmd(&ovntest.ExpectedCmd{
@@ -202,7 +159,7 @@ func shareGatewayInterfaceTest(app *cli.App, testNS ns.NetNS,
 		})
 		// nodePortWatcher()
 		fexec.AddFakeCmd(&ovntest.ExpectedCmd{
-			Cmd:    "ovs-vsctl --timeout=15 --if-exists get interface patch-breth0_node1-to-br-int ofport",
+			Cmd:    "ovs-vsctl --timeout=15 --if-exists get interface patch-breth0_" + nodeName + "-to-br-int ofport",
 			Output: "5",
 		})
 		fexec.AddFakeCmd(&ovntest.ExpectedCmd{
@@ -243,6 +200,11 @@ cookie=0x0, duration=8366.597s, table=1, n_packets=10641, n_bytes=10370087, prio
 				ovn.OvnNodeGatewayMacAddress: lrpMAC,
 				ovn.OvnNodeGatewayIP:         lrpIP,
 				//ovn.OvnNodeGatewayNextHop:    localnetGatewayNextHop,
+				//ovn.OvnNodeGatewayIfaceID + ovn.OvnAnnotationLocalSuffix:    "br-local_" + nodeName,
+				//ovn.OvnNodeGatewayMacAddress + ovn.OvnAnnotationLocalSuffix: macAddress,
+				//ovn.OvnNodeGatewayIP + ovn.OvnAnnotationLocalSuffix:         localnetGatewayIP,
+				//ovn.OvnNodeGatewayNextHop + ovn.OvnAnnotationLocalSuffix:    localnetGatewayNextHop,
+				//ovn.OvnNodeGatewayNodeIP:                                    nodeIP,
 			},
 		}}
 		fakeClient := fake.NewSimpleClientset(&v1.NodeList{
@@ -337,7 +299,7 @@ var _ = Describe("Gateway Init Operations", func() {
 	It("sets up a localnet gateway", func() {
 		app.Action = func(ctx *cli.Context) error {
 			const (
-				nodeName      string = "node1"
+				nodeName      string = "10.1.1.5"
 				lrpMAC        string = "00:00:00:05:46:c3"
 				brLocalnetMAC string = "11:22:33:44:55:66"
 				lrpIP         string = "100.64.0.3"

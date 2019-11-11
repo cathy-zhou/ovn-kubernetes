@@ -303,6 +303,11 @@ func initSharedGateway(
 		return nil, nil, fmt.Errorf("failed to set up shared interface gateway: %v", err)
 	}
 
+	localOnlyAnnotations, err := initLocalOnlyGateway(nodeName)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	annotations := map[string]string{
 		ovn.OvnNodeGatewayMode:       string(config.Gateway.Mode),
 		ovn.OvnNodeGatewayVlanID:     fmt.Sprintf("%d", config.Gateway.VLANID),
@@ -310,6 +315,10 @@ func initSharedGateway(
 		ovn.OvnNodeGatewayMacAddress: macAddress,
 		ovn.OvnNodeGatewayIP:         ipAddress,
 		ovn.OvnNodeGatewayNextHop:    gwNextHop,
+	}
+
+	for k, v := range localOnlyAnnotations {
+		annotations[k] = v
 	}
 
 	return annotations, func() error {
@@ -346,19 +355,19 @@ func cleanupSharedGateway() error {
 	return nil
 }
 
-func initLocalOnlyGateway(nodeName string, clusterIPSubnet []string) error {
+func initLocalOnlyGateway(nodeName string) (map[string]string, error) {
 	// Create a localnet OVS bridge.
 	localnetBridgeName := "br-local"
 	_, stderr, err := util.RunOVSVsctl("--may-exist", "add-br",
 		localnetBridgeName)
 	if err != nil {
-		return fmt.Errorf("Failed to create localnet bridge %s"+
+		return nil, fmt.Errorf("Failed to create localnet bridge %s"+
 			", stderr:%s (%v)", localnetBridgeName, stderr, err)
 	}
 
 	_, _, err = util.RunIP("link", "set", localnetBridgeName, "up")
 	if err != nil {
-		return fmt.Errorf("failed to up %s (%v)", localnetBridgeName, err)
+		return nil, fmt.Errorf("failed to up %s (%v)", localnetBridgeName, err)
 	}
 
 	// Create a localnet bridge nexthop
@@ -367,18 +376,18 @@ func initLocalOnlyGateway(nodeName string, clusterIPSubnet []string) error {
 		localnetBridgeName, localnetBridgeNextHop, "--", "set",
 		"interface", localnetBridgeNextHop, "type=internal")
 	if err != nil {
-		return fmt.Errorf("Failed to create localnet bridge next hop %s"+
+		return nil, fmt.Errorf("Failed to create localnet bridge next hop %s"+
 			", stderr:%s (%v)", localnetBridgeNextHop, stderr, err)
 	}
 	_, _, err = util.RunIP("link", "set", localnetBridgeNextHop, "up")
 	if err != nil {
-		return fmt.Errorf("failed to up %s (%v)", localnetBridgeNextHop, err)
+		return nil, fmt.Errorf("failed to up %s (%v)", localnetBridgeNextHop, err)
 	}
 
 	// Flush IPv4 address of localnetBridgeNextHop.
 	_, _, err = util.RunIP("addr", "flush", "dev", localnetBridgeNextHop)
 	if err != nil {
-		return fmt.Errorf("failed to flush ip address of %s (%v)",
+		return nil, fmt.Errorf("failed to flush ip address of %s (%v)",
 			localnetBridgeNextHop, err)
 	}
 
@@ -387,20 +396,26 @@ func initLocalOnlyGateway(nodeName string, clusterIPSubnet []string) error {
 		localnetGatewayNextHopSubnet,
 		"dev", localnetBridgeNextHop)
 	if err != nil {
-		return fmt.Errorf("failed to assign ip address to %s (%v)",
+		return nil, fmt.Errorf("failed to assign ip address to %s (%v)",
 			localnetBridgeNextHop, err)
 	}
 
 	ifaceID, macAddress, err := bridgedGatewayNodeSetup(nodeName, localnetBridgeName, localnetBridgeName, util.LocalNetworkName, true)
 	if err != nil {
-		return fmt.Errorf("failed to set up shared interface gateway: %v", err)
+		return nil, fmt.Errorf("failed to set up shared interface gateway: %v", err)
 	}
 
-	err = util.LocalGatewayInit(clusterIPSubnet, nodeName, ifaceID, localnetGatewayIP,
-		macAddress, localnetGatewayNextHop, util.LocalNetworkName)
+	// Add a route in distributed router to nodeIP.
+	nodeIP, err := util.GetNodeIP(nodeName)
 	if err != nil {
-		return fmt.Errorf("failed to localnet gateway: %v", err)
+		return nil, fmt.Errorf("failed to obtain local IP from hostname %q: %v", nodeName, err)
 	}
 
-	return nil
+	return map[string]string{
+		ovn.OvnNodeGatewayIfaceID + ovn.OvnAnnotationLocalSuffix:    ifaceID,
+		ovn.OvnNodeGatewayMacAddress + ovn.OvnAnnotationLocalSuffix: macAddress,
+		ovn.OvnNodeGatewayIP + ovn.OvnAnnotationLocalSuffix:         localnetGatewayIP,
+		ovn.OvnNodeGatewayNextHop + ovn.OvnAnnotationLocalSuffix:    localnetGatewayNextHop,
+		ovn.OvnNodeGatewayNodeIP:                                    nodeIP,
+	}, nil
 }

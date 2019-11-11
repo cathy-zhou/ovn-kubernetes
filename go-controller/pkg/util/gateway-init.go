@@ -8,8 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/openshift/origin/pkg/util/netutils"
-
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 )
 
@@ -417,7 +415,7 @@ func getNodeChassisIDFromSB(nodeName string) (string, error) {
 }
 
 // LocalGatewayInit creates a gateway router to access local service.
-func LocalGatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddress,
+func LocalGatewayInit(clusterIPSubnet []string, nodeName, nodeIP, ifaceID, nicIP, nicMacAddress,
 	defaultGW string, physnetName string) error {
 
 	ip, physicalIPNet, err := net.ParseCIDR(nicIP)
@@ -438,7 +436,7 @@ func LocalGatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMac
 		return err
 	}
 
-	systemID, err := GetNodeChassisID()
+	systemID, err := getNodeChassisIDFromSB(nodeName)
 	if err != nil {
 		return err
 	}
@@ -483,11 +481,6 @@ func LocalGatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMac
 		}
 	}
 
-	// Add a route in distributed router to nodeIP.
-	nodeIP, err := netutils.GetNodeIP(nodeName)
-	if err != nil {
-		return fmt.Errorf("failed to obtain local IP from hostname %q: %v", nodeName, err)
-	}
 	stdout, stderr, err = RunOVNNbctl("--may-exist", "lr-route-add",
 		k8sClusterRouter, nodeIP+"/32", routerCIDR.IP.String())
 	if err != nil {
