@@ -40,9 +40,9 @@ type ServiceVIPKey struct {
 type networkAttachmentDefinitionConfig struct {
 	isDefault                 bool
 	masterSubnetAllocatorList []*netutils.SubnetAllocator
+	cidr                      string
 	mtu                       int
 	enableGateway             bool
-	allocatedNodeSubnets      map[string]string // key is nodeName
 	pods                      map[string]bool
 }
 
@@ -56,7 +56,8 @@ type Controller struct {
 	// A mutex for netAttchmtDefs
 	netMutex *sync.Mutex
 
-	nodeCache map[string]bool
+	// key is node name, value is map of subnet whose key is network name
+	nodeCache map[string]map[string]string
 	// A mutex for nodeCache, held before netMutex
 	nodeMutex *sync.Mutex
 
@@ -171,7 +172,6 @@ func NewOvnController(kubeClient kubernetes.Interface, wf *factory.WatchFactory)
 		multicastEnabled:         make(map[string]bool),
 		serviceVIPToName:         make(map[ServiceVIPKey]types.NamespacedName),
 		serviceVIPToNameLock:     sync.Mutex{},
-		nodeCache:                make(map[string]bool),
 		nodeMutex:                &sync.Mutex{},
 	}
 }
@@ -504,9 +504,15 @@ func (oc *Controller) WatchNodes() error {
 		AddFunc: func(obj interface{}) {
 			node := obj.(*kapi.Node)
 			logrus.Debugf("Added event for Node %q", node.Name)
-			err := oc.updateNode(nil, node)
+			subnets, err := oc.addNode(node)
 			if err != nil {
 				logrus.Errorf("error creating subnet for node %s: %v", node.Name, err)
+			}
+			for netName, subnet := range subnets {
+				err = oc.syncNodeManagementPort(node, subnet, netName)
+				if err != nil {
+					logrus.Errorf("error creating Node Management Port for node %s: %v", node.Name, err)
+				}
 			}
 			if !config.Gateway.NodeportEnable {
 				return
@@ -516,10 +522,38 @@ func (oc *Controller) WatchNodes() error {
 		UpdateFunc: func(old, new interface{}) {
 			oldNode := old.(*kapi.Node)
 			node := new.(*kapi.Node)
-			err := oc.updateNode(oldNode, node)
-			if err != nil {
-				logrus.Errorf("error update Node Management Port for node %s: %v", node.Name, err)
+			oc.nodeMutex.Lock()
+			oc.netMutex.Lock()
+			subnets := make(map[string]*net.IPNet)
+			for netName := range oc.netAttchmtDefs {
+				subnet, err := oc.getHostSubnet(node.Name, netName, false)
+				if err != nil {
+					logrus.Errorf("failed to get subnet for node %s netName %s: %v", node.Name, netName, err)
+					continue
+				}
+				subnets[netName] = subnet
 			}
+			oc.netMutex.Unlock()
+			oc.nodeMutex.Unlock()
+
+			for netName, subnet := range networks {
+				netPrefix := util.GetNetworkPrefix(netName)
+				oldMacAddress, _ := oldNode.Annotations[netPrefix+OvnNodeManagementPortMacAddress]
+				macAddress, _ := node.Annotations[netPrefix+OvnNodeManagementPortMacAddress]
+				if oldMacAddress != macAddress {
+					logrus.Debugf("Updated event for Node %q of network %s, old mac %v, new mac %v",
+						node.Name, netName, oldMacAddress, macAddress)
+					err = oc.syncNodeManagementPort(node, subnet, netName)
+					if err != nil {
+						logrus.Errorf("error update Node Management Port for node %s: %v", node.Name, err)
+					}
+				}
+			}
+
+			if !reflect.DeepEqual(oldNode.Status.Conditions, node.Status.Conditions) {
+				oc.clearInitialNodeNetworkUnavailableCondition(node)
+			}
+
 			if !config.Gateway.NodeportEnable {
 				return
 			}
@@ -583,16 +617,17 @@ func (oc *Controller) addNetworkAttachDefinition(netattachdef *knetattachment.Ne
 		oc.netMutex.Lock()
 		oc.netAttchmtDefs[netattachdef.Name] = &networkAttachmentDefinitionConfig{
 			isDefault:                 true,
+			cidr:                      null,
 			masterSubnetAllocatorList: nil,
 			mtu:                       0,
 			enableGateway:             false,
-			allocatedNodeSubnets:      nil,
 			pods:                      nil,
 		}
 		oc.netMutex.Unlock()
 		oc.nodeMutex.Unlock()
 		return nil
 	}
+
 	// In case name in the json defintion is different from the resource name
 	netConf.Name = netattachdef.Name
 	networkAttDef, err = oc.SetupMaster(netConf)
@@ -605,6 +640,7 @@ func (oc *Controller) addNetworkAttachDefinition(netattachdef *knetattachment.Ne
 	oc.nodeMutex.Lock()
 	oc.netMutex.Lock()
 	oc.netAttchmtDefs[netattachdef.Name] = networkAttDef
+	oc.initSubnetAllocator(netattachdef.Name)
 	for nodeName := range oc.nodeCache {
 		subnet, err := oc.getHostSubnet(nodeName, netattachdef.Name, true)
 		if err != nil {

@@ -29,6 +29,48 @@ const (
 	OvnJoinSwitch = "join"
 )
 
+// protected by both netMutex and nodeMutex
+func (oc *Controller) initSubnetAllocator(netName string) error {
+
+	alreadyAllocated := make([]string)
+	for _, subnetMap := range oc.nodeCache {
+		for name, hostsubnet := range subnetMap {
+			if netName == name {
+				alreadyAllocated = append(alreadyAllocated, hostsubnet)
+			}
+		}
+	}
+	clusterIPNet, err := config.ParseClusterSubnetEntries(oc.netAttchmtDefs[netName].cidr)
+	if err != nil {
+		logrus.Errorf("cluster subnet %s for netName %s is invalid: %v", oc.netAttchmtDefs[netName].cidr, netName, err)
+		return fmt.Errorf("cluster subnet for netName %s is invalid: %v", oc.netAttchmtDefs[netName].cidr, netName, err)
+	}
+
+	masterSubnetAllocatorList := make([]*allocator.SubnetAllocator, 0)
+	// NewSubnetAllocator is a subnet IPAM, which takes a CIDR (first argument)
+	// and gives out subnets of length 'hostSubnetLength' (second argument)
+	// but omitting any that exist in 'subrange' (third argument)
+	for _, clusterEntry := range clusterIPNet {
+		subrange := make([]string, 0)
+		for _, allocatedRange := range alreadyAllocated {
+			firstAddress, _, err := net.ParseCIDR(allocatedRange)
+			if err != nil {
+				return err
+			}
+			if clusterEntry.CIDR.Contains(firstAddress) {
+				subrange = append(subrange, allocatedRange)
+			}
+		}
+		subnetAllocator, err := allocator.NewSubnetAllocator(clusterEntry.CIDR.String(), 32-clusterEntry.HostSubnetLength, subrange)
+		if err != nil {
+			logrus.Errorf("Create cluster subnet %s for netName %s failed: %v", netName, err)
+			return err
+		}
+		masterSubnetAllocatorList = append(masterSubnetAllocatorList, subnetAllocator)
+	}
+	oc.netAttchmtDefs[netName].masterSubnetAllocatorList = masterSubnetAllocatorList
+}
+
 // StartClusterMaster runs a subnet IPAM and a controller that watches arrival/departure
 // of nodes in the cluster
 // On an addition to the cluster (node create), a new subnet is created for it that will translate
@@ -90,47 +132,6 @@ func (oc *Controller) SetupMaster(netConf *ovntypes.NetConf) (*networkAttachment
 	// oc.netAttchmtDefs entries are updated in NetworkAttachmentDefinition events, no need to hold any lock here
 	if _, ok := oc.netAttchmtDefs[netName]; ok {
 		return nil, fmt.Errorf("Duplicate Network Attachment Defintion %s", netName)
-	}
-
-	clusterIPNet, err := config.ParseClusterSubnetEntries(netConf.NetCidr)
-	if err != nil {
-		logrus.Errorf("cluster subnet of of network %s is invalid: %v", netName, err)
-		return nil, fmt.Errorf("cluster subnet of network %s is invalid: %v", netName, err)
-	}
-
-	alreadyAllocated := make(map[string]string)
-	existingNodes, err := oc.kube.GetNodes()
-	if err != nil {
-		logrus.Errorf("Error in initializing/fetching subnets: %v", err)
-		return nil, err
-	}
-	for _, node := range existingNodes.Items {
-		hostsubnet, ok := node.Annotations[netPrefix+OvnHostSubnet]
-		if ok {
-			alreadyAllocated[node.Name] = hostsubnet
-		}
-	}
-	masterSubnetAllocatorList := make([]*netutils.SubnetAllocator, 0)
-	// NewSubnetAllocator is a subnet IPAM, which takes a CIDR (first argument)
-	// and gives out subnets of length 'hostSubnetLength' (second argument)
-	// but omitting any that exist in 'subrange' (third argument)
-	for _, clusterEntry := range clusterIPNet {
-		subrange := make([]string, 0)
-		for _, allocatedRange := range alreadyAllocated {
-			var firstAddress net.IP
-			firstAddress, _, err = net.ParseCIDR(allocatedRange)
-			if err != nil {
-				return nil, err
-			}
-			if clusterEntry.CIDR.Contains(firstAddress) {
-				subrange = append(subrange, allocatedRange)
-			}
-		}
-		subnetAllocator, err := netutils.NewSubnetAllocator(clusterEntry.CIDR.String(), 32-clusterEntry.HostSubnetLength, subrange)
-		if err != nil {
-			return nil, err
-		}
-		masterSubnetAllocatorList = append(masterSubnetAllocatorList, subnetAllocator)
 	}
 
 	// Create a single common distributed router for the cluster.
@@ -244,10 +245,9 @@ func (oc *Controller) SetupMaster(netConf *ovntypes.NetConf) (*networkAttachment
 
 	return &networkAttachmentDefinitionConfig{
 		isDefault:                 false,
-		masterSubnetAllocatorList: masterSubnetAllocatorList,
 		mtu:                       netConf.MTU,
+		cidr:                      netConf.NetCidr,
 		enableGateway:             !netConf.NoGateway,
-		allocatedNodeSubnets:      alreadyAllocated,
 		pods:                      make(map[string]bool),
 	}, nil
 }
@@ -408,17 +408,13 @@ func (oc *Controller) ensureNodeLogicalNetwork(nodeName string, hostsubnet *net.
 	return nil
 }
 
-func (oc *Controller) updateNode(oldNode, node *kapi.Node) (err error) {
-	var oldMacAddress, macAddress string
-	// initial add only
-	if oldNode == nil {
-		oc.clearInitialNodeNetworkUnavailableCondition(node)
-	}
+func (oc *Controller) addNode(node *kapi.Node) (map[string]*net.IPNet, error) {
+	oc.clearInitialNodeNetworkUnavailableCondition(node)
 
 	logrus.Debug("add Node %s event", node.Name)
 	oc.nodeMutex.Lock()
 	oc.netMutex.Lock()
-	oc.nodeCache[node.Name] = true
+	oc.nodeCache[node.Name] = make(map[string]string)
 	subnets := make(map[string]*net.IPNet)
 	for netName := range oc.netAttchmtDefs {
 		logrus.Debugf("CATHY node add event for node %s network %s", node.Name, netName)
@@ -431,28 +427,18 @@ func (oc *Controller) updateNode(oldNode, node *kapi.Node) (err error) {
 	}
 	oc.netMutex.Unlock()
 	oc.nodeMutex.Unlock()
-	for netName, subnet := range subnets {
-		netPrefix := util.GetNetworkPrefix(netName)
 
-		if oldNode == nil {
-			_ = oc.ensureNodeLogicalNetwork(node.Name, subnet, netName)
-		}
-		oldMacAddress, _ = oldNode.Annotations[netPrefix+OvnNodeManagementPortMacAddress]
-		macAddress, _ = node.Annotations[netPrefix+OvnNodeManagementPortMacAddress]
-		if oldMacAddress != macAddress {
-			logrus.Debugf("Updated event for Node %q of network %s, old mac %v, new mac %v",
-				node.Name, netName, oldMacAddress, macAddress)
-			_ = oc.syncNodeManagementPort(node, subnet, netName)
-		}
+	for netName, subnet := range subnets {
+		_ = oc.ensureNodeLogicalNetwork(node.Name, subnet, netName)
 	}
-	return nil
+
+	return subnets, nil
 }
 
 // oc.netMutex is already held
 func (oc *Controller) getHostSubnet(nodeName, netName string, create bool) (hostsubnet *net.IPNet, err error) {
 	logrus.Debugf("getHostSubnet node %s NetName %s", nodeName, netName)
-	netattchtDefiniton := oc.netAttchmtDefs[netName]
-	if sub, ok := netattchtDefiniton.allocatedNodeSubnets[nodeName]; ok {
+	if sub, ok := oc.nodeCache[nodeName][netName]; ok {
 		_, hostsubnet, err = net.ParseCIDR(sub)
 		if err == nil {
 			logrus.Debugf("getHostSubnet node %s NetName %s subnet %s", nodeName, netName, hostsubnet.String())
@@ -468,6 +454,7 @@ func (oc *Controller) getHostSubnet(nodeName, netName string, create bool) (host
 	// Node doesn't have a subnet assigned; reserve a new one for it
 	var subnetAllocator *netutils.SubnetAllocator
 	err = netutils.ErrSubnetAllocatorFull
+	netattchtDefiniton := oc.netAttchmtDefs[netName]
 	for _, subnetAllocator = range netattchtDefiniton.masterSubnetAllocatorList {
 		hostsubnet, err = subnetAllocator.GetNetwork()
 		if err == netutils.ErrSubnetAllocatorFull {
@@ -502,14 +489,13 @@ func (oc *Controller) getHostSubnet(nodeName, netName string, create bool) (host
 	}
 
 	logrus.Debugf("getHostSubnet successfully allocated subnet %s for node %s NetName %s", hostsubnet.String(), nodeName, netName)
-	netattchtDefiniton.allocatedNodeSubnets[nodeName] = hostsubnet.String()
+	oc.nodeCache[nodeName][netName] = hostsubnet.String()
 	return hostsubnet, nil
 }
 
 // oc.netMutex is already held
 func (oc *Controller) deleteNodeHostSubnet(nodeName string, subnet *net.IPNet, netName string) error {
 	logrus.Debugf("CATHY deleteNodeHostSubnet node %s network: %s", nodeName, netName)
-	delete(oc.netAttchmtDefs[netName].allocatedNodeSubnets, nodeName)
 	for _, possibleSubnet := range oc.netAttchmtDefs[netName].masterSubnetAllocatorList {
 		if err := possibleSubnet.ReleaseNetwork(subnet); err == nil {
 			logrus.Infof("Deleted HostSubnet %v for node %s", subnet, nodeName)
@@ -544,7 +530,6 @@ func (oc *Controller) deleteNode(nodeName string) error {
 	deleteNetworks := make(map[string]bool)
 	oc.nodeMutex.Lock()
 	oc.netMutex.Lock()
-	delete(oc.nodeCache, nodeName)
 	for netName := range oc.netAttchmtDefs {
 		logrus.Debugf("CATHY node delete event for node %s network %s", nodeName, netName)
 		subnet, err := oc.getHostSubnet(nodeName, netName, false)
@@ -560,6 +545,7 @@ func (oc *Controller) deleteNode(nodeName string) error {
 		oc.lsMutex.Unlock()
 		deleteNetworks[netName] = true
 	}
+	delete(oc.nodeCache, nodeName)
 	oc.netMutex.Unlock()
 	oc.nodeMutex.Unlock()
 	for netName := range deleteNetworks {
@@ -629,6 +615,33 @@ func (oc *Controller) syncNodes(nodes []interface{}) {
 		}
 		foundNodes[node.Name] = node
 	}
+	oc.nodeMutex.Lock()
+	oc.netMutex.Lock()
+	// collect all host subnet annotations for different networks, even the network does not exist yet
+	for _, node := range foundNodes {
+		var netName string
+		for key, annotation := range node.Annotations {
+			if key == OvnHostSubnet {
+				netName = ""
+			} else if strings.HasSuffix(key, "_"+OvnHostSubnet) {
+				netName = strings.TripSuffix(key, "_"+OvnHostSubnet)
+				if netName == "" {
+					// unexpected annotation
+					continue
+				}
+			} else {
+				continue
+			}
+			oc.nodeCache[node.Name][netName] = annotation
+		}
+	}
+
+	logrus.Debugf("Initialize subnet allocator for network %s", netName)
+	for netName, _ := range oc.netAttchmtDefs {
+		oc.initSubnetAllocator(netName)
+	}
+	oc.netMutex.Unlock()
+	oc.nodeMutex.Unlock()
 
 	// We only deal with cleaning up nodes that shouldn't exist here, since
 	// watchNodes() will be called for all existing nodes at startup anyway.
