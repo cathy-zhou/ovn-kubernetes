@@ -11,7 +11,6 @@ import (
 	"time"
 
 	knetattachment "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
-	"github.com/openshift/origin/pkg/util/netutils"
 	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
@@ -41,7 +40,7 @@ type ServiceVIPKey struct {
 
 type networkAttachmentDefinitionConfig struct {
 	isDefault                 bool
-	masterSubnetAllocatorList []*netutils.SubnetAllocator
+	masterSubnetAllocatorList []*allocator.SubnetAllocator
 	cidr                      string
 	mtu                       int
 	enableGateway             bool
@@ -510,13 +509,10 @@ func (oc *Controller) WatchNamespaces() error {
 	return err
 }
 
-func (oc *Controller) syncNodeGateway(node *kapi.Node, subnet *net.IPNet) error {
-	if subnet == nil {
-		subnet, _ = parseNodeHostSubnet(node)
-	}
+func (oc *Controller) syncNodeGateway(node *kapi.Node, subnet *net.IPNet, netName string) error {
 	mode := node.Annotations[OvnNodeGatewayMode]
 	if mode == string(config.GatewayModeDisabled) {
-		if err := util.GatewayCleanup(node.Name, subnet); err != nil {
+		if err := util.GatewayCleanup(node.Name, netName); err != nil {
 			return fmt.Errorf("error cleaning up gateway for node %s: %v", node.Name, err)
 		}
 	} else if subnet != nil {
@@ -545,7 +541,7 @@ func (oc *Controller) WatchNodes() error {
 				if err != nil {
 					logrus.Errorf("error creating Node Management Port for node %s: %v", node.Name, err)
 				}
-				if err := oc.syncNodeGateway(node, hostSubnet, netName); err != nil {
+				if err := oc.syncNodeGateway(node, subnet, netName); err != nil {
 					gatewaysFailed[node.Name] = true
 					logrus.Errorf(err.Error())
 				}
@@ -569,16 +565,29 @@ func (oc *Controller) WatchNodes() error {
 			oc.netMutex.Unlock()
 			oc.nodeMutex.Unlock()
 
-			for netName, subnet := range networks {
+			for netName, subnet := range subnets {
 				netPrefix := util.GetNetworkPrefix(netName)
 				oldMacAddress, _ := oldNode.Annotations[netPrefix+OvnNodeManagementPortMacAddress]
 				macAddress, _ := node.Annotations[netPrefix+OvnNodeManagementPortMacAddress]
 				if oldMacAddress != macAddress {
 					logrus.Debugf("Updated event for Node %q of network %s, old mac %v, new mac %v",
 						node.Name, netName, oldMacAddress, macAddress)
-					err = oc.syncNodeManagementPort(node, subnet, netName)
+					err := oc.syncNodeManagementPort(node, subnet, netName)
 					if err != nil {
 						logrus.Errorf("error update Node Management Port for node %s: %v", node.Name, err)
+					}
+				}
+				if !config.Gateway.NodeportEnable {
+					return
+				}
+
+				if gatewaysFailed[node.Name] || gatewayChanged(oldNode, node) {
+					if err := oc.syncNodeGateway(node, subnet, netName); err != nil {
+						gatewaysFailed[node.Name] = true
+						logrus.Errorf(err.Error())
+					} else {
+						// TBD
+						delete(gatewaysFailed, node.Name)
 					}
 				}
 			}
@@ -587,18 +596,6 @@ func (oc *Controller) WatchNodes() error {
 				oc.clearInitialNodeNetworkUnavailableCondition(node)
 			}
 
-			if !config.Gateway.NodeportEnable {
-				return
-			}
-
-			if gatewaysFailed[node.Name] || gatewayChanged(oldNode, node) {
-				if err := oc.syncNodeGateway(node, nil); err != nil {
-					gatewaysFailed[node.Name] = true
-					logrus.Errorf(err.Error())
-				} else {
-					delete(gatewaysFailed, node.Name)
-				}
-			}
 		},
 		DeleteFunc: func(obj interface{}) {
 			node := obj.(*kapi.Node)
@@ -610,8 +607,9 @@ func (oc *Controller) WatchNodes() error {
 			if err != nil {
 				logrus.Error(err)
 			}
-			delete(gatewaysHandled, node.Name)
+			delete(gatewaysFailed, node.Name)
 			oc.lsMutex.Lock()
+			// TBD
 			if oc.defGatewayRouter == "GR_"+node.Name {
 				delete(oc.loadbalancerGWCache, TCP)
 				delete(oc.loadbalancerGWCache, UDP)
@@ -686,7 +684,7 @@ func (oc *Controller) addNetworkAttachDefinition(netattachdef *knetattachment.Ne
 		oc.netMutex.Lock()
 		oc.netAttchmtDefs[netattachdef.Name] = &networkAttachmentDefinitionConfig{
 			isDefault:                 true,
-			cidr:                      null,
+			cidr:                      "",
 			masterSubnetAllocatorList: nil,
 			mtu:                       0,
 			enableGateway:             false,

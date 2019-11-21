@@ -2,7 +2,6 @@ package util
 
 import (
 	"fmt"
-	"net"
 	"strings"
 
 	"github.com/sirupsen/logrus"
@@ -11,7 +10,7 @@ import (
 )
 
 // GatewayCleanup removes all the NB DB objects created for a node's gateway
-func GatewayCleanup(nodeName string, nodeSubnet *net.IPNet, netName string) error {
+func GatewayCleanup(nodeName string, netName string) error {
 	// TBD
 	if netName != "" {
 		return nil
@@ -47,12 +46,6 @@ func GatewayCleanup(nodeName string, nodeSubnet *net.IPNet, netName string) erro
 			"ip_prefix=0.0.0.0/0", "nexthop="+routerIP)
 	}
 
-	if nodeSubnet != nil {
-		_, mgtPortIP := GetNodeWellKnownAddresses(nodeSubnet)
-		if mgtPortIP.IP.String() != "" {
-			nextHops = append(nextHops, mgtPortIP.IP.String())
-		}
-	}
 	staticRouteCleanup(clusterRouter, nextHops)
 
 	// Remove the patch port that connects join switch to gateway router

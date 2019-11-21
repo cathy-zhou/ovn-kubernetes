@@ -48,7 +48,7 @@ const (
 // protected by both netMutex and nodeMutex
 func (oc *Controller) initSubnetAllocator(netName string) error {
 
-	alreadyAllocated := make([]string)
+	alreadyAllocated := make([]string, 0)
 	for _, subnetMap := range oc.nodeCache {
 		for name, hostsubnet := range subnetMap {
 			if netName == name {
@@ -85,6 +85,7 @@ func (oc *Controller) initSubnetAllocator(netName string) error {
 		masterSubnetAllocatorList = append(masterSubnetAllocatorList, subnetAllocator)
 	}
 	oc.netAttchmtDefs[netName].masterSubnetAllocatorList = masterSubnetAllocatorList
+	return nil
 }
 
 // StartClusterMaster runs a subnet IPAM and a controller that watches arrival/departure
@@ -410,50 +411,11 @@ func (oc *Controller) syncGatewayLogicalNetwork(node *kapi.Node, mode string, su
 		return fmt.Errorf("failed to init shared interface gateway: %v", err)
 	}
 
-	if mode == string(config.GatewayModeShared) {
-		// Add static routes to OVN Cluster Router to enable pods on this Node to
-		// reach the host IP
-		err = addStaticRouteToHost(node, ipAddress)
-		if err != nil {
-			return err
-		}
-	}
-
 	if config.Gateway.NodeportEnable {
 		err = oc.handleNodePortLB(node)
 	}
 
 	return err
-}
-
-func addStaticRouteToHost(node *kapi.Node, nicIP string) error {
-	k8sClusterRouter, err := util.GetK8sClusterRouter()
-	if err != nil {
-		return err
-	}
-
-	subnet, err := parseNodeHostSubnet(node)
-	if err != nil {
-		return fmt.Errorf("failed to get interface IP address for %s (%v)",
-			util.GetK8sMgmtIntfName(node.Name), err)
-	}
-	_, secondIP := util.GetNodeWellKnownAddresses(subnet)
-	prefix := strings.Split(nicIP, "/")[0] + "/32"
-	nexthop := strings.Split(secondIP.String(), "/")[0]
-	_, stderr, err := util.RunOVNNbctl("--may-exist", "lr-route-add", k8sClusterRouter, prefix, nexthop)
-	if err != nil {
-		return fmt.Errorf("failed to add static route '%s via %s' for host %q on %s "+
-			"stderr: %q, error: %v", nicIP, secondIP, node.Name, k8sClusterRouter, stderr, err)
-	}
-
-	return nil
-}
-
-func parseNodeHostSubnet(node *kapi.Node) (*net.IPNet, error) {
-	sub, ok := node.Annotations[OvnHostSubnet]
-	if !ok {
-		return nil, fmt.Errorf("Error in obtaining host subnet for node %q for deletion", node.Name)
-	}
 }
 
 // deleteMaster delete the central router and switch for the network
@@ -608,8 +570,8 @@ func (oc *Controller) getHostSubnet(nodeName, netName string, create bool) (host
 
 	logrus.Debugf("allocate subnet for node %s NetName %s", nodeName, netName)
 	// Node doesn't have a subnet assigned; reserve a new one for it
-	var subnetAllocator *netutils.SubnetAllocator
-	err = netutils.ErrSubnetAllocatorFull
+	var subnetAllocator *allocator.SubnetAllocator
+	err = allocator.ErrSubnetAllocatorFull
 	netattchtDefiniton := oc.netAttchmtDefs[netName]
 	for _, subnetAllocator = range netattchtDefiniton.masterSubnetAllocatorList {
 		hostsubnet, err = subnetAllocator.GetNetwork()
@@ -622,7 +584,7 @@ func (oc *Controller) getHostSubnet(nodeName, netName string, create bool) (host
 		logrus.Infof("Allocated node %s HostSubnet %s", nodeName, hostsubnet.String())
 		break
 	}
-	if err == netutils.ErrSubnetAllocatorFull {
+	if err == allocator.ErrSubnetAllocatorFull {
 		return nil, fmt.Errorf("Error allocating network for node %s: %v", nodeName, err)
 	}
 
@@ -709,8 +671,7 @@ func (oc *Controller) deleteNode(nodeName string) error {
 			logrus.Errorf("Error deleting node %s logical network: %v", nodeName, err)
 		}
 
-	if nodeSubnet != nil {
-		if err := util.GatewayCleanup(nodeName, nodeSubnet, netName); err != nil {
+		if err := util.GatewayCleanup(nodeName, netName); err != nil {
 			return fmt.Errorf("Failed to clean up node %s gateway: (%v)", nodeName, err)
 		}
 	}
@@ -781,7 +742,7 @@ func (oc *Controller) syncNodes(nodes []interface{}) {
 			if key == OvnHostSubnet {
 				netName = ""
 			} else if strings.HasSuffix(key, "_"+OvnHostSubnet) {
-				netName = strings.TripSuffix(key, "_"+OvnHostSubnet)
+				netName = strings.TrimSuffix(key, "_"+OvnHostSubnet)
 				if netName == "" {
 					// unexpected annotation
 					continue
@@ -793,8 +754,8 @@ func (oc *Controller) syncNodes(nodes []interface{}) {
 		}
 	}
 
-	logrus.Debugf("Initialize subnet allocator for network %s", netName)
 	for netName, _ := range oc.netAttchmtDefs {
+		logrus.Debugf("Initialize subnet allocator for network %s", netName)
 		oc.initSubnetAllocator(netName)
 	}
 	oc.netMutex.Unlock()

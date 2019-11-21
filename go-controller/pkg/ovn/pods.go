@@ -337,7 +337,7 @@ func (oc *Controller) waitForNodeLogicalSwitch(nodeName, netName string) error {
 	return nil
 }
 
-func (oc *Controller) addPod(pod *kapi.Pod) {
+func (oc *Controller) addPod(pod *kapi.Pod) error {
 	logrus.Debugf("add pod event %s/%s", pod.Namespace, pod.Name)
 
 	// Keep track of how long syncs take.
@@ -348,8 +348,7 @@ func (oc *Controller) addPod(pod *kapi.Pod) {
 
 	networks, err := oc.getPodNetNames(pod)
 	if err != nil {
-		logrus.Errorf("failed to get all networks for pod %s/%s: %v", pod.Namespace, pod.Name, err)
-		return
+		return fmt.Errorf("failed to get all networks for pod %s/%s: %v", pod.Namespace, pod.Name, err)
 	}
 
 	var addedNetworks []string
@@ -357,24 +356,22 @@ func (oc *Controller) addPod(pod *kapi.Pod) {
 		addedNetworks = append(addedNetworks, network.Name)
 		err := oc.addLogicalPort(pod, network.Name)
 		if err != nil {
-			logrus.Errorf("addNetworkLogicalPort for port %s/%s netName %s failed: %v", pod.Namespace,
-				pod.Name, network.Name, err)
 			for _, netName := range addedNetworks {
 				oc.deleteLogicalPort(pod, netName)
 			}
 			oc.netMutex.Lock()
 			for _, network := range networks {
 				logrus.Debugf("CATHY addLogicalPort pod %s/%s network %s", pod.Namespace, pod.Name, network.Name)
-				if _, ok := oc.netAttchmtDefs[network.Name]; !ok {
-					logrus.Errorf("CATHY network %s does not exist for pod %s", pod.Name, network.Name)
-					return
+				if _, ok := oc.netAttchmtDefs[network.Name]; ok {
+					delete(oc.netAttchmtDefs[network.Name].pods, pod.Namespace+"_"+pod.Name)
 				}
-				delete(oc.netAttchmtDefs[network.Name].pods, pod.Namespace+"_"+pod.Name)
 			}
 			oc.netMutex.Unlock()
-			return
+			return fmt.Errorf("addNetworkLogicalPort for port %s/%s netName %s failed: %v", pod.Namespace,
+				pod.Name, network.Name, err)
 		}
 	}
+	return nil
 }
 
 func (oc *Controller) addLogicalPort(pod *kapi.Pod, netName string) error {
@@ -383,11 +380,6 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod, netName string) error {
 
 	netPrefix := util.GetNetworkPrefix(netName)
 	logicalSwitch := netPrefix + pod.Spec.NodeName
-	if logicalSwitch == "" {
-		return fmt.Errorf("Invalid logical switch name for pod %s/%s netName %s",
-			pod.Namespace, pod.Name, netName)
-	}
-
 	if err = oc.waitForNodeLogicalSwitch(pod.Spec.NodeName, netName); err != nil {
 		return fmt.Errorf("Failed to find the logical switch for pod %s/%s netName %s",
 			pod.Namespace, pod.Name, netName)
