@@ -255,7 +255,7 @@ func addDefaultConntrackRules(nodeName, gwBridge, gwIntf string) error {
 }
 
 func initSharedGateway(
-	nodeName string, subnet, gwNextHop, gwIntf string, wf *factory.WatchFactory) (map[string]string, postReadyFn, error) {
+	nodeName string, gatewayConfig GatewayConfig, gwNextHop, gwIntf string, wf *factory.WatchFactory) (map[string]string, postReadyFn, error) {
 	var bridgeName string
 	var uplinkName string
 	var brCreated bool
@@ -304,8 +304,8 @@ func initSharedGateway(
 	}
 
 	annotations := map[string]string{
-		ovn.OvnNodeGatewayMode:       string(config.Gateway.Mode),
-		ovn.OvnNodeGatewayVlanID:     fmt.Sprintf("%d", config.Gateway.VLANID),
+		ovn.OvnNodeGatewayMode:       string(gatewayConfig.Mode),
+		ovn.OvnNodeGatewayVlanID:     fmt.Sprintf("%d", gatewayConfig.VLANID),
 		ovn.OvnNodeGatewayIfaceID:    ifaceID,
 		ovn.OvnNodeGatewayMacAddress: macAddress,
 		ovn.OvnNodeGatewayIP:         ipAddress,
@@ -319,7 +319,7 @@ func initSharedGateway(
 			return err
 		}
 
-		if config.Gateway.NodeportEnable {
+		if gatewayConfig.NodeportEnable {
 			// Program cluster.GatewayIntf to let nodePort traffic to go to pods.
 			if err := nodePortWatcher(nodeName, bridgeName, uplinkName, wf); err != nil {
 				return err

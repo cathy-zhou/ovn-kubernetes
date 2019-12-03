@@ -144,7 +144,7 @@ func (cluster *OvnClusterController) StartClusterNode(name string) error {
 
 	// If gateway is enabled, get gateway annotations
 	if config.Gateway.Mode != config.GatewayModeDisabled {
-		nodeAnnotations, postReady, err = cluster.initGateway(node.Name, subnet.String())
+		nodeAnnotations, postReady, err = cluster.initGateway(node.Name, subnet.String(), config.Gateway)
 		if err != nil {
 			return err
 		}

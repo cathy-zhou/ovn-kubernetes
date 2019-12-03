@@ -74,22 +74,22 @@ loop:
 }
 
 func (cluster *OvnClusterController) initGateway(
-	nodeName string, subnet string) (map[string]string, postReadyFn, error) {
+	nodeName, subnet string, gatewayConfig GatewayConfig) (map[string]string, postReadyFn, error) {
 
-	if config.Gateway.NodeportEnable {
+	if gatewayConfig.NodeportEnable {
 		err := initLoadBalancerHealthChecker(nodeName, cluster.watchFactory)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
 
-	switch config.Gateway.Mode {
+	switch gatewayConfig.Mode {
 	case config.GatewayModeLocal:
-		annotations, err := initLocalnetGateway(nodeName, subnet, cluster.watchFactory)
+		annotations, err := initLocalnetGateway(nodeName, gatewayConfig, subnet, cluster.watchFactory)
 		return annotations, nil, err
 	case config.GatewayModeShared:
-		gatewayNextHop := config.Gateway.NextHop
-		gatewayIntf := config.Gateway.Interface
+		gatewayNextHop := gatewayConfig.NextHop
+		gatewayIntf := gatewayConfig.Interface
 		if gatewayNextHop == "" || gatewayIntf == "" {
 			// We need to get the interface details from the default gateway.
 			defaultGatewayIntf, defaultGatewayNextHop, err := getDefaultGatewayInterfaceDetails()
@@ -105,7 +105,7 @@ func (cluster *OvnClusterController) initGateway(
 				gatewayIntf = defaultGatewayIntf
 			}
 		}
-		return initSharedGateway(nodeName, subnet, gatewayNextHop, gatewayIntf, cluster.watchFactory)
+		return initSharedGateway(nodeName, gatewayConfig, gatewayNextHop, gatewayIntf, cluster.watchFactory)
 	}
 
 	return nil, nil, nil

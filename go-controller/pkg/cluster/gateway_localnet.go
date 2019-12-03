@@ -11,7 +11,6 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/coreos/go-iptables/iptables"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -109,7 +108,7 @@ func localnetGatewayNAT(ipt util.IPTablesHelper, ifname, ip string) error {
 	return addIptRules(ipt, rules)
 }
 
-func initLocalnetGateway(nodeName string,
+func initLocalnetGateway(nodeName string, gatewayConfig GatewayConfig,
 	subnet string, wf *factory.WatchFactory) (map[string]string, error) {
 	ipt, err := util.GetIPTablesHelper(iptables.ProtocolIPv4)
 	if err != nil {
@@ -166,8 +165,8 @@ func initLocalnetGateway(nodeName string,
 	}
 
 	annotations := map[string]string{
-		ovn.OvnNodeGatewayMode:       string(config.Gateway.Mode),
-		ovn.OvnNodeGatewayVlanID:     fmt.Sprintf("%d", config.Gateway.VLANID),
+		ovn.OvnNodeGatewayMode:       string(gatewayConfig.Mode),
+		ovn.OvnNodeGatewayVlanID:     fmt.Sprintf("%d", gatewayConfig.VLANID),
 		ovn.OvnNodeGatewayIfaceID:    ifaceID,
 		ovn.OvnNodeGatewayMacAddress: macAddress,
 		ovn.OvnNodeGatewayIP:         localnetGatewayIP,
@@ -180,7 +179,7 @@ func initLocalnetGateway(nodeName string,
 			err)
 	}
 
-	if config.Gateway.NodeportEnable {
+	if gatewayConfig.NodeportEnable {
 		err = localnetNodePortWatcher(ipt, wf)
 	}
 

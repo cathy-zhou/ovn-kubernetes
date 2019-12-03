@@ -7,7 +7,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 )
 
-func initLocalnetGateway(nodeName string,
+func initLocalnetGateway(nodeName string, gatewayConfig GatewayConfig,
 	subnet string, wf *factory.WatchFactory) (map[string]string, error) {
 	// TODO: Implement this
 	return nil, fmt.Errorf("Not implemented yet on Windows")
