@@ -28,6 +28,9 @@ const DefaultEncapPort = 6081
 
 const DefaultAPIServer = "http://localhost:8443"
 
+// DefaultNodeSubnetZoneName captures default name for the node subnet zone
+const DefaultNodeSubnetZoneName = "default"
+
 // IP address range from which subnet is allocated for per-node join switch
 const (
 	V4JoinSubnet = "100.64.0.0/16"
@@ -139,8 +142,8 @@ type DefaultConfig struct {
 	// used inside config module.
 	RawClusterSubnets string `gcfg:"cluster-subnets"`
 	// ClusterSubnets holds parsed cluster subnet entries and may be used
-	// outside the config module.
-	ClusterSubnets []CIDRNetworkEntry
+	// outside the config module, key is the zone name
+	ClusterSubnets map[string][]CIDRNetworkEntry
 }
 
 // LoggingConfig holds logging-related parsed config file parameters and command-line overrides
@@ -999,14 +1002,21 @@ func buildDefaultConfig(cli, file *config) error {
 
 	// Determine if ovn-kubernetes is configured to run in IPv6 mode
 	IPv6Mode = false
-	if len(Default.ClusterSubnets) >= 1 && Default.ClusterSubnets[0].CIDR.IP.To4() == nil {
-		IPv6Mode = true
+	for _, subnetList := range Default.ClusterSubnets {
+		for _, subnet := range subnetList {
+			if subnet.CIDR.IP.To4() == nil {
+				IPv6Mode = true
+				break
+			}
+		}
 	}
 
 	// To check if any of clustersubnets is in JoinSubnet(100.64.0.0/16) range
 	var clustersubnets []*net.IPNet
-	for _, subnet := range Default.ClusterSubnets {
-		clustersubnets = append(clustersubnets, subnet.CIDR)
+	for _, subnetList := range Default.ClusterSubnets {
+		for _, subnet := range subnetList {
+			clustersubnets = append(clustersubnets, subnet.CIDR)
+		}
 	}
 	err = overlapsWithJoinSubnet(clustersubnets)
 	if err != nil {

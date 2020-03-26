@@ -219,11 +219,13 @@ func getRoutesGatewayIP(pod *kapi.Pod, gatewayIPnet *net.IPNet) ([]util.PodRoute
 	var gatewayIP net.IP
 	routes := make([]util.PodRoute, 0)
 	if otherDefaultRoute {
-		for _, clusterSubnet := range config.Default.ClusterSubnets {
-			var route util.PodRoute
-			route.Dest = clusterSubnet.CIDR
-			route.NextHop = gatewayIPnet.IP
-			routes = append(routes, route)
+		for _, clusterSubnetList := range config.Default.ClusterSubnets {
+			for _, clusterSubnet := range clusterSubnetList {
+				var route util.PodRoute
+				route.Dest = clusterSubnet.CIDR
+				route.NextHop = gatewayIPnet.IP
+				routes = append(routes, route)
+			}
 		}
 	} else {
 		gatewayIP = gatewayIPnet.IP

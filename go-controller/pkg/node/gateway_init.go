@@ -209,21 +209,23 @@ func CleanupClusterNode(name string) error {
 func gatewayReady(string) (bool, error) {
 	// OpenFlow table 41 performs SNATing of packets that are heading to physical network from
 	// logical network.
-	for _, clusterSubnet := range config.Default.ClusterSubnets {
-		var cidr, match string
-		cidr = clusterSubnet.CIDR.String()
-		if strings.Contains(cidr, ":") {
-			match = "ipv6,ipv6_src=" + cidr
-		} else {
-			match = "ip,nw_src=" + cidr
-		}
-		stdout, _, err := util.RunOVSOfctl("--no-stats", "--no-names", "dump-flows", "br-int",
-			"table=41,"+match)
-		if err != nil {
-			return false, nil
-		}
-		if !strings.Contains(stdout, cidr) {
-			return false, nil
+	for _, clusterSubnetList := range config.Default.ClusterSubnets {
+		for _, clusterSubnet := range clusterSubnetList {
+			var cidr, match string
+			cidr = clusterSubnet.CIDR.String()
+			if strings.Contains(cidr, ":") {
+				match = "ipv6,ipv6_src=" + cidr
+			} else {
+				match = "ip,nw_src=" + cidr
+			}
+			stdout, _, err := util.RunOVSOfctl("--no-stats", "--no-names", "dump-flows", "br-int",
+				"table=41,"+match)
+			if err != nil {
+				return false, nil
+			}
+			if !strings.Contains(stdout, cidr) {
+				return false, nil
+			}
 		}
 	}
 	return true, nil

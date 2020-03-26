@@ -10,16 +10,20 @@ import (
 
 	kapi "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/util/retry"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/allocator"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	"k8s.io/klog"
 )
 
 const (
+	// OvnNodeSubnetZone is the label string representing the zone name node subnets belongs to
+	OvnNodeSubnetZone = "k8s.ovn.org/subnet_allocator_name"
 	// OvnNodeSubnets is the constant string representing the node subnets annotation key
 	OvnNodeSubnets = "k8s.ovn.org/node-subnets"
 	// OvnNodeJoinSubnets is the constant string representing the node's join switch subnets annotation key
@@ -78,16 +82,39 @@ func (oc *Controller) StartClusterMaster(masterNodeName string) error {
 		klog.Errorf("Error in initializing/fetching subnets: %v", err)
 		return err
 	}
-	for _, clusterEntry := range config.Default.ClusterSubnets {
-		err := oc.masterSubnetAllocator.AddNetworkRange(clusterEntry.CIDR.String(), clusterEntry.HostBits())
-		if err != nil {
-			return err
+	for zoneName, clusterEntryList := range config.Default.ClusterSubnets {
+		if zoneName != config.DefaultNodeSubnetZoneName {
+			_, ok := oc.masterSubnetLabelSelector[zoneName]
+			if !ok {
+				if nodeSelector, err := metav1.ParseToLabelSelector(OvnNodeSubnetZone + "=" + zoneName); err == nil {
+					oc.masterSubnetLabelSelector[zoneName] = nodeSelector
+				} else {
+					return fmt.Errorf("failed to create label selector for subnet zone %s: %v", zoneName, err)
+				}
+			}
+		}
+
+		_, ok := oc.masterSubnetAllocator[zoneName]
+		if !ok {
+			oc.masterSubnetAllocator[zoneName] = allocator.NewSubnetAllocator()
+		}
+		for _, clusterEntry := range clusterEntryList {
+			err := oc.masterSubnetAllocator[zoneName].AddNetworkRange(clusterEntry.CIDR.String(), clusterEntry.HostBits())
+			if err != nil {
+				return err
+			}
 		}
 	}
 	for _, node := range existingNodes.Items {
+		zoneName := oc.getSubnetZoneName(&node)
+
 		hostsubnet, _ := parseNodeHostSubnet(&node)
 		if hostsubnet != nil {
-			err := oc.masterSubnetAllocator.MarkAllocatedNetwork(hostsubnet)
+			subnetAllocator, ok := oc.masterSubnetAllocator[zoneName]
+			if !ok {
+				utilruntime.HandleError(fmt.Errorf("node subnet zone %s is not configured", zoneName))
+			}
+			err := subnetAllocator.MarkAllocatedNetwork(hostsubnet)
 			if err != nil {
 				utilruntime.HandleError(err)
 			}
@@ -433,8 +460,10 @@ func parseNodeChassisID(node *kapi.Node) (string, error) {
 func (oc *Controller) syncGatewayLogicalNetwork(node *kapi.Node, l3GatewayConfig map[string]string, subnet string) error {
 	var err error
 	var clusterSubnets []string
-	for _, clusterSubnet := range config.Default.ClusterSubnets {
-		clusterSubnets = append(clusterSubnets, clusterSubnet.CIDR.String())
+	for _, clusterSubnetList := range config.Default.ClusterSubnets {
+		for _, clusterSubnet := range clusterSubnetList {
+			clusterSubnets = append(clusterSubnets, clusterSubnet.CIDR.String())
+		}
 	}
 
 	mode := l3GatewayConfig[OvnNodeGatewayMode]
@@ -558,8 +587,9 @@ func parseNodeJoinSubnet(node *kapi.Node) (*net.IPNet, error) {
 	return subnet, nil
 }
 
-func (oc *Controller) ensureNodeLogicalNetwork(nodeName string, hostsubnet *net.IPNet) error {
+func (oc *Controller) ensureNodeLogicalNetwork(nodeName, zoneName string, hostsubnet *net.IPNet) error {
 
+	klog.V(3).Infof("CATHY ensureNodeLogicalNetwork node %s zoneName %s hostsubnet %v", nodeName, zoneName, hostsubnet)
 	// Get firstIP for gateway.  Skip the second address of the LogicalSwitch's
 	// subnet since we set it aside for the management port on that node.
 	firstIP, secondIP := util.GetNodeWellKnownAddresses(hostsubnet)
@@ -576,14 +606,19 @@ func (oc *Controller) ensureNodeLogicalNetwork(nodeName string, hostsubnet *net.
 
 	// Create a logical switch and set its subnet.
 	var stdout string
+	cmdArgs := []string{"--", "--may-exist", "ls-add", nodeName,
+		"--", "set", "logical_switch", nodeName, "other-config:subnet=" + hostsubnet.String(),
+		"other-config:exclude_ips=" + secondIP.IP.String()}
 	if config.IPv6Mode {
-		stdout, stderr, err = util.RunOVNNbctl("--", "--may-exist", "ls-add", nodeName,
-			"--", "set", "logical_switch", nodeName, "other-config:ipv6_prefix="+hostsubnet.IP.String())
-	} else {
-		stdout, stderr, err = util.RunOVNNbctl("--", "--may-exist", "ls-add", nodeName,
-			"--", "set", "logical_switch", nodeName, "other-config:subnet="+hostsubnet.String(),
-			"other-config:exclude_ips="+secondIP.IP.String())
+		cmdArgs = []string{"--", "--may-exist", "ls-add", nodeName,
+			"--", "set", "logical_switch", nodeName, "other-config:ipv6_prefix=" + hostsubnet.IP.String()}
 	}
+	if zoneName != config.DefaultNodeSubnetZoneName {
+		cmdArgs = append(cmdArgs,
+			[]string{"--", "set", "logical_switch", nodeName, "external-ids:subnet-zone=" + zoneName}...)
+	}
+	klog.V(3).Infof("CATHY ensureNodeLogicalNetwork node %s zoneName %s cmdArgs %v", nodeName, zoneName, cmdArgs)
+	stdout, stderr, err = util.RunOVNNbctl(cmdArgs...)
 	if err != nil {
 		klog.Errorf("Failed to create a logical switch %v, stdout: %q, stderr: %q, error: %v", nodeName, stdout, stderr, err)
 		return err
@@ -710,9 +745,22 @@ func (oc *Controller) addNodeAnnotations(node *kapi.Node, subnet string) error {
 	return nil
 }
 
+func (oc *Controller) getSubnetZoneName(node *kapi.Node) string {
+	for zoneName, subnetSelector := range oc.masterSubnetLabelSelector {
+		nodeSelector, _ := metav1.LabelSelectorAsSelector(subnetSelector)
+		if nodeSelector.Matches(labels.Set(node.Labels)) {
+			return zoneName
+		}
+	}
+	return config.DefaultNodeSubnetZoneName
+}
+
 func (oc *Controller) addNode(node *kapi.Node) (hostsubnet *net.IPNet, err error) {
 	oc.clearInitialNodeNetworkUnavailableCondition(node, nil)
 
+	zoneName := oc.getSubnetZoneName(node)
+
+	klog.V(3).Infof("addNode %s zoneName %s", node.Name, zoneName)
 	hostsubnet, _ = parseNodeHostSubnet(node)
 	if hostsubnet != nil {
 		// Update the node's annotation to use the new annotation key and remove the
@@ -722,11 +770,15 @@ func (oc *Controller) addNode(node *kapi.Node) (hostsubnet *net.IPNet, err error
 			return nil, err
 		}
 		// Node already has subnet assigned; ensure its logical network is set up
-		return hostsubnet, oc.ensureNodeLogicalNetwork(node.Name, hostsubnet)
+		return hostsubnet, oc.ensureNodeLogicalNetwork(node.Name, zoneName, hostsubnet)
 	}
 
-	// Node doesn't have a subnet assigned; reserve a new one for it
-	hostsubnets, err := oc.masterSubnetAllocator.AllocateNetworks()
+	subnetAllocator, ok := oc.masterSubnetAllocator[zoneName]
+	if !ok {
+		return nil, fmt.Errorf("subnet zone %s for node %s not configured", zoneName, node.Name)
+	}
+
+	hostsubnets, err := subnetAllocator.AllocateNetworks()
 	if err != nil {
 		return nil, fmt.Errorf("Error allocating network for node %s: %v", node.Name, err)
 	}
@@ -739,12 +791,12 @@ func (oc *Controller) addNode(node *kapi.Node) (hostsubnet *net.IPNet, err error
 	defer func() {
 		// Release the allocation on error
 		if err != nil {
-			_ = oc.masterSubnetAllocator.ReleaseNetwork(hostsubnet)
+			_ = subnetAllocator.ReleaseNetwork(hostsubnet)
 		}
 	}()
 
 	// Ensure that the node's logical network has been created
-	err = oc.ensureNodeLogicalNetwork(node.Name, hostsubnet)
+	err = oc.ensureNodeLogicalNetwork(node.Name, zoneName, hostsubnet)
 	if err != nil {
 		return nil, err
 	}
@@ -760,8 +812,12 @@ func (oc *Controller) addNode(node *kapi.Node) (hostsubnet *net.IPNet, err error
 	return hostsubnet, nil
 }
 
-func (oc *Controller) deleteNodeHostSubnet(nodeName string, subnet *net.IPNet) error {
-	err := oc.masterSubnetAllocator.ReleaseNetwork(subnet)
+func (oc *Controller) deleteNodeHostSubnet(nodeName, zoneName string, subnet *net.IPNet) error {
+	subnetAllocator, ok := oc.masterSubnetAllocator[zoneName]
+	if !ok {
+		return fmt.Errorf("Error subnet zone %s for node %q not configured", zoneName, nodeName)
+	}
+	err := subnetAllocator.ReleaseNetwork(subnet)
 	if err != nil {
 		return fmt.Errorf("Error deleting subnet %v for node %q: %s", subnet, nodeName, err)
 	}
@@ -785,10 +841,10 @@ func (oc *Controller) deleteNodeLogicalNetwork(nodeName string) error {
 	return nil
 }
 
-func (oc *Controller) deleteNode(nodeName string, nodeSubnet, joinSubnet *net.IPNet) error {
+func (oc *Controller) deleteNode(nodeName, zoneName string, nodeSubnet, joinSubnet *net.IPNet) error {
 	// Clean up as much as we can but don't hard error
-	if nodeSubnet != nil {
-		if err := oc.deleteNodeHostSubnet(nodeName, nodeSubnet); err != nil {
+	if nodeSubnet != nil && zoneName != "" {
+		if err := oc.deleteNodeHostSubnet(nodeName, zoneName, nodeSubnet); err != nil {
 			klog.Errorf("Error deleting node %s HostSubnet %v: %v", nodeName, nodeSubnet, err)
 		}
 	}
@@ -882,9 +938,8 @@ func (oc *Controller) syncNodes(nodes []interface{}) {
 	} else {
 		subnetAttr = "subnet"
 	}
-	nodeSwitches, stderr, err := util.RunOVNNbctl("--data=bare", "--no-heading",
-		"--columns=name,other-config", "find", "logical_switch",
-		"other-config:"+subnetAttr+"!=_")
+	nodeSwitches, stderr, err := util.RunOVNNbctl("--data=bare", "--columns=name,other-config,external_ids",
+		"find", "logical_switch", "other-config:"+subnetAttr+"!=_")
 	if err != nil {
 		klog.Errorf("Failed to get node logical switches: stderr: %q, error: %v",
 			stderr, err)
@@ -894,13 +949,19 @@ func (oc *Controller) syncNodes(nodes []interface{}) {
 	type NodeSubnets struct {
 		hostSubnet *net.IPNet
 		joinSubnet *net.IPNet
+		zoneName   string
 	}
 	NodeSubnetsMap := make(map[string]*NodeSubnets)
 	for _, result := range strings.Split(nodeSwitches, "\n\n") {
 		// Split result into name and other-config
-		items := strings.Split(result, "\n")
-		if len(items) != 2 || len(items[0]) == 0 {
+		colsWithHeading := strings.Split(result, "\n")
+		if len(colsWithHeading) != 3 || len(colsWithHeading[0]) == 0 {
 			continue
+		}
+		items := []string{}
+		for _, colWithHeading := range colsWithHeading {
+			colWithOutHeadings := strings.SplitN(colWithHeading, ":", 2)
+			items = append(items, strings.TrimSpace(colWithOutHeadings[1]))
 		}
 		isJoinSwitch := false
 		nodeName := items[0]
@@ -911,6 +972,17 @@ func (oc *Controller) syncNodes(nodes []interface{}) {
 		if _, ok := foundNodes[nodeName]; ok {
 			// node still exists, no cleanup to do
 			continue
+		}
+
+		zoneName := config.DefaultNodeSubnetZoneName
+		if !isJoinSwitch {
+			attrs := strings.Fields(items[2])
+			for _, attr := range attrs {
+				if strings.HasPrefix(attr, "zone=") {
+					zoneName = strings.TrimPrefix(attr, "zone=")
+					break
+				}
+			}
 		}
 
 		var subnet *net.IPNet
@@ -935,11 +1007,12 @@ func (oc *Controller) syncNodes(nodes []interface{}) {
 			nodeSubnets.joinSubnet = subnet
 		} else {
 			nodeSubnets.hostSubnet = subnet
+			nodeSubnets.zoneName = zoneName
 		}
 	}
 
 	for nodeName, nodeSubnets := range NodeSubnetsMap {
-		if err := oc.deleteNode(nodeName, nodeSubnets.hostSubnet, nodeSubnets.joinSubnet); err != nil {
+		if err := oc.deleteNode(nodeName, nodeSubnets.zoneName, nodeSubnets.hostSubnet, nodeSubnets.joinSubnet); err != nil {
 			klog.Error(err)
 		}
 	}

@@ -131,7 +131,7 @@ func defaultFakeExec(nodeSubnet, nodeName string) (*ovntest.FakeExec, string, st
 	nodeMgmtPortIP := util.NextIP(cidr.IP).String()
 
 	fexec.AddFakeCmdsNoOutputNoError([]string{
-		"ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name,other-config find logical_switch other-config:subnet!=_",
+		"ovn-nbctl --timeout=15 --data=bare --columns=name,other-config,external_ids find logical_switch other-config:subnet!=_",
 	})
 	fexec.AddFakeCmdsNoOutputNoError([]string{
 		"ovn-nbctl --timeout=15 --may-exist lrp-add ovn_cluster_router rtos-" + nodeName + " " + lrpMAC + " " + gwCIDR,
@@ -376,15 +376,8 @@ var _ = Describe("Master Operations", func() {
 			Expect(err).NotTo(HaveOccurred())
 			lrpMAC := util.IPAddrToHWAddr(util.NextIP(ip))
 			fexec := ovntest.NewFakeExec()
-			fexec.AddFakeCmd(&ovntest.ExpectedCmd{
-				Cmd: "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name,other-config find logical_switch other-config:subnet!=_",
-				// Return two nodes
-				Output: fmt.Sprintf(`%s
-subnet=%s
-
-%s
-subnet=%s
-`, node1Name, node1Subnet, masterName, masterSubnet),
+			fexec.AddFakeCmdsNoOutputNoError([]string{
+				"ovn-nbctl --timeout=15 --data=bare --columns=name,other-config,external_ids find logical_switch other-config:subnet!=_",
 			})
 
 			// Expect the code to delete node1 which no longer exists in Kubernetes API
@@ -611,7 +604,7 @@ var _ = Describe("Gateway Init Operations", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			fexec.AddFakeCmdsNoOutputNoError([]string{
-				"ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name,other-config find logical_switch other-config:subnet!=_",
+				"ovn-nbctl --timeout=15 --data=bare --columns=name,other-config,external_ids find logical_switch other-config:subnet!=_",
 			})
 
 			fexec.AddFakeCmdsNoOutputNoError([]string{
@@ -801,7 +794,7 @@ var _ = Describe("Gateway Init Operations", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			fexec.AddFakeCmdsNoOutputNoError([]string{
-				"ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name,other-config find logical_switch other-config:subnet!=_",
+				"ovn-nbctl --timeout=15 --data=bare --columns=name,other-config,external_ids find logical_switch other-config:subnet!=_",
 			})
 
 			fexec.AddFakeCmdsNoOutputNoError([]string{

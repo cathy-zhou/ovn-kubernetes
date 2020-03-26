@@ -51,8 +51,9 @@ type Controller struct {
 	kube         kube.Interface
 	watchFactory *factory.WatchFactory
 
-	masterSubnetAllocator *allocator.SubnetAllocator
-	joinSubnetAllocator   *allocator.SubnetAllocator
+	masterSubnetLabelSelector map[string]*metav1.LabelSelector
+	masterSubnetAllocator     map[string]*allocator.SubnetAllocator
+	joinSubnetAllocator       *allocator.SubnetAllocator
 
 	TCPLoadBalancerUUID string
 	UDPLoadBalancerUUID string
@@ -142,7 +143,7 @@ func NewOvnController(kubeClient kubernetes.Interface, wf *factory.WatchFactory,
 	return &Controller{
 		kube:                     &kube.Kube{KClient: kubeClient},
 		watchFactory:             wf,
-		masterSubnetAllocator:    allocator.NewSubnetAllocator(),
+		masterSubnetAllocator:    make(map[string]*allocator.SubnetAllocator),
 		logicalSwitchCache:       make(map[string]*net.IPNet),
 		joinSubnetAllocator:      allocator.NewSubnetAllocator(),
 		logicalPortCache:         newPortCache(stopChan),
@@ -573,6 +574,13 @@ func (oc *Controller) WatchNodes() error {
 
 			klog.V(5).Infof("Updated event for Node %q", node.Name)
 
+			newZoneName := oc.getSubnetZoneName(node)
+			oldZoneName := oc.getSubnetZoneName(oldNode)
+			if newZoneName != oldZoneName {
+				klog.Errorf("cannot change node label %s. subnet zone has been changed from %s to %s",
+					OvnNodeSubnetZone, oldZoneName, newZoneName)
+			}
+
 			_, failed := mgmtPortFailed.Load(node.Name)
 			if failed || macAddressChanged(oldNode, node) {
 				err := oc.syncNodeManagementPort(node, nil)
@@ -604,7 +612,8 @@ func (oc *Controller) WatchNodes() error {
 
 			nodeSubnet, _ := parseNodeHostSubnet(node)
 			joinSubnet, _ := parseNodeJoinSubnet(node)
-			err := oc.deleteNode(node.Name, nodeSubnet, joinSubnet)
+			zoneName := oc.getSubnetZoneName(node)
+			err := oc.deleteNode(node.Name, zoneName, nodeSubnet, joinSubnet)
 			if err != nil {
 				klog.Error(err)
 			}
@@ -755,6 +764,7 @@ func noHostSubnet(node *kapi.Node) bool {
 // ovn-kube should not perform an update if it does not assign a hostsubnet, or if you want to change
 // whether or not ovn-kubernetes assigns a hostsubnet
 func shouldUpdate(node, oldNode *kapi.Node) (bool, error) {
+
 	newNoHostSubnet := noHostSubnet(node)
 	oldNoHostSubnet := noHostSubnet(oldNode)
 

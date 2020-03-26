@@ -243,7 +243,7 @@ var _ = Describe("Config Operations", func() {
 			Expect(Kubernetes.APIServer).To(Equal(DefaultAPIServer))
 			Expect(Kubernetes.ServiceCIDR).To(Equal("172.16.1.0/24"))
 			Expect(Kubernetes.RawNoHostSubnetNodes).To(Equal(""))
-			Expect(Default.ClusterSubnets).To(Equal([]CIDRNetworkEntry{
+			Expect(Default.ClusterSubnets[DefaultNodeSubnetZoneName]).To(Equal([]CIDRNetworkEntry{
 				{mustParseCIDR("10.128.0.0/14"), 23},
 			}))
 			Expect(IPv6Mode).To(Equal(false))
@@ -475,7 +475,7 @@ var _ = Describe("Config Operations", func() {
 			Expect(Kubernetes.Token).To(Equal("TG9yZW0gaXBzdW0gZ"))
 			Expect(Kubernetes.APIServer).To(Equal("https://1.2.3.4:6443"))
 			Expect(Kubernetes.ServiceCIDR).To(Equal("172.18.0.0/24"))
-			Expect(Default.ClusterSubnets).To(Equal([]CIDRNetworkEntry{
+			Expect(Default.ClusterSubnets[DefaultNodeSubnetZoneName]).To(Equal([]CIDRNetworkEntry{
 				{mustParseCIDR("10.129.0.0/14"), 23},
 			}))
 
@@ -533,7 +533,7 @@ var _ = Describe("Config Operations", func() {
 			Expect(Kubernetes.APIServer).To(Equal("https://4.4.3.2:8080"))
 			Expect(Kubernetes.ServiceCIDR).To(Equal("172.15.0.0/24"))
 			Expect(Kubernetes.RawNoHostSubnetNodes).To(Equal("test=pass"))
-			Expect(Default.ClusterSubnets).To(Equal([]CIDRNetworkEntry{
+			Expect(Default.ClusterSubnets[DefaultNodeSubnetZoneName]).To(Equal([]CIDRNetworkEntry{
 				{mustParseCIDR("10.130.0.0/15"), 24},
 			}))
 
@@ -632,7 +632,7 @@ cluster-subnets=172.18.0.0/23
 			cfgPath, err = InitConfig(ctx, kexec.New(), nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfgPath).To(Equal(cfgFile.Name()))
-			Expect(Default.ClusterSubnets).To(Equal([]CIDRNetworkEntry{
+			Expect(Default.ClusterSubnets[DefaultNodeSubnetZoneName]).To(Equal([]CIDRNetworkEntry{
 				{mustParseCIDR("172.15.0.0/23"), 24},
 			}))
 			Expect(IPv6Mode).To(Equal(false))
@@ -817,7 +817,7 @@ mode=shared
 			Expect(Default.MTU).To(Equal(1500))
 			Expect(Default.ConntrackZone).To(Equal(64321))
 			Expect(Default.RawClusterSubnets).To(Equal("10.129.0.0/14/23"))
-			Expect(Default.ClusterSubnets).To(Equal([]CIDRNetworkEntry{
+			Expect(Default.ClusterSubnets[DefaultNodeSubnetZoneName]).To(Equal([]CIDRNetworkEntry{
 				{mustParseCIDR("10.129.0.0/14"), 23},
 			}))
 			Expect(Logging.File).To(Equal("/var/log/ovnkube.log"))

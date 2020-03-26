@@ -34,8 +34,10 @@ func createPlatformManagementPort(interfaceName, interfaceIP, routerIP, routerMA
 
 	// flush any existing routes and add new route for the cluster subnet
 	var clusterSubnets []string
-	for _, subnet := range config.Default.ClusterSubnets {
-		clusterSubnets = append(clusterSubnets, subnet.CIDR.String())
+	for _, subnetList := range config.Default.ClusterSubnets {
+		for _, subnet := range subnetList {
+			clusterSubnets = append(clusterSubnets, subnet.CIDR.String())
+		}
 	}
 	err = util.LinkRouteAdd(link, routerIP, clusterSubnets)
 	if err != nil {

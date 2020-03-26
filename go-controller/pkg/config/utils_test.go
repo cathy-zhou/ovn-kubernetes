@@ -114,14 +114,14 @@ func TestParseClusterSubnetEntries(t *testing.T) {
 
 	for _, tc := range tests {
 
-		parsedList, err := ParseClusterSubnetEntries(tc.cmdLineArg)
+		parsedListMap, err := ParseClusterSubnetEntries(tc.cmdLineArg)
 		if err != nil && !tc.expectedErr {
 			t.Errorf("Test case \"%s\" expected no errors, got %v", tc.name, err)
 		}
-		if len(tc.clusterNetworks) != len(parsedList) {
+		if len(tc.clusterNetworks) != len(parsedListMap[DefaultNodeSubnetZoneName]) {
 			t.Errorf("Test case \"%s\" expected to output the same number of entries as parseClusterSubnetEntries", tc.name)
 		} else {
-			for index, entry := range parsedList {
+			for index, entry := range parsedListMap[DefaultNodeSubnetZoneName] {
 				if entry.CIDR.String() != tc.clusterNetworks[index].CIDR.String() {
 					t.Errorf("Test case \"%s\" expected entry[%d].CIDR: %s to equal tc.clusterNetworks[%d].CIDR: %s", tc.name, index, entry.CIDR.String(), index, tc.clusterNetworks[index].CIDR.String())
 				}
@@ -190,7 +190,8 @@ func TestCidrsOverlap(t *testing.T) {
 
 	for _, tc := range tests {
 
-		if result := cidrsOverlap(tc.cidr, tc.cidrList); result != tc.expectedOutput {
+		result := cidrsOverlap(tc.cidr, map[string][]CIDRNetworkEntry{DefaultNodeSubnetZoneName: tc.cidrList})
+		if result != tc.expectedOutput {
 			t.Errorf("testcase \"%s\" expected output %t cidrsOverlap returns %t", tc.name, tc.expectedOutput, result)
 		}
 	}
