@@ -21,14 +21,6 @@ import (
 )
 
 const (
-	v4localnetGatewayIP           = "169.254.33.2"
-	v4localnetGatewayNextHop      = "169.254.33.1"
-	v4localnetGatewaySubnetPrefix = 24
-
-	v6localnetGatewayIP           = "fd99::2"
-	v6localnetGatewayNextHop      = "fd99::1"
-	v6localnetGatewaySubnetPrefix = 64
-
 	// localnetGatewayNextHopPort is the name of the gateway port on the host to which all
 	// the packets leaving the OVN logical topology will be forwarded
 	localnetGatewayNextHopPort       = "ovn-k8s-gw0"
@@ -131,7 +123,8 @@ func initLocalnetGateway(nodeName string, subnet *net.IPNet, wf *factory.WatchFa
 			", stderr:%s (%v)", localnetBridgeName, stderr, err)
 	}
 
-	ifaceID, macAddress, err := bridgedGatewayNodeSetup(nodeName, localnetBridgeName, localnetBridgeName, true)
+	ifaceID, macAddress, err := bridgedGatewayNodeSetup(nodeName, localnetBridgeName, localnetBridgeName,
+		util.PhysicalNetworkName, true)
 	if err != nil {
 		return fmt.Errorf("failed to set up shared interface gateway: %v", err)
 	}
@@ -159,13 +152,13 @@ func initLocalnetGateway(nodeName string, subnet *net.IPNet, wf *factory.WatchFa
 	var gatewayIP, gatewayNextHop net.IP
 	var gatewaySubnetMask net.IPMask
 	if utilnet.IsIPv6CIDR(subnet) {
-		gatewayIP = net.ParseIP(v6localnetGatewayIP)
-		gatewayNextHop = net.ParseIP(v6localnetGatewayNextHop)
-		gatewaySubnetMask = net.CIDRMask(v6localnetGatewaySubnetPrefix, 128)
+		gatewayIP = net.ParseIP(util.V6LocalnetGatewayIP)
+		gatewayNextHop = net.ParseIP(util.V6LocalnetGatewayNextHop)
+		gatewaySubnetMask = net.CIDRMask(util.V6LocalnetGatewaySubnetPrefix, 128)
 	} else {
-		gatewayIP = net.ParseIP(v4localnetGatewayIP)
-		gatewayNextHop = net.ParseIP(v4localnetGatewayNextHop)
-		gatewaySubnetMask = net.CIDRMask(v4localnetGatewaySubnetPrefix, 32)
+		gatewayIP = net.ParseIP(util.V4LocalnetGatewayIP)
+		gatewayNextHop = net.ParseIP(util.V4LocalnetGatewayNextHop)
+		gatewaySubnetMask = net.CIDRMask(util.V4LocalnetGatewaySubnetPrefix, 32)
 	}
 	gatewayIPCIDR := &net.IPNet{IP: gatewayIP, Mask: gatewaySubnetMask}
 	gatewayNextHopCIDR := &net.IPNet{IP: gatewayNextHop, Mask: gatewaySubnetMask}
@@ -356,17 +349,25 @@ func localnetNodePortWatcher(ipt util.IPTablesHelper, wf *factory.WatchFactory, 
 }
 
 // cleanupLocalnetGateway cleans up Localnet Gateway
-func cleanupLocalnetGateway() error {
+func cleanupLocalnetGateway(physnet string) error {
 	// get bridgeName from ovn-bridge-mappings.
 	stdout, stderr, err := util.RunOVSVsctl("--if-exists", "get", "Open_vSwitch", ".",
 		"external_ids:ovn-bridge-mappings")
 	if err != nil {
 		return fmt.Errorf("Failed to get ovn-bridge-mappings stderr:%s (%v)", stderr, err)
 	}
-	bridgeName := strings.Split(stdout, ":")[1]
-	_, stderr, err = util.RunOVSVsctl("--", "--if-exists", "del-br", bridgeName)
-	if err != nil {
-		return fmt.Errorf("Failed to ovs-vsctl del-br %s stderr:%s (%v)", bridgeName, stderr, err)
+	bridgeMappings := strings.Split(stdout, ",")
+	for _, bridgeMapping := range bridgeMappings {
+		m := strings.Split(bridgeMapping, ":")
+		if physnet == m[0] {
+			bridgeName := m[1]
+			_, stderr, err = util.RunOVSVsctl("--", "--if-exists", "del-br", bridgeName)
+			if err != nil {
+				return fmt.Errorf("Failed to ovs-vsctl del-br %s stderr:%s (%v)", bridgeName, stderr, err)
+			}
+			break
+		}
 	}
-	return err
+
+	return nil
 }

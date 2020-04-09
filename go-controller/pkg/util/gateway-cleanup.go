@@ -10,7 +10,7 @@ import (
 )
 
 // GatewayCleanup removes all the NB DB objects created for a node's gateway
-func GatewayCleanup(nodeName string, nodeSubnet *net.IPNet) error {
+func GatewayCleanup(nodeName string) error {
 	// Get the cluster router
 	clusterRouter := GetK8sClusterRouter()
 	gatewayRouter := GWRouterPrefix + nodeName
@@ -35,11 +35,6 @@ func GatewayCleanup(nodeName string, nodeSubnet *net.IPNet) error {
 	}
 	if routerIP != nil {
 		nextHops = append(nextHops, routerIP)
-	}
-
-	if nodeSubnet != nil {
-		mgmtIfAddr := GetNodeManagementIfAddr(nodeSubnet)
-		nextHops = append(nextHops, mgmtIfAddr.IP)
 	}
 	staticRouteCleanup(clusterRouter, nextHops)
 
@@ -92,6 +87,52 @@ func GatewayCleanup(nodeName string, nodeSubnet *net.IPNet) error {
 					"error: %v", gatewayRouter, proto, uuid, stderr, err)
 			}
 		}
+	}
+
+	// We don't know the gateway mode as this is running in the master, try to delete the additional local
+	// gateway for the shared gateway mode. it will be no op if this is done for other gateway modes.
+	err = localGatewayCleanup(nodeName, clusterRouter)
+	return err
+}
+
+// localGatewayCleanup removes all the NB DB objects created for a node's local only gateway
+func localGatewayCleanup(nodeName, clusterRouter string) error {
+	gatewayRouter := fmt.Sprintf("GR_local_%s", nodeName)
+
+	// Get the gateway router port's IP address (connected to join switch)
+	var routerIP net.IP
+	routerIPNetwork, stderr, err := RunOVNNbctl("--if-exist", "get",
+		"logical_router_port", "rtoj-"+gatewayRouter, "networks")
+	if err != nil {
+		return fmt.Errorf("Failed to get logical router port rtoj-%s, stderr: %q, "+
+			"error: %v", gatewayRouter, stderr, err)
+	}
+
+	routerIPNetwork = strings.Trim(routerIPNetwork, "[]\"")
+	if routerIPNetwork != "" {
+		routerIP, _, err = net.ParseCIDR(routerIPNetwork)
+		if err != nil {
+			return fmt.Errorf("could not parse logical router port %q: %v",
+				routerIPNetwork, err)
+		}
+		staticRouteCleanup(clusterRouter, []net.IP{routerIP})
+	}
+
+	// Remove any gateway routers associated with nodeName
+	_, stderr, err = RunOVNNbctl("--if-exist", "lr-del",
+		gatewayRouter)
+	if err != nil {
+		return fmt.Errorf("Failed to delete gateway router %s, stderr: %q, "+
+			"error: %v", gatewayRouter, stderr, err)
+	}
+
+	// Remove external switch
+	externalSwitch := "ext_local_" + nodeName
+	_, stderr, err = RunOVNNbctl("--if-exist", "ls-del",
+		externalSwitch)
+	if err != nil {
+		return fmt.Errorf("Failed to delete external switch %s, stderr: %q, "+
+			"error: %v", externalSwitch, stderr, err)
 	}
 	return nil
 }

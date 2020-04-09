@@ -329,9 +329,15 @@ func (n *OvnNode) initSharedGateway(subnet *net.IPNet, gwNextHop net.IP, gwIntf 
 		return nil, fmt.Errorf("%s does not have a ipv4 address", gwIntf)
 	}
 
-	ifaceID, macAddress, err := bridgedGatewayNodeSetup(n.name, bridgeName, gwIntf, brCreated)
+	ifaceID, macAddress, err := bridgedGatewayNodeSetup(n.name, bridgeName, gwIntf,
+		util.PhysicalNetworkName, brCreated)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set up shared interface gateway: %v", err)
+	}
+
+	localMacAddress, err := initLocalOnlyGateway(n.name, subnet, n.stopChan)
+	if err != nil {
+		return nil, err
 	}
 
 	chassisID, err := util.GetNodeChassisID()
@@ -340,14 +346,15 @@ func (n *OvnNode) initSharedGateway(subnet *net.IPNet, gwNextHop net.IP, gwIntf 
 	}
 
 	err = util.SetL3GatewayConfig(nodeAnnotator, &util.L3GatewayConfig{
-		Mode:           config.GatewayModeShared,
-		ChassisID:      chassisID,
-		InterfaceID:    ifaceID,
-		MACAddress:     macAddress,
-		IPAddresses:    []*net.IPNet{ipAddress},
-		NextHops:       []net.IP{gwNextHop},
-		NodePortEnable: config.Gateway.NodeportEnable,
-		VLANID:         &config.Gateway.VLANID,
+		Mode:            config.GatewayModeShared,
+		ChassisID:       chassisID,
+		InterfaceID:     ifaceID,
+		MACAddress:      macAddress,
+		IPAddresses:     []*net.IPNet{ipAddress},
+		NextHops:        []net.IP{gwNextHop},
+		NodePortEnable:  config.Gateway.NodeportEnable,
+		VLANID:          &config.Gateway.VLANID,
+		LocalMACAddress: localMacAddress,
 	})
 	if err != nil {
 		return nil, err
