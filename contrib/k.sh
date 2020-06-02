@@ -197,67 +197,13 @@ ovn_apiServerAddress=${API_IP} \
   j2 ${KIND_CONFIG} -o ${KIND_CONFIG_LCL}
 
 # Create KIND cluster. For additional debug, add '--verbosity <int>': 0 None .. 3 Debug
-#kind create cluster --name ${KIND_CLUSTER_NAME} --kubeconfig ${HOME}/admin.conf --image kindest/node:${K8S_VERSION} --config=${KIND_CONFIG_LCL}
+kind create cluster --name ${KIND_CLUSTER_NAME} --kubeconfig ${HOME}/admin.conf --image kindest/node:${K8S_VERSION} --config=${KIND_CONFIG_LCL}
 export KUBECONFIG=${HOME}/admin.conf
-cat ${KUBECONFIG}
-mkdir -p /tmp/kind
-sudo chmod 777 /tmp/kind
-count=0
-until kubectl get secrets -o jsonpath='{.items[].data.ca\.crt}'
-do
-  if [ $count -gt 10 ]; then
-    echo "Failed to get k8s crt/token"
-    exit 1
+run_kubectl -n kube-system delete ds kube-proxy
+CONTROL_NODES=$(docker ps -f name=ovn-control | grep -v NAMES | awk '{ print $NF }')
+for n in $CONTROL_NODES; do
+  run_kubectl label node $n k8s.ovn.org/ovnkube-db=true
+  if [ "$KIND_REMOVE_TAINT" == true ]; then
+    run_kubectl taint node $n node-role.kubernetes.io/master:NoSchedule-
   fi
-  count=$((count+1))
-  echo "secrets not available on attempt $count"
-  sleep 5
 done
-kubectl get secrets -o jsonpath='{.items[].data.ca\.crt}' > /tmp/kind/ca.crt
-kubectl get secrets -o jsonpath='{.items[].data.token}' > /tmp/kind/token
-pushd ../dist/images
-sudo cp -f ../../go-controller/_output/go/bin/* .
-echo "ref: $(git rev-parse  --symbolic-full-name HEAD)  commit: $(git rev-parse  HEAD)" > git_info
-./daemonset.sh --image=zhouyun2000/ovn-kube-u:new_topo_upgrade --net-cidr=${NET_CIDR} --svc-cidr=${SVC_CIDR} --gateway-mode="" --gateway-options="" --k8s-apiserver=https://[${API_IP}]:11337 --ovn-master-count=${KIND_NUM_MASTER} --kind --master-loglevel=5
-popd
-kind load docker-image zhouyun2000/ovn-kube-u:new_topo_upgrade --name ${KIND_CLUSTER_NAME}
-pushd ../dist/yaml
-#run_kubectl -n kube-system delete ds kube-proxy
-run_kubectl create -f ovn-setup.yaml
-#CONTROL_NODES=$(docker ps -f name=ovn-control | grep -v NAMES | awk '{ print $NF }')
-#for n in $CONTROL_NODES; do
-#  run_kubectl label node $n k8s.ovn.org/ovnkube-db=true
-#  if [ "$KIND_REMOVE_TAINT" == true ]; then
-#    run_kubectl taint node $n node-role.kubernetes.io/master:NoSchedule-
-#  fi
-#done
-if [ "$KIND_HA" == true ]; then
-  run_kubectl create -f ovnkube-db-raft.yaml
-else
-  run_kubectl create -f ovnkube-db.yaml
-fi
-run_kubectl create -f ovnkube-master.yaml
-run_kubectl create -f ovnkube-node.yaml
-popd
-kind get clusters
-kind get nodes --name ${KIND_CLUSTER_NAME}
-kind export kubeconfig --name ovn
-if [ "$KIND_INSTALL_INGRESS" == true ]; then
-  run_kubectl apply -f ingress/mandatory.yaml
-  run_kubectl apply -f ingress/service-nodeport.yaml
-fi
-
-count=1
-until [ -z "$(kubectl get pod -A -o custom-columns=NAME:metadata.name,STATUS:.status.phase | tail -n +2 | grep -v Running)" ];do
-  if [ $count -gt 20 ]; then
-    echo "Some pods are not running after timeout"
-    exit 1
-  fi
-  echo "All pods not available yet on attempt $count:"
-  kubectl get pod -A || true
-  count=$((count+1))
-  sleep 10
-done
-echo "Pods are all up, allowing things settle for 30 seconds..."
-sleep 30
-

@@ -213,20 +213,20 @@ var _ = Describe("e2e control plane", func() {
 
 var _ = Describe("e2e external gateway connectivity", func() {
 	var haMode bool
-	var ovnPodName string
+	//var ovnPodName string
 	svcname := "externalgw"
-	pingTarget := "172.17.0.10"
-	pingTargetMask := "/16"
+	pingTarget := "172.17.0.1"
+	//pingTargetMask := "/16"
 	ovnNs := "ovn-kubernetes"
-	macvlanIface := "macvlan0"
+	//macvlanIface := "macvlan0"
 	ovnWorkerNode := "ovn-worker"
 	ovnWorkerNode2 := "ovn-worker2"
 	ovnHaWorkerNode := "ovn-control-plane2"
 	ovnHaWorkerNode2 := "ovn-control-plane3"
 	ovnContainer := "ovnkube-node"
 	ovnNsFlag := fmt.Sprintf("--namespace=%s", ovnNs)
-	ovnContainerFlag := fmt.Sprintf("--container=%s", ovnContainer)
-	ovnTargetCidr := fmt.Sprintf("%s%s", pingTarget, pingTargetMask)
+	//ovnContainerFlag := fmt.Sprintf("--container=%s", ovnContainer)
+	//ovnTargetCidr := fmt.Sprintf("%s%s", pingTarget, pingTargetMask)
 	f := framework.NewDefaultFramework(svcname)
 
 	// Add a Macvlan interface to an ovn worker node to simulate and external gateway
@@ -259,24 +259,24 @@ var _ = Describe("e2e external gateway connectivity", func() {
 		if kubectlOut == "''" {
 			framework.Failf("Unable to locate container %s on any known nodes", ovnContainer)
 		}
-		ovnPodName = strings.Trim(kubectlOut, "'")
+		//ovnPodName = strings.Trim(kubectlOut, "'")
 
 		// Add a macvlan interface to an ovnkube-node container
-		framework.Logf("Creating a macvlan interface named %s on pod %s", macvlanIface, ovnPodName)
-		framework.RunKubectlOrDie("exec", ovnPodName, ovnNsFlag, ovnContainerFlag,
-			"--", "ip", "link", "add", macvlanIface, "link", "eth0", "type", "macvlan", "mode", "bridge")
+		//framework.Logf("Creating a macvlan interface named %s on pod %s", macvlanIface, ovnPodName)
+		//framework.RunKubectlOrDie("exec", ovnPodName, ovnNsFlag, ovnContainerFlag,
+		//	"--", "ip", "link", "add", macvlanIface, "link", "eth0", "type", "macvlan", "mode", "bridge")
 
 		// Assign an IPv4 address to the new macvlan interface
-		framework.Logf("Assigning IP address %s to %s", ovnTargetCidr, macvlanIface)
-		framework.RunKubectlOrDie("exec", ovnPodName, ovnNsFlag, ovnContainerFlag,
-			"--", "ip", "address", "add", ovnTargetCidr, "dev", macvlanIface)
+		//framework.Logf("Assigning IP address %s to %s", ovnTargetCidr, macvlanIface)
+		//framework.RunKubectlOrDie("exec", ovnPodName, ovnNsFlag, ovnContainerFlag,
+		//	"--", "ip", "address", "add", ovnTargetCidr, "dev", macvlanIface)
 	})
 
 	// Cleanup the external interface after the test has completed
 	AfterEach(func() {
-		framework.Logf("Tearing down interface %s on %s", macvlanIface, ovnPodName)
-		framework.RunKubectlOrDie("exec", ovnPodName, ovnNsFlag, ovnContainerFlag,
-			"--", "ip", "link", "delete", macvlanIface)
+		//framework.Logf("Tearing down interface %s on %s", macvlanIface, ovnPodName)
+		//framework.RunKubectlOrDie("exec", ovnPodName, ovnNsFlag, ovnContainerFlag,
+		//	"--", "ip", "link", "delete", macvlanIface)
 	})
 
 	It("Should validate connectivity to the macvlan interface which is simulating an external gateway", func() {

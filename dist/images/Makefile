@@ -26,7 +26,7 @@ ovndb-vip: bld
 	--db-vip-image=docker.io/ovnkube/ovndb-vip-u:latest
 
 centos: bld
-	docker build -t ovn-daemonset .
+	docker build --network=host -t ovn-daemonset .
 	docker tag ovn-daemonset docker.io/ovnkube/ovn-daemonset:latest
 	# docker login -u ovnkube docker.io/ovnkube
 	# docker push docker.io/ovnkube/ovn-daemonset:latest
