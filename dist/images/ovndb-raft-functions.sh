@@ -51,8 +51,6 @@ check_ovnkube_db_ep() {
 }
 
 check_and_apply_ovnkube_db_ep() {
-  local port=${1}
-
   # Get IPs of all ovnkube-db PODs
   ips=()
   for ((i = 0; i < ${replicas}; i++)); do
@@ -78,7 +76,8 @@ check_and_apply_ovnkube_db_ep() {
     fi
 
     for ip in ${ips[@]}; do
-      wait_for_event attempts=10 check_ovnkube_db_ep ${ip} ${port}
+      wait_for_event attempts=10 check_ovnkube_db_ep ${ip} ${ovn_nb_port}
+      wait_for_event attempts=10 check_ovnkube_db_ep ${ip} ${ovn_sb_port}
     done
     set_ovnkube_db_ep ${ips[@]}
   else
@@ -191,9 +190,9 @@ ovsdb_cleanup() {
 # v3 - create nb_ovsdb/sb_ovsdb cluster in a separate container
 ovsdb-raft() {
   local db=${1}
-  local port=${2}
-  local raft_port=${3}
-  local election_timer=${4}
+  eval port=\$ovn_${db}_port
+  eval raft_port=\$ovn_${db}_raft_port
+  eval election_timer=\$ovn_${db}_raft_election_timer
   local initialize="false"
 
   ovn_db_pidfile=${OVN_RUNDIR}/ovn${db}_db.pid
@@ -278,8 +277,8 @@ ovsdb-raft() {
   last_node_index=$(expr ${replicas} - 1)
   # Create endpoints only if all ovnkube-db pods have started and are running. We do this
   # from the last pod of the statefulset.
-  if [[ ${db} == "nb" && "${POD_NAME}" == "ovnkube-db-"${last_node_index} ]]; then
-    check_and_apply_ovnkube_db_ep ${port}
+  if [[ ${db} == "sb" && "${POD_NAME}" == "ovnkube-db-"${last_node_index} ]]; then
+    check_and_apply_ovnkube_db_ep
   fi
 
   tail --follow=name ${OVN_LOGDIR}/ovsdb-server-${db}.log &

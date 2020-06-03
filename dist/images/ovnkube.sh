@@ -673,7 +673,9 @@ sb-ovsdb() {
   ovn-sbctl --inactivity-probe=0 set-connection p${transport}:${ovn_sb_port}:[${ovn_db_host}]
 
   # create the ovnkube-db endpoints
+  # first check we can access both NB/SB DBs
   wait_for_event attempts=10 check_ovnkube_db_ep ${ovn_db_host} ${ovn_nb_port}
+  wait_for_event attempts=10 check_ovnkube_db_ep ${ovn_db_host} ${ovn_sb_port}
   set_ovnkube_db_ep ${ovn_db_host}
 
   tail --follow=name ${OVN_LOGDIR}/ovsdb-server-sb.log &
@@ -1014,10 +1016,10 @@ case ${cmd} in
   cleanup-ovn-node
   ;;
 "nb-ovsdb-raft")
-  ovsdb-raft nb ${ovn_nb_port} ${ovn_nb_raft_port} ${ovn_nb_raft_election_timer}
+  ovsdb-raft nb
   ;;
 "sb-ovsdb-raft")
-  ovsdb-raft sb ${ovn_sb_port} ${ovn_sb_raft_port} ${ovn_sb_raft_election_timer}
+  ovsdb-raft sb
   ;;
 "db-raft-metrics")
   db-raft-metrics
