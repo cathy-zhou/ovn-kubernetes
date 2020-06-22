@@ -96,15 +96,7 @@ func (oc *Controller) addEgressFirewall(egressFirewall *egressfirewallapi.Egress
 		return errList
 	}
 
-	existingNodes, err := oc.kube.GetNodes()
-	if err != nil {
-		return []error{fmt.Errorf("error unable to add egressfirewall %s, cannot list nodes: %s", egressFirewall.Name, err)}
-	}
-	var joinSwitches []string
-	for _, node := range existingNodes.Items {
-		joinSwitches = append(joinSwitches, joinSwitch(node.Name))
-	}
-	err = ef.addACLToJoinSwitch(joinSwitches, nsInfo.addressSet.GetIPv4HashName(), nsInfo.addressSet.GetIPv6HashName())
+	err = ef.addACLToJoinSwitch(nsInfo.addressSet.GetIPv4HashName(), nsInfo.addressSet.GetIPv6HashName())
 	if err != nil {
 		errList = append(errList, err)
 	}
@@ -137,12 +129,6 @@ func (oc *Controller) deleteEgressFirewall(egressFirewall *egressfirewallapi.Egr
 	egressFirewallCopy := nsInfo.egressFirewallPolicy
 	nsInfo.egressFirewallPolicy = nil
 
-	existingNodes, err := oc.kube.GetNodes()
-	if err != nil {
-		return []error{fmt.Errorf("error deleting egressFirewall for namespace %s, cannot get nodes to delete ACLS %v",
-			egressFirewallCopy.namespace, err)}
-	}
-
 	stdout, stderr, err := util.RunOVNNbctl("--data=bare", "--no-heading",
 		"--columns=_uuid", "find", "ACL",
 		fmt.Sprintf("external-ids:egressFirewall=%s", egressFirewallCopy.namespace))
@@ -152,13 +138,11 @@ func (oc *Controller) deleteEgressFirewall(egressFirewall *egressfirewallapi.Egr
 	var errList []error
 	uuids := strings.Fields(stdout)
 	for _, uuid := range uuids {
-		for _, node := range existingNodes.Items {
-			_, stderr, err := util.RunOVNNbctl("remove", "logical_switch",
-				joinSwitch(node.Name), "acls", uuid)
-			if err != nil {
-				errList = append(errList, fmt.Errorf("failed to delete the rules for "+
-					"egressFirewall in namespace %s on node %s, stderr: %q (%v)", egressFirewallCopy.namespace, node.Name, stderr, err))
-			}
+		_, stderr, err := util.RunOVNNbctl("remove", "logical_switch", ovnJoinSwitch, "acls", uuid)
+		if err != nil {
+			errList = append(errList, fmt.Errorf("failed to delete the rules for "+
+				"egressFirewall in namespace %s on switch %s, stderr: %q (%v)", egressFirewallCopy.namespace,
+				ovnJoinSwitch, stderr, err))
 		}
 	}
 	return errList
@@ -170,7 +154,7 @@ func (oc *Controller) updateEgressFirewallWithRetry(egressfirewall *egressfirewa
 	})
 }
 
-func (ef *egressFirewall) addACLToJoinSwitch(joinSwitches []string, hashedAddressSetNameIPv4, hashedAddressSetNameIPv6 string) error {
+func (ef *egressFirewall) addACLToJoinSwitch(hashedAddressSetNameIPv4, hashedAddressSetNameIPv6 string) error {
 	for _, rule := range ef.egressRules {
 		var match string
 		var action string
@@ -200,23 +184,21 @@ func (ef *egressFirewall) addACLToJoinSwitch(joinSwitches []string, hashedAddres
 		if err != nil {
 			return fmt.Errorf("error executing find ACL command, stderr: %q, %+v", stderr, err)
 		}
-		for _, joinSwitch := range joinSwitches {
-			if uuid == "" {
-				_, stderr, err := util.RunOVNNbctl("--id=@acl", "create", "acl",
-					fmt.Sprintf("priority=%d", defaultStartPriority-rule.id),
-					fmt.Sprintf("direction=%s", fromLport), match, "action="+action,
-					fmt.Sprintf("external-ids:egressFirewall=%s", ef.namespace),
-					"--", "add", "logical_switch", joinSwitch,
-					"acls", "@acl")
-				if err != nil {
-					return fmt.Errorf("error executing create ACL command, stderr: %q, %+v", stderr, err)
-				}
-			} else {
-				_, stderr, err := util.RunOVNNbctl("add", "logical_switch", joinSwitch, "acls", uuid)
-				if err != nil {
-					return fmt.Errorf("error adding ACL to joinsSwitch %s failed, stderr: %q, %+v", joinSwitch, stderr, err)
+		if uuid == "" {
+			_, stderr, err := util.RunOVNNbctl("--id=@acl", "create", "acl",
+				fmt.Sprintf("priority=%d", defaultStartPriority-rule.id),
+				fmt.Sprintf("direction=%s", fromLport), match, "action="+action,
+				fmt.Sprintf("external-ids:egressFirewall=%s", ef.namespace),
+				"--", "add", "logical_switch", ovnJoinSwitch,
+				"acls", "@acl")
+			if err != nil {
+				return fmt.Errorf("error executing create ACL command, stderr: %q, %+v", stderr, err)
+			}
+		} else {
+			_, stderr, err := util.RunOVNNbctl("add", "logical_switch", ovnJoinSwitch, "acls", uuid)
+			if err != nil {
+				return fmt.Errorf("error adding ACL to %s switch failed, stderr: %q, %+v", ovnJoinSwitch, stderr, err)
 
-				}
 			}
 		}
 	}
@@ -284,8 +266,4 @@ func egressGetL4Match(ports []egressfirewallapi.EgressFirewallPort) string {
 		}
 	}
 	return l4Match
-}
-
-func joinSwitch(nodeName string) string {
-	return fmt.Sprintf("join_%s", nodeName)
 }

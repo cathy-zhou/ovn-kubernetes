@@ -119,7 +119,6 @@ type Controller struct {
 	stopChan              <-chan struct{}
 
 	masterSubnetAllocator   *subnetallocator.SubnetAllocator
-	joinSubnetAllocator     *subnetallocator.SubnetAllocator
 	nodeLocalNatIPAllocator *ipallocator.Range
 
 	TCPLoadBalancerUUID  string
@@ -202,6 +201,8 @@ type Controller struct {
 
 	serviceLBLock sync.Mutex
 
+	joinSwIPManager *joinSwitchIPManager
+
 	// event recorder used to post events to k8s
 	recorder record.EventRecorder
 
@@ -257,7 +258,6 @@ func NewOvnController(kubeClient kubernetes.Interface, egressIPClient egressipap
 		masterSubnetAllocator:         subnetallocator.NewSubnetAllocator(),
 		nodeLocalNatIPAllocator:       &ipallocator.Range{},
 		lsManager:                     newLogicalSwitchManager(),
-		joinSubnetAllocator:           subnetallocator.NewSubnetAllocator(),
 		logicalPortCache:              newPortCache(stopChan),
 		namespaces:                    make(map[string]*namespaceInfo),
 		namespacesMutex:               sync.Mutex{},
@@ -278,6 +278,7 @@ func NewOvnController(kubeClient kubernetes.Interface, egressIPClient egressipap
 		serviceVIPToNameLock:          sync.Mutex{},
 		serviceLBMap:                  make(map[string]map[string]*loadBalancerConf),
 		serviceLBLock:                 sync.Mutex{},
+		joinSwIPManager:               nil,
 		recorder:                      recorder,
 		ovnNBClient:                   ovnNBClient,
 		ovnSBClient:                   ovnSBClient,
@@ -918,6 +919,9 @@ func (oc *Controller) syncNodeGateway(node *kapi.Node, hostSubnets []*net.IPNet)
 		if err := gatewayCleanup(node.Name); err != nil {
 			return fmt.Errorf("error cleaning up gateway for node %s: %v", node.Name, err)
 		}
+		if err := oc.joinSwIPManager.releaseJoinLRPIPs(node.Name); err != nil {
+			return err
+		}
 	} else if hostSubnets != nil {
 		if err := oc.syncGatewayLogicalNetwork(node, l3GatewayConfig, hostSubnets); err != nil {
 			return fmt.Errorf("error creating gateway for node %s: %v", node.Name, err)
@@ -968,28 +972,6 @@ func (oc *Controller) WatchNodes() error {
 					klog.Warningf(err.Error())
 				}
 				gatewaysFailed.Store(node.Name, true)
-			}
-
-			//add any existing egressFirewall objects to join switch
-			namespaceList, err := oc.watchFactory.GetNamespaces()
-			if err != nil {
-				klog.Errorf("Error getting list of namespaces when adding node: %s", node.Name)
-			}
-			for _, namespace := range namespaceList {
-				nsInfo, err := oc.waitForNamespaceLocked(namespace.Name)
-				if err != nil {
-					klog.Errorf("Failed to wait for namespace %s event (%v)",
-						namespace.Name, err)
-					continue
-				}
-				if nsInfo.egressFirewallPolicy != nil {
-					err = nsInfo.egressFirewallPolicy.addACLToJoinSwitch([]string{joinSwitch(node.Name)}, nsInfo.addressSet.GetIPv4HashName(), nsInfo.addressSet.GetIPv6HashName())
-					if err != nil {
-						klog.Errorf("%s", err)
-					}
-				}
-
-				nsInfo.Unlock()
 			}
 		},
 		UpdateFunc: func(old, new interface{}) {
@@ -1050,9 +1032,8 @@ func (oc *Controller) WatchNodes() error {
 				"various caches", node.Name)
 
 			nodeSubnets, _ := util.ParseNodeHostSubnetAnnotation(node)
-			joinSubnets, _ := util.ParseNodeJoinSubnetAnnotation(node)
 			dnatSnatIPs, _ := util.ParseNodeLocalNatIPAnnotation(node)
-			err := oc.deleteNode(node.Name, nodeSubnets, joinSubnets, dnatSnatIPs)
+			err := oc.deleteNode(node.Name, nodeSubnets, dnatSnatIPs)
 			if err != nil {
 				klog.Error(err)
 			}
