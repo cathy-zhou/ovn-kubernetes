@@ -16,8 +16,14 @@ import (
 )
 
 // gatewayInit creates a gateway router for the local chassis.
-func gatewayInit(nodeName string, clusterIPSubnet []*net.IPNet, hostSubnets []*net.IPNet, joinSubnets []*net.IPNet,
-	l3GatewayConfig *util.L3GatewayConfig, sctpSupport bool) error {
+func gatewayInit(nodeName string, clusterIPSubnet []*net.IPNet, hostSubnets []*net.IPNet,
+	l3GatewayConfig *util.L3GatewayConfig, sctpSupport bool, gwLRPIPNets, drLRPIPNets []*net.IPNet) error {
+
+	gwLRPIPs := make([]net.IP, 0)
+	for _, gwLRPIPNet := range gwLRPIPNets {
+		gwLRPIPs = append(gwLRPIPs, gwLRPIPNet.IP)
+	}
+
 	// Create a gateway router.
 	gatewayRouter := gwRouterPrefix + nodeName
 	physicalIPs := make([]string, len(l3GatewayConfig.IPAddresses))
@@ -34,78 +40,30 @@ func gatewayInit(nodeName string, clusterIPSubnet []*net.IPNet, hostSubnets []*n
 			"stderr: %q, error: %v", gatewayRouter, stdout, stderr, err)
 	}
 
-	var gwLRPMAC, drLRPMAC net.HardwareAddr
-	var gwLRPIPs, drLRPIPs []net.IP
-	var gwLRPAddrs, drLRPAddrs []string
-
-	for _, joinSubnet := range joinSubnets {
-		prefixLen, _ := joinSubnet.Mask.Size()
-		gwLRPIP := util.NextIP(joinSubnet.IP)
-		gwLRPIPs = append(gwLRPIPs, gwLRPIP)
-		gwLRPAddrs = append(gwLRPAddrs, fmt.Sprintf("%s/%d", gwLRPIP.String(), prefixLen))
-		drLRPIP := util.NextIP(gwLRPIP)
-		drLRPIPs = append(drLRPIPs, drLRPIP)
-		drLRPAddrs = append(drLRPAddrs, fmt.Sprintf("%s/%d", drLRPIP.String(), prefixLen))
-
-		if gwLRPMAC == nil || !utilnet.IsIPv6(gwLRPIP) {
-			gwLRPMAC = util.IPAddrToHWAddr(gwLRPIP)
-			drLRPMAC = util.IPAddrToHWAddr(drLRPIP)
-		}
-	}
-
-	joinSwitch := joinSwitchPrefix + nodeName
-	// create the per-node join switch
-	stdout, stderr, err = util.RunOVNNbctl("--", "--may-exist", "ls-add", joinSwitch)
-	if err != nil {
-		return fmt.Errorf("failed to create logical switch %q, stdout: %q, stderr: %q, error: %v",
-			joinSwitch, stdout, stderr, err)
-	}
-
 	gwSwitchPort := joinSwitchToGwRouterPrefix + gatewayRouter
 	gwRouterPort := gwRouterToJoinSwitchPrefix + gatewayRouter
+
 	stdout, stderr, err = util.RunOVNNbctl(
-		"--", "--may-exist", "lsp-add", joinSwitch, gwSwitchPort,
+		"--", "--may-exist", "lsp-add", ovnJoinSwitch, gwSwitchPort,
 		"--", "set", "logical_switch_port", gwSwitchPort, "type=router", "options:router-port="+gwRouterPort,
 		"addresses=router")
 	if err != nil {
 		return fmt.Errorf("failed to add port %q to logical switch %q, "+
-			"stdout: %q, stderr: %q, error: %v", gwSwitchPort, joinSwitch, stdout, stderr, err)
+			"stdout: %q, stderr: %q, error: %v", gwSwitchPort, ovnJoinSwitch, stdout, stderr, err)
 	}
 
+	gwLRPMAC := util.IPAddrToHWAddr(gwLRPIPs[0])
 	args := []string{
 		"--", "--if-exists", "lrp-del", gwRouterPort,
 		"--", "lrp-add", gatewayRouter, gwRouterPort, gwLRPMAC.String(),
 	}
-	args = append(args, gwLRPAddrs...)
+	for _, gwLRPIPNet := range gwLRPIPNets {
+		args = append(args, gwLRPIPNet.String())
+	}
 	_, stderr, err = util.RunOVNNbctl(args...)
 	if err != nil {
 		return fmt.Errorf("failed to add logical router port %q for gateway router %s, "+
 			"stderr: %q, error: %v", gwRouterPort, gatewayRouter, stderr, err)
-	}
-
-	// jtod/dtoj - patch ports that connect the per-node join switch to distributed router
-	drSwitchPort := joinSwitchToDistRouterPrefix + nodeName
-	drRouterPort := distRouterToJoinSwitchPrefix + nodeName
-
-	// Connect the per-node join switch to the distributed router.
-	stdout, stderr, err = util.RunOVNNbctl(
-		"--", "--may-exist", "lsp-add", joinSwitch, drSwitchPort,
-		"--", "set", "logical_switch_port", drSwitchPort, "type=router", "options:router-port="+drRouterPort,
-		"addresses=router")
-	if err != nil {
-		return fmt.Errorf("failed to add port %q to logical switch %q, "+
-			"stdout: %q, stderr: %q, error: %v", drSwitchPort, joinSwitch, stdout, stderr, err)
-	}
-
-	args = []string{
-		"--", "--if-exists", "lrp-del", drRouterPort,
-		"--", "lrp-add", ovnClusterRouter, drRouterPort, drLRPMAC.String(),
-	}
-	args = append(args, drLRPAddrs...)
-	_, stderr, err = util.RunOVNNbctl(args...)
-	if err != nil {
-		return fmt.Errorf("failed to add logical router port %q to %s, "+
-			"stderr: %q, error: %v", drRouterPort, ovnClusterRouter, stderr, err)
 	}
 
 	// Local gateway mode does not need SNAT or routes on GR because GR is only used for multiple external gws
@@ -124,7 +82,7 @@ func gatewayInit(nodeName string, clusterIPSubnet []*net.IPNet, hostSubnets []*n
 	}
 
 	for _, entry := range clusterIPSubnet {
-		drLRPIP, err := util.MatchIPFamily(utilnet.IsIPv6CIDR(entry), drLRPIPs)
+		drLRPIPNet, err := util.MatchIPNetFamily(utilnet.IsIPv6CIDR(entry), drLRPIPNets)
 		if err != nil {
 			return fmt.Errorf("failed to add a static route in GR %s with distributed "+
 				"router as the nexthop: %v",
@@ -133,7 +91,7 @@ func gatewayInit(nodeName string, clusterIPSubnet []*net.IPNet, hostSubnets []*n
 
 		// Add a static route in GR with distributed router as the nexthop.
 		stdout, stderr, err = util.RunOVNNbctl("--may-exist", "lr-route-add",
-			gatewayRouter, entry.String(), drLRPIP.String())
+			gatewayRouter, entry.String(), drLRPIPNet.IP.String())
 		if err != nil {
 			return fmt.Errorf("failed to add a static route in GR %s with distributed "+
 				"router as the nexthop, stdout: %q, stderr: %q, error: %v",
@@ -284,6 +242,19 @@ func gatewayInit(nodeName string, clusterIPSubnet []*net.IPNet, hostSubnets []*n
 			return fmt.Errorf("failed to add a static route in GR %s with physical "+
 				"gateway as the default next hop, stdout: %q, "+
 				"stderr: %q, error: %v", gatewayRouter, stdout, stderr, err)
+		}
+	}
+
+	// We need to add a /32 route to the Gateway router's IP, on the
+	// cluster router, to ensure that the return traffic goes back
+	// to the same gateway router
+	for _, gwLRPIP := range gwLRPIPs {
+		stdout, stderr, err = util.RunOVNNbctl("--may-exist", "lr-route-add",
+			ovnClusterRouter, gwLRPIP.String(), gwLRPIP.String())
+		if err != nil {
+			return fmt.Errorf("failed to add /32 route to Gateway router's IP of %q "+
+				"on the distributed router, stdout: %q, stderr: %q, error: %v",
+				gwLRPIP.String(), stdout, stderr, err)
 		}
 	}
 

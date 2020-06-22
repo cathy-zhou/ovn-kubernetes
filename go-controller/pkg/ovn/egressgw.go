@@ -339,16 +339,15 @@ func (oc *Controller) addHybridRoutePolicyForPod(podIP net.IP, node string) erro
 			l3Prefix = "ip4"
 		}
 		// get the GR to join switch ip address
-		out, stderr, err := util.RunOVNNbctl("--data=bare", "--no-heading", "--columns=networks", "find",
-			"logical_router_port", fmt.Sprintf("name=rtoj-GR_%s", node))
+		grJoinIPnets, err := util.GetLrpNetworks(fmt.Sprintf("rtoj-GR_%s", node))
 		if err != nil {
-			return fmt.Errorf("unable to find IP address for node: %s, rtoj port, stderr: %s, err: %v", node,
-				stderr, err)
+			return fmt.Errorf("unable to find IP address for node: %s, rtoj port, err: %v", node, err)
 		}
-		grJoinIP, _, err := net.ParseCIDR(out)
+		grJoinIPnet, err := util.MatchIPNetFamily(utilnet.IsIPv6(podIP), grJoinIPnets)
 		if err != nil {
-			return fmt.Errorf("failed to parse gateway router join interface IP: %s, err: %v", grJoinIP, err)
+			return fmt.Errorf("unable to find %s IP address for node: %s, rtoj port, err: %v", l3Prefix, node, err)
 		}
+
 		var matchDst string
 		var clusterL3Prefix string
 		for _, clusterSubnet := range config.Default.ClusterSubnets {
@@ -362,11 +361,12 @@ func (oc *Controller) addHybridRoutePolicyForPod(podIP net.IP, node string) erro
 			}
 			matchDst += fmt.Sprintf(" && %s.dst != %s", clusterL3Prefix, clusterSubnet.CIDR)
 		}
+
 		// traffic destined outside of cluster subnet go to GR
 		matchStr := fmt.Sprintf(`inport == "rtos-%s" && %s.src == %s`, node, l3Prefix, podIP)
 		matchStr += matchDst
-		_, stderr, err = util.RunOVNNbctl("lr-policy-add", ovnClusterRouter, "501", matchStr, "reroute",
-			grJoinIP.String())
+		_, stderr, err := util.RunOVNNbctl("lr-policy-add", ovnClusterRouter, "501", matchStr, "reroute",
+			grJoinIPnet.IP.String())
 		if err != nil {
 			// TODO: lr-policy-add doesn't support --may-exist, resort to this workaround for now.
 			// Have raised an issue against ovn repository (https://github.com/ovn-org/ovn/issues/49)

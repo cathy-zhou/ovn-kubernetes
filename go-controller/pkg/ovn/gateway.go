@@ -13,20 +13,20 @@ import (
 const (
 	// ovnClusterRouter is the name of the distributed router
 	ovnClusterRouter = "ovn_cluster_router"
+	ovnJoinSwitch    = "join"
 
-	joinSwitchPrefix             = "join_"
-	externalSwitchPrefix         = "ext_"
-	gwRouterPrefix               = "GR_"
-	routerToSwitchPrefix         = "rtos-"
-	switchToRouterPrefix         = "stor-"
-	joinSwitchToGwRouterPrefix   = "jtor-"
-	gwRouterToJoinSwitchPrefix   = "rtoj-"
-	distRouterToJoinSwitchPrefix = "dtoj-"
-	joinSwitchToDistRouterPrefix = "jtod-"
-	extSwitchToGwRouterPrefix    = "etor-"
-	gwRouterToExtSwitchPrefix    = "rtoe-"
+	externalSwitchPrefix       = "ext_"
+	gwRouterPrefix             = "GR_"
+	routerToSwitchPrefix       = "rtos-"
+	switchToRouterPrefix       = "stor-"
+	joinSwitchToGwRouterPrefix = "jtor-"
+	gwRouterToJoinSwitchPrefix = "rtoj-"
+	extSwitchToGwRouterPrefix  = "etor-"
+	gwRouterToExtSwitchPrefix  = "rtoe-"
 
-	nodeLocalSwitch = "node_local_switch"
+	nodeLocalSwitch  = "node_local_switch"
+	v4JoinSubnetCidr = "100.64.0.1/16"
+	v6JoinSubnetCidr = "fd98::1/64"
 
 	// priority of logical router policies on the ovnClusterRouter
 	egressFirewallStartPriority           = "10000"
