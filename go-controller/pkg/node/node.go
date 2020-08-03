@@ -267,6 +267,7 @@ func (n *OvnNode) Start() error {
 			return err
 		}
 	}
+	klog.Infof("CATHY %s node config file create", n.name)
 
 	kclient, ok := n.Kube.(*kube.Kube)
 	if !ok {

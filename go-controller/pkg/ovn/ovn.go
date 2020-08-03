@@ -425,6 +425,7 @@ func (oc *Controller) WatchPods() error {
 				return
 			}
 
+			klog.V(5).Infof("CATHY %s/%s pod event add", pod.Namespace, pod.Name)
 			if podScheduled(pod) {
 				if err := oc.addLogicalPort(pod); err != nil {
 					klog.Errorf(err.Error())
@@ -442,6 +443,7 @@ func (oc *Controller) WatchPods() error {
 				return
 			}
 
+			klog.V(5).Infof("CATHY %s/%s pod event update", pod.Namespace, pod.Name)
 			_, retry := retryPods.Load(pod.UID)
 			if podScheduled(pod) && retry {
 				if err := oc.addLogicalPort(pod); err != nil {
@@ -454,6 +456,7 @@ func (oc *Controller) WatchPods() error {
 		},
 		DeleteFunc: func(obj interface{}) {
 			pod := obj.(*kapi.Pod)
+			klog.V(5).Infof("CATHY %s/%s pod event delete", pod.Namespace, pod.Name)
 			oc.deleteLogicalPort(pod)
 			retryPods.Delete(pod.UID)
 		},
@@ -635,7 +638,8 @@ func (oc *Controller) WatchNodes() error {
 				return
 			}
 
-			klog.V(5).Infof("Added event for Node %q", node.Name)
+			// klog.V(5).Infof("Added event for Node %q", node.Name)
+			klog.V(5).Infof("CATHY %q node event add", node.Name)
 			hostSubnets, err := oc.addNode(node)
 			if err != nil {
 				klog.Errorf("NodeAdd: error creating subnet for node %s: %v", node.Name, err)
@@ -663,6 +667,8 @@ func (oc *Controller) WatchNodes() error {
 		UpdateFunc: func(old, new interface{}) {
 			oldNode := old.(*kapi.Node)
 			node := new.(*kapi.Node)
+
+			klog.V(5).Infof("CATHY %q node event update", node.Name)
 
 			shouldUpdate, err := shouldUpdate(node, oldNode)
 			if err != nil {
@@ -714,8 +720,9 @@ func (oc *Controller) WatchNodes() error {
 		},
 		DeleteFunc: func(obj interface{}) {
 			node := obj.(*kapi.Node)
-			klog.V(5).Infof("Delete event for Node %q. Removing the node from "+
-				"various caches", node.Name)
+			//klog.V(5).Infof("Delete event for Node %q. Removing the node from "+
+			//	"various caches", node.Name)
+			klog.V(5).Infof("CATHY %q node event delete", node.Name)
 
 			nodeSubnets, _ := util.ParseNodeHostSubnetAnnotation(node)
 			joinSubnets, _ := util.ParseNodeJoinSubnetAnnotation(node)

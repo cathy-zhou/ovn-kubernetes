@@ -35,6 +35,7 @@ type Interface interface {
 	CIDR() net.IPNet
 
 	// For testing
+	Used() int
 	Has(ip net.IP) bool
 }
 

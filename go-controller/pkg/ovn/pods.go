@@ -35,6 +35,7 @@ func (oc *Controller) syncPods(pods []interface{}) {
 		if podScheduled(pod) && podWantsNetwork(pod) && err == nil {
 			logicalPort := podLogicalPortName(pod)
 			expectedLogicalPorts[logicalPort] = true
+			klog.V(5).Infof("CATHY %s/%s port IPs reserve syncPods()", pod.Namespace, pod.Name)
 			if err = oc.lsManager.AllocateIPs(pod.Spec.NodeName, annotations.IPs); err != nil {
 				klog.Errorf("Couldn't allocate IPs: %s for pod: %s on node: %s"+
 					" error: %v", util.JoinIPNetIPs(annotations.IPs, " "), logicalPort,
@@ -74,12 +75,27 @@ func (oc *Controller) deleteLogicalPort(pod *kapi.Pod) {
 	}
 
 	podDesc := pod.Namespace + "/" + pod.Name
-	klog.Infof("Deleting pod: %s", podDesc)
+	klog.V(5).Infof("CATHY %s/%s deleteLogicalPort", pod.Namespace, pod.Name)
+	//klog.Infof("Deleting pod: %s", podDesc)
 
 	logicalPort := podLogicalPortName(pod)
 	portInfo, err := oc.logicalPortCache.get(logicalPort)
 	if err != nil {
 		klog.Errorf(err.Error())
+		// if the pod is not in the cache, the IPs may already been reserved in syncPods()
+		nodeName := pod.Spec.NodeName
+		if nodeName != "" {
+			annotations, err := util.UnmarshalPodAnnotation(pod.Annotations)
+			if err == nil {
+				podIPs := annotations.IPs
+				if len(podIPs) != 0 {
+					klog.V(5).Infof("CATHY %s/%s port IPs release deleteLogicalPort 1", pod.Namespace, pod.Name)
+					if err := oc.lsManager.ReleaseIPs(nodeName, podIPs); err != nil {
+						klog.Errorf(err.Error())
+					}
+				}
+			}
+		}
 		return
 	}
 
@@ -103,6 +119,7 @@ func (oc *Controller) deleteLogicalPort(pod *kapi.Pod) {
 			podDesc, out, stderr, err)
 	}
 
+	klog.V(5).Infof("CATHY %s/%s port IPs release deleteLogicalPort 2", pod.Namespace, pod.Name)
 	if err := oc.lsManager.ReleaseIPs(portInfo.logicalSwitch, portInfo.ips); err != nil {
 		klog.Errorf(err.Error())
 	}
@@ -219,6 +236,7 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 		return nil
 	}
 
+	klog.V(5).Infof("CATHY %s/%s addLogicalPort", pod.Namespace, pod.Name)
 	// Keep track of how long syncs take.
 	start := time.Now()
 	defer func() {
@@ -270,6 +288,7 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 
 	defer func() {
 		if releaseIPs && err != nil {
+			klog.V(5).Infof("CATHY %s/%s port IPs release addLogicalPort", pod.Namespace, pod.Name)
 			if relErr := oc.lsManager.ReleaseIPs(logicalSwitch, podIfAddrs); relErr != nil {
 				klog.Errorf("Error when releasing IPs for node: %s, err: %q",
 					logicalSwitch, relErr)
@@ -319,6 +338,7 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 				portName, logicalSwitch, err)
 		}
 		if podMac == nil || podIfAddrs == nil {
+			klog.V(5).Infof("CATHY %s/%s pod IPs allocate addLogicalPort", pod.Namespace, pod.Name)
 			podMac, podIfAddrs, err = oc.assignPodAddresses(logicalSwitch)
 			if err != nil {
 				return fmt.Errorf("failed to assign pod addresses for pod %s on node: %s, err: %v",
@@ -327,6 +347,7 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 			releaseIPs = true
 		} else {
 			if len(podIfAddrs) > 0 {
+				klog.V(5).Infof("CATHY %s/%s pod IPs reserve addLogicalPort", pod.Namespace, pod.Name)
 				if err = oc.lsManager.AllocateIPs(logicalSwitch, podIfAddrs); err != nil {
 					klog.Warningf("Failed to block off already allocated IPs: %s for pod %s on node: %s"+
 						" error: %v", util.JoinIPNetIPs(podIfAddrs, " "), portName,

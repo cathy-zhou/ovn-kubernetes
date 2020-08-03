@@ -659,6 +659,10 @@ func (oc *Controller) addNodeAnnotations(node *kapi.Node, hostSubnets []*net.IPN
 func (oc *Controller) addNode(node *kapi.Node) ([]*net.IPNet, error) {
 	oc.clearInitialNodeNetworkUnavailableCondition(node, nil)
 
+	if err := oc.lsManager.PrepareToAddNode(node.Name, true); err != nil {
+		return nil, err
+	}
+
 	hostSubnets, _ := util.ParseNodeHostSubnetAnnotation(node)
 	if hostSubnets != nil {
 		// Node already has subnet assigned; ensure its logical network is set up

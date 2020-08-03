@@ -20,16 +20,55 @@ type logicalSwitchInfo struct {
 	hostSubnets  []*net.IPNet
 	ipams        []ipam.Interface
 	noHostSubnet bool
+	deleted      bool
+	ipamRsvdIps  []int
 }
 
 type ipamFactoryFunc func(*net.IPNet) (ipam.Interface, error)
 
 // logicalSwitchManager provides switch info management APIs including IPAM for the host subnets
 type logicalSwitchManager struct {
-	cache map[string]logicalSwitchInfo
+	cache map[string]*logicalSwitchInfo
 	// A RW mutex for logicalSwitchManager which holds logicalSwitch information
 	sync.RWMutex
 	ipamFunc ipamFactoryFunc
+}
+
+func lsi_print(lsi *logicalSwitchInfo, nodeName, funcName string) {
+	str := "not_deleted"
+	if lsi.deleted {
+		str = "deleted"
+	}
+	for i, ipam := range lsi.ipams {
+		klog.V(5).Infof("CATHY %s node lsm %d used %d %s initUsed %d %s", nodeName, i, ipam.Used(), str, lsi.ipamRsvdIps[i], funcName)
+	}
+}
+
+func (manager *logicalSwitchManager) PrepareToAddNode(nodeName string, needLock bool) error {
+	klog.V(5).Infof("CATHY %s node PrepareToAddNode start needLock %v", nodeName, needLock)
+
+	if needLock {
+		manager.RLock()
+		defer manager.RUnlock()
+	}
+	lsi, ok := manager.cache[nodeName]
+	if !ok || !lsi.deleted {
+		if !ok {
+			klog.V(5).Infof("CATHY %s node PrepareToAddNode lsi not found", nodeName)
+		} else {
+			klog.V(5).Infof("CATHY %s node PrepareToAddNode lsi not_deleted", nodeName)
+		}
+		return nil
+	}
+	lsi_print(lsi, nodeName, "PrepareToAddNode")
+	for i, ipam := range lsi.ipams {
+		if ipam.Used() > lsi.ipamRsvdIps[i] {
+			klog.V(5).Infof("CATHY %s node CanAddNode returns Error", nodeName)
+			return fmt.Errorf("node %s is deleted but there is still pods on it", nodeName)
+		}
+	}
+	delete(manager.cache, nodeName)
+	return nil
 }
 
 // NewIPAMAllocator provides an ipam interface which can be used for IPAM
@@ -81,7 +120,7 @@ func reserveIPs(subnet *net.IPNet, ipam ipam.Interface) error {
 // Initializes a new logical switch manager
 func newLogicalSwitchManager() *logicalSwitchManager {
 	return &logicalSwitchManager{
-		cache:    make(map[string]logicalSwitchInfo),
+		cache:    make(map[string]*logicalSwitchInfo),
 		RWMutex:  sync.RWMutex{},
 		ipamFunc: NewIPAMAllocator,
 	}
@@ -92,11 +131,18 @@ func newLogicalSwitchManager() *logicalSwitchManager {
 func (manager *logicalSwitchManager) AddNode(nodeName string, hostSubnets []*net.IPNet) error {
 	manager.Lock()
 	defer manager.Unlock()
+
+	if err := manager.PrepareToAddNode(nodeName, false); err != nil {
+		return err
+	}
+
 	if lsi, ok := manager.cache[nodeName]; ok && !reflect.DeepEqual(lsi.hostSubnets, hostSubnets) {
 		klog.Warningf("Node %q logical switch already in cache with subnet %s; replacing with %s", nodeName,
 			util.JoinIPNets(lsi.hostSubnets, ","), util.JoinIPNets(hostSubnets, ","))
+		lsi_print(lsi, nodeName, "AddNodeOldReplace")
 	}
 	var ipams []ipam.Interface
+	var used []int
 	for _, subnet := range hostSubnets {
 		ipam, err := manager.ipamFunc(subnet)
 		if err != nil {
@@ -104,12 +150,17 @@ func (manager *logicalSwitchManager) AddNode(nodeName string, hostSubnets []*net
 			return err
 		}
 		ipams = append(ipams, ipam)
+		used = append(used, ipam.Used())
+
 	}
-	manager.cache[nodeName] = logicalSwitchInfo{
+	lsi := &logicalSwitchInfo{
 		hostSubnets:  hostSubnets,
 		ipams:        ipams,
 		noHostSubnet: len(hostSubnets) == 0,
+		ipamRsvdIps:  used,
 	}
+	lsi_print(lsi, nodeName, "AddNode")
+	manager.cache[nodeName] = lsi
 
 	return nil
 }
@@ -127,7 +178,12 @@ func (manager *logicalSwitchManager) AddNoHostSubnetNode(nodeName string) error 
 func (manager *logicalSwitchManager) DeleteNode(nodeName string) {
 	manager.Lock()
 	defer manager.Unlock()
-	delete(manager.cache, nodeName)
+	lsi, ok := manager.cache[nodeName]
+	if ok {
+		lsi.deleted = true
+		lsi_print(lsi, nodeName, "DeleteNode")
+	}
+	_ = manager.PrepareToAddNode(nodeName, false)
 }
 
 // Given a switch name, checks if the switch is a noHostSubnet switch
@@ -162,7 +218,7 @@ func (manager *logicalSwitchManager) AllocateIPs(nodeName string, ipnets []*net.
 	manager.RLock()
 	defer manager.RUnlock()
 	lsi, ok := manager.cache[nodeName]
-	if len(ipnets) == 0 || !ok || len(lsi.ipams) == 0 {
+	if len(ipnets) == 0 || !ok || len(lsi.ipams) == 0 || lsi.deleted {
 		return fmt.Errorf("unable to allocate ips %v for node: %s",
 			ipnets, nodeName)
 
@@ -172,12 +228,14 @@ func (manager *logicalSwitchManager) AllocateIPs(nodeName string, ipnets []*net.
 			cidr := ipam.CIDR()
 			if cidr.Contains(ipnet.IP) {
 				if err := ipam.Allocate(ipnet.IP); err != nil {
+					lsi_print(lsi, nodeName, "AllocateIPsErr")
 					return err
 				}
 				break
 			}
 		}
 	}
+	lsi_print(lsi, nodeName, "AllocateIPsSucc")
 	return nil
 }
 
@@ -193,6 +251,10 @@ func (manager *logicalSwitchManager) AllocateNextIPs(nodeName string) ([]*net.IP
 
 	if !ok {
 		return nil, fmt.Errorf("node %s not found in the logical switch manager cache", nodeName)
+	}
+
+	if lsi.deleted {
+		return nil, fmt.Errorf("node %s is deleted and it is not found in the logical switch manager cache", nodeName)
 	}
 
 	if len(lsi.ipams) == 0 {
@@ -214,6 +276,9 @@ func (manager *logicalSwitchManager) AllocateNextIPs(nodeName string) ([]*net.IP
 				}
 			}
 			klog.Warningf("Allocated IPs: %s were released", util.JoinIPNetIPs(ipnets, " "))
+			lsi_print(lsi, nodeName, "AllocateNextIPsErr")
+		} else {
+			lsi_print(lsi, nodeName, "AllocateNextIPsSucc")
 		}
 	}()
 
@@ -253,11 +318,13 @@ func (manager *logicalSwitchManager) ReleaseIPs(nodeName string, ipnets []*net.I
 			cidr := ipam.CIDR()
 			if cidr.Contains(ipnet.IP) {
 				if err := ipam.Release(ipnet.IP); err != nil {
+					lsi_print(lsi, nodeName, "ReleaseIPsErr")
 					return err
 				}
 				break
 			}
 		}
 	}
+	lsi_print(lsi, nodeName, "ReleaseIPsSucc")
 	return nil
 }

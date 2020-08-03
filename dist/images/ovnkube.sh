@@ -853,7 +853,7 @@ ovn-controller() {
 
 # ovn-node - all nodes
 ovn-node() {
-  trap 'kill $(jobs -p) ; rm -f /etc/cni/net.d/10-ovn-kubernetes.conf ; exit 0' TERM
+  trap 'kill $(jobs -p) ; echo "CATHY ${K8S_NODE} node config file delete 1" >> /var/log/ovn-kubernetes/ovnkube.log ; rm -f /etc/cni/net.d/10-ovn-kubernetes.conf ; exit 0' TERM
   check_ovn_daemonset_version "3"
   rm -f ${OVN_RUNDIR}/ovnkube.pid
 
@@ -938,6 +938,7 @@ ovn-node() {
 cleanup-ovn-node() {
   check_ovn_daemonset_version "3"
 
+  echo "CATHY ${K8S_NODE} node config file delete 2" >> /var/log/ovn-kubernetes/ovnkube.log
   rm -f /etc/cni/net.d/10-ovn-kubernetes.conf
 
   echo "=============== time: $(date +%d-%m-%H:%M:%S:%N) cleanup-ovn-node - (wait for ovn-controller to exit)"
