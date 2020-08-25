@@ -5,7 +5,7 @@ USER root
 ENV PYTHONDONTWRITEBYTECODE yes
 
 # Get openvswitch from Nvidia controlled source
-# Based on nv OVS commit: 398344b0
+# Based on nv OVS commit: 5f3ff22f
 RUN curl -s https://3c720378ea793bfa1cdbc4180c64fca33176674914260f6d:@packages.nvidia.com/install/repositories/sdn/nv-ovs-L1/script.rpm.sh | bash
 # Based on nv OVN commit: ba5646f9
 RUN curl -s https://4a6c3c2ab9c3468ee4624cf102ba7dc81436598399db8477:@packages.nvidia.com/install/repositories/sdn/nv-ovn-L1/script.rpm.sh | bash 
