@@ -16,7 +16,7 @@ RUN yum install -y epel-release
 RUN INSTALL_PKGS=" \
 	bind-utils procps-ng openssl numactl-libs firewalld-filesystem \
 	libpcap kubectl \
-	iproute strace socat \
+	iproute iputils strace socat \
 	unbound-libs python2 \
 	openvswitch \
 	ovn ovn-host ovn-central \
