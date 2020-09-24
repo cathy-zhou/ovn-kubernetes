@@ -81,6 +81,16 @@ func (oc *Controller) deleteLogicalPort(pod *kapi.Pod) {
 	portInfo, err := oc.logicalPortCache.get(logicalPort)
 	if err != nil {
 		klog.Errorf(err.Error())
+		// Even if the port is not in the cache, IPs annotated in the Pod annotation may already be allocated,
+		// need to release them to avoid leakage.
+		logicalSwitch := pod.Spec.NodeName
+		if logicalSwitch != "" {
+			annotation, err := util.UnmarshalPodAnnotation(pod.Annotations)
+			if err == nil {
+				podIfAddrs := annotation.IPs
+				_ = oc.lsManager.ReleaseIPs(logicalSwitch, podIfAddrs)
+			}
+		}
 		return
 	}
 
@@ -370,6 +380,7 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 			}
 		}
 
+		releaseIPs = true
 		var networks []*types.NetworkSelectionElement
 
 		networks, err = util.GetPodNetSelAnnotation(pod, util.DefNetworkAnnotation)
@@ -414,9 +425,9 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 		klog.V(5).Infof("Annotation values: ip=%v ; mac=%s ; gw=%s\nAnnotation=%s",
 			podIfAddrs, podMac, podAnnotation.Gateways, marshalledAnnotation)
 		if err = oc.kube.SetAnnotationsOnPod(pod, marshalledAnnotation); err != nil {
-			releaseIPs = true
 			return fmt.Errorf("failed to set annotation on pod %s: %v", pod.Name, err)
 		}
+		releaseIPs = false
 	}
 
 	// set addresses on the port
