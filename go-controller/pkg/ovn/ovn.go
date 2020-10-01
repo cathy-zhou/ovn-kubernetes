@@ -204,8 +204,6 @@ type Controller struct {
 	// Map of load balancers, each containing a map of VIP to OVN LB Config
 	serviceLBMap map[string]map[string]*loadBalancerConf
 
-	joinSwIPManager *joinSwitchIPManager
-
 	serviceLBLock sync.Mutex
 
 	joinSwIPManager *joinSwitchIPManager
