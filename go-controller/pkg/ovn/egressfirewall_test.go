@@ -71,6 +71,7 @@ var _ = Describe("OVN EgressFirewall Operations", func() {
 				fExec.AddFakeCmdsNoOutputNoError([]string{
 					"ovn-nbctl --timeout=15 --data=bare --no-heading --columns=_uuid find ACL match=\"ip4.dst == 1.2.3.4/23 && ip4.src == $a10481622940199974102\" action=allow external-ids:egressFirewall=namespace1",
 					"ovn-nbctl --timeout=15 --id=@acl create acl priority=2000 direction=from-lport match=\"ip4.dst == 1.2.3.4/23 && ip4.src == $a10481622940199974102\" action=allow external-ids:egressFirewall=namespace1 -- add logical_switch join acls @acl",
+					//"ovn-nbctl --timeout=15 --id=@logical_router_policy create logical_router_policy priority=10000 match=\"ip4.dst == 1.2.3.4/23 && ip4.src == $a10481622940199974102 && ip4.dst != 10.128.0.0/14\" action=allow external-ids:egressFirewall=namespace1 -- add logical_router ovn_cluster_router policies @logical_router_policy",
 				})
 
 				namespace1 := *newNamespace("namespace1")
@@ -129,6 +130,7 @@ var _ = Describe("OVN EgressFirewall Operations", func() {
 				fExec.AddFakeCmdsNoOutputNoError([]string{
 					"ovn-nbctl --timeout=15 --data=bare --no-heading --columns=_uuid find ACL match=\"ip4.dst == 1.2.3.4/23 && ip4.src == $a10481622940199974102 && ( (udp) )\" action=drop external-ids:egressFirewall=namespace1",
 					"ovn-nbctl --timeout=15 --id=@acl create acl priority=2000 direction=from-lport match=\"ip4.dst == 1.2.3.4/23 && ip4.src == $a10481622940199974102 && ( (udp) )\" action=drop external-ids:egressFirewall=namespace1 -- add logical_switch join acls @acl",
+					//"ovn-nbctl --timeout=15 --id=@logical_router_policy create logical_router_policy priority=10000 match=\"ip4.dst == 1.2.3.4/23 && ip4.src == $a10481622940199974102 && ( (udp) ) && ip4.dst != 10.128.0.0/14\" action=drop external-ids:egressFirewall=namespace1 -- add logical_router ovn_cluster_router policies @logical_router_policy",
 				})
 				namespace1 := *newNamespace("namespace1")
 				egressFirewall := newEgressFirewallObject("default", namespace1.Name, []egressfirewallapi.EgressFirewallRule{
@@ -189,11 +191,18 @@ var _ = Describe("OVN EgressFirewall Operations", func() {
 					"ovn-nbctl --timeout=15 --id=@acl create acl priority=2000 direction=from-lport match=\"ip4.dst == 1.2.3.5/23 && " +
 						"ip4.src == $a10481622940199974102 && ( (udp && ( udp.dst == 100 )) || (tcp) )\" action=allow external-ids:egressFirewall=namespace1 -- add logical_switch join acls @acl",
 					fmt.Sprintf("ovn-nbctl --timeout=15 remove logical_switch join acls %s", fakeUUID),
+					//"ovn-nbctl --timeout=15 --id=@logical_router_policy create logical_router_policy priority=10000 match=\"ip4.dst == 1.2.3.5/23 && " +
+					//	"ip4.src == $a10481622940199974102 && ( (udp && ( udp.dst == 100 )) || (tcp) ) && ip4.dst != 10.128.0.0/14\" action=allow external-ids:egressFirewall=namespace1 -- add logical_router ovn_cluster_router policies @logical_router_policy",
+					//"ovn-nbctl --timeout=15 lr-policy-del ovn_cluster_router " + fmt.Sprintf("%s", fakeUUID),
 				})
 				fExec.AddFakeCmd(&ovntest.ExpectedCmd{
 					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=_uuid find ACL external-ids:egressFirewall=namespace1",
 					Output: fmt.Sprintf("%s", fakeUUID),
 				})
+				//fExec.AddFakeCmd(&ovntest.ExpectedCmd{
+				//	Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=_uuid find logical_router_policy external-ids:egressFirewall=namespace1",
+				//	Output: fmt.Sprintf("%s", fakeUUID),
+				//})
 
 				namespace1 := *newNamespace("namespace1")
 				egressFirewall := newEgressFirewallObject("default", namespace1.Name, []egressfirewallapi.EgressFirewallRule{
@@ -260,11 +269,19 @@ var _ = Describe("OVN EgressFirewall Operations", func() {
 					fmt.Sprintf("ovn-nbctl --timeout=15 remove logical_switch join acls %s", fakeUUID),
 					"ovn-nbctl --timeout=15 --data=bare --no-heading --columns=_uuid find ACL match=\"ip4.dst == 1.2.3.4/23 && ip4.src == $a10481622940199974102\" action=drop external-ids:egressFirewall=namespace1",
 					"ovn-nbctl --timeout=15 --id=@acl create acl priority=2000 direction=from-lport match=\"ip4.dst == 1.2.3.4/23 && ip4.src == $a10481622940199974102\" action=drop external-ids:egressFirewall=namespace1 -- add logical_switch join acls @acl",
+					//"ovn-nbctl --timeout=15 --id=@logical_router_policy create logical_router_policy priority=10000 match=\"ip4.dst == 1.2.3.4/23 && ip4.src == $a10481622940199974102 && ip4.dst != 10.128.0.0/14\" action=allow external-ids:egressFirewall=namespace1 -- add logical_router ovn_cluster_router policies @logical_router_policy",
+					//"ovn-nbctl --timeout=15 --id=@logical_router_policy create logical_router_policy priority=10000 match=\"ip4.dst == 1.2.3.4/23 && ip4.src == $a10481622940199974102 && ip4.dst != 10.128.0.0/14\" action=drop external-ids:egressFirewall=namespace1 -- add logical_router ovn_cluster_router policies @logical_router_policy",
+					//"ovn-nbctl --timeout=15 lr-policy-del ovn_cluster_router " + fmt.Sprintf("%s", fakeUUID),
 				})
 				fExec.AddFakeCmd(&ovntest.ExpectedCmd{
 					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=_uuid find ACL external-ids:egressFirewall=namespace1",
 					Output: fmt.Sprintf("%s", fakeUUID),
 				})
+
+				//fExec.AddFakeCmd(&ovntest.ExpectedCmd{
+				//	Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=_uuid find logical_router_policy external-ids:egressFirewall=namespace1",
+				//	Output: fmt.Sprintf("%s", fakeUUID),
+				//})
 
 				namespace1 := *newNamespace("namespace1")
 				egressFirewall := newEgressFirewallObject("default", namespace1.Name, []egressfirewallapi.EgressFirewallRule{
@@ -418,7 +435,6 @@ var _ = Describe("OVN EgressFirewall Operations", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 		})
-
 	})
 
 })

@@ -208,6 +208,8 @@ type Controller struct {
 
 	serviceLBLock sync.Mutex
 
+	joinSwIPManager *joinSwitchIPManager
+
 	// event recorder used to post events to k8s
 	recorder record.EventRecorder
 
@@ -346,10 +348,7 @@ type emptyLBBackendEvent struct {
 }
 
 func newModeEgressIP() modeEgressIP {
-	if config.Gateway.Mode == config.GatewayModeLocal {
-		return &egressIPLocal{}
-	}
-	return &egressIPShared{}
+	return &egressIPMode{}
 }
 
 func extractEmptyLBBackendsEvents(out []byte) ([]emptyLBBackendEvent, error) {
@@ -559,24 +558,25 @@ func (oc *Controller) WatchPods() {
 		UpdateFunc: func(old, newer interface{}) {
 			oldPod := old.(*kapi.Pod)
 			pod := newer.(*kapi.Pod)
-			if !podWantsNetwork(pod) {
+
+			_, retry := retryPods.Load(pod.UID)
+			if podScheduled(pod) && retry && podWantsNetwork(pod) {
+				if err := oc.addLogicalPort(pod); err != nil {
+					klog.Errorf(err.Error())
+					oc.recordPodEvent(err, pod)
+				} else {
+					retryPods.Delete(pod.UID)
+				}
+			} else {
+				// No matter if a pod is ovn networked, or host networked, we still need to check for exgw
+				// annotations. If the pod is ovn networked and is in update reschedule, addLogicalPort will take
+				// care of updating the exgw updates
 				if oldPod.Annotations[routingNamespaceAnnotation] != pod.Annotations[routingNamespaceAnnotation] ||
 					oldPod.Annotations[routingNetworkAnnotation] != pod.Annotations[routingNetworkAnnotation] {
 					oc.deletePodExternalGW(oldPod)
 					if err := oc.addPodExternalGW(pod); err != nil {
 						klog.Errorf(err.Error())
 					}
-				}
-				return
-			}
-
-			_, retry := retryPods.Load(pod.UID)
-			if podScheduled(pod) && retry {
-				if err := oc.addLogicalPort(pod); err != nil {
-					klog.Errorf(err.Error())
-					oc.recordPodEvent(err, pod)
-				} else {
-					retryPods.Delete(pod.UID)
 				}
 			}
 		},
@@ -586,6 +586,7 @@ func (oc *Controller) WatchPods() {
 				oc.deletePodExternalGW(pod)
 				return
 			}
+			// deleteLogicalPort will take care of removing exgw for ovn networked pods
 			oc.deleteLogicalPort(pod)
 			retryPods.Delete(pod.UID)
 		},
@@ -722,7 +723,7 @@ func (oc *Controller) WatchCRD() {
 func (oc *Controller) WatchEgressFirewall() *factory.Handler {
 	return oc.watchFactory.AddEgressFirewallHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			egressFirewall := obj.(*egressfirewall.EgressFirewall)
+			egressFirewall := obj.(*egressfirewall.EgressFirewall).DeepCopy()
 			errList := oc.addEgressFirewall(egressFirewall)
 			for _, err := range errList {
 				klog.Error(err)
@@ -738,7 +739,7 @@ func (oc *Controller) WatchEgressFirewall() *factory.Handler {
 			}
 		},
 		UpdateFunc: func(old, newer interface{}) {
-			newEgressFirewall := newer.(*egressfirewall.EgressFirewall)
+			newEgressFirewall := newer.(*egressfirewall.EgressFirewall).DeepCopy()
 			oldEgressFirewall := old.(*egressfirewall.EgressFirewall)
 			if !reflect.DeepEqual(oldEgressFirewall.Spec, newEgressFirewall.Spec) {
 				errList := oc.updateEgressFirewall(oldEgressFirewall, newEgressFirewall)
