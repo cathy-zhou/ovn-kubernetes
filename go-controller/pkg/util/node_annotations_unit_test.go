@@ -12,6 +12,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	annotatorMock "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube/mocks"
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -263,7 +264,7 @@ func TestParseNodeL3GatewayAnnotation(t *testing.T) {
 			desc:      "error: annotation not found for node",
 			inpNode:   &v1.Node{},
 			errAssert: true,
-			errMatch:  fmt.Errorf("%s annotation not found for node", ovnNodeL3GatewayConfig),
+			errMatch:  fmt.Errorf("%s annotation not found for node", GetAnnotationName(OvnNodeL3GatewayConfig, types.DefaultNetworkName)),
 		},
 		{
 			desc: "error: fail to unmarshal l3 gateway config annotations",
@@ -283,7 +284,7 @@ func TestParseNodeL3GatewayAnnotation(t *testing.T) {
 				},
 			},
 			errAssert: true,
-			errMatch:  fmt.Errorf("%s annotation for %s network not found", ovnNodeL3GatewayConfig, ovnDefaultNetworkGateway),
+			errMatch:  fmt.Errorf("%s annotation for %s network not found", GetAnnotationName(OvnNodeL3GatewayConfig, types.DefaultNetworkName), ovnDefaultNetworkGateway),
 		},
 		{
 			desc: "error: nod chassis ID annotation not found",
@@ -309,7 +310,7 @@ func TestParseNodeL3GatewayAnnotation(t *testing.T) {
 	}
 	for i, tc := range tests {
 		t.Run(fmt.Sprintf("%d:%s", i, tc.desc), func(t *testing.T) {
-			cfg, e := ParseNodeL3GatewayAnnotation(tc.inpNode)
+			cfg, e := ParseNodeL3GatewayAnnotation(tc.inpNode, types.DefaultNetworkName)
 			if tc.errAssert {
 				t.Log(e)
 				assert.Error(t, e)

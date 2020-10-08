@@ -13,6 +13,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/record"
 
+	networkattachmentdefinitionfake "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/fake"
 	egressfirewallfake "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1/apis/clientset/versioned/fake"
 	egressipfake "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressip/v1/apis/clientset/versioned/fake"
 	apiextensionsfake "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/fake"
@@ -342,11 +343,13 @@ var _ = ginkgo.Describe("Master Operations", func() {
 			egressFirewallFakeClient := &egressfirewallfake.Clientset{}
 			crdFakeClient := &apiextensionsfake.Clientset{}
 			egressIPFakeClient := &egressipfake.Clientset{}
+			networkAttchDefClient := &networkattachmentdefinitionfake.Clientset{}
 			fakeClient := &util.OVNClientset{
-				KubeClient:           kubeFakeClient,
-				EgressIPClient:       egressIPFakeClient,
-				EgressFirewallClient: egressFirewallFakeClient,
-				APIExtensionsClient:  crdFakeClient,
+				KubeClient:            kubeFakeClient,
+				EgressIPClient:        egressIPFakeClient,
+				EgressFirewallClient:  egressFirewallFakeClient,
+				APIExtensionsClient:   crdFakeClient,
+				NetworkAttchDefClient: networkAttchDefClient,
 			}
 
 			err := util.SetExec(fexec)
@@ -446,11 +449,13 @@ var _ = ginkgo.Describe("Master Operations", func() {
 			egressFirewallFakeClient := &egressfirewallfake.Clientset{}
 			crdFakeClient := &apiextensionsfake.Clientset{}
 			egressIPFakeClient := &egressipfake.Clientset{}
+			networkAttchDefClient := &networkattachmentdefinitionfake.Clientset{}
 			fakeClient := &util.OVNClientset{
-				KubeClient:           kubeFakeClient,
-				EgressIPClient:       egressIPFakeClient,
-				EgressFirewallClient: egressFirewallFakeClient,
-				APIExtensionsClient:  crdFakeClient,
+				KubeClient:            kubeFakeClient,
+				EgressIPClient:        egressIPFakeClient,
+				EgressFirewallClient:  egressFirewallFakeClient,
+				APIExtensionsClient:   crdFakeClient,
+				NetworkAttchDefClient: networkAttchDefClient,
 			}
 
 			err := util.SetExec(fexec)
@@ -546,11 +551,13 @@ var _ = ginkgo.Describe("Master Operations", func() {
 			egressFirewallFakeClient := &egressfirewallfake.Clientset{}
 			crdFakeClient := &apiextensionsfake.Clientset{}
 			egressIPFakeClient := &egressipfake.Clientset{}
+			networkAttchDefClient := &networkattachmentdefinitionfake.Clientset{}
 			fakeClient := &util.OVNClientset{
-				KubeClient:           kubeFakeClient,
-				EgressIPClient:       egressIPFakeClient,
-				EgressFirewallClient: egressFirewallFakeClient,
-				APIExtensionsClient:  crdFakeClient,
+				KubeClient:            kubeFakeClient,
+				EgressIPClient:        egressIPFakeClient,
+				EgressFirewallClient:  egressFirewallFakeClient,
+				APIExtensionsClient:   crdFakeClient,
+				NetworkAttchDefClient: networkAttchDefClient,
 			}
 
 			fexec, tcpLBUUID, udpLBUUID, sctpLBUUID := defaultFakeExec(nodeSubnet, nodeName, true)
@@ -714,11 +721,13 @@ subnet=%s
 			egressFirewallFakeClient := &egressfirewallfake.Clientset{}
 			crdFakeClient := &apiextensionsfake.Clientset{}
 			egressIPFakeClient := &egressipfake.Clientset{}
+			networkAttchDefClient := &networkattachmentdefinitionfake.Clientset{}
 			fakeClient := &util.OVNClientset{
-				KubeClient:           kubeFakeClient,
-				EgressIPClient:       egressIPFakeClient,
-				EgressFirewallClient: egressFirewallFakeClient,
-				APIExtensionsClient:  crdFakeClient,
+				KubeClient:            kubeFakeClient,
+				EgressIPClient:        egressIPFakeClient,
+				EgressFirewallClient:  egressFirewallFakeClient,
+				APIExtensionsClient:   crdFakeClient,
+				NetworkAttchDefClient: networkAttchDefClient,
 			}
 
 			err := util.SetExec(fexec)
@@ -852,11 +861,13 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 			egressFirewallFakeClient := &egressfirewallfake.Clientset{}
 			crdFakeClient := &apiextensionsfake.Clientset{}
 			egressIPFakeClient := &egressipfake.Clientset{}
+			networkAttchDefClient := &networkattachmentdefinitionfake.Clientset{}
 			fakeClient := &util.OVNClientset{
-				KubeClient:           kubeFakeClient,
-				EgressIPClient:       egressIPFakeClient,
-				EgressFirewallClient: egressFirewallFakeClient,
-				APIExtensionsClient:  crdFakeClient,
+				KubeClient:            kubeFakeClient,
+				EgressIPClient:        egressIPFakeClient,
+				EgressFirewallClient:  egressFirewallFakeClient,
+				APIExtensionsClient:   crdFakeClient,
+				NetworkAttchDefClient: networkAttchDefClient,
 			}
 
 			fexec := ovntest.NewFakeExec()
@@ -1048,11 +1059,13 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 			egressFirewallFakeClient := &egressfirewallfake.Clientset{}
 			crdFakeClient := &apiextensionsfake.Clientset{}
 			egressIPFakeClient := &egressipfake.Clientset{}
+			networkAttchDefClient := &networkattachmentdefinitionfake.Clientset{}
 			fakeClient := &util.OVNClientset{
-				KubeClient:           kubeFakeClient,
-				EgressIPClient:       egressIPFakeClient,
-				EgressFirewallClient: egressFirewallFakeClient,
-				APIExtensionsClient:  crdFakeClient,
+				KubeClient:            kubeFakeClient,
+				EgressIPClient:        egressIPFakeClient,
+				EgressFirewallClient:  egressFirewallFakeClient,
+				APIExtensionsClient:   crdFakeClient,
+				NetworkAttchDefClient: networkAttchDefClient,
 			}
 
 			fexec := ovntest.NewFakeExec()
@@ -1077,7 +1090,7 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 			})
 			err = util.SetNodeManagementPortMACAddress(nodeAnnotator, ovntest.MustParseMAC(nodeMgmtPortMAC))
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			err = util.SetNodeHostSubnetAnnotation(nodeAnnotator, ovntest.MustParseIPNets(nodeSubnet))
+			err = util.SetNodeHostSubnetAnnotation(nodeAnnotator, ovntest.MustParseIPNets(nodeSubnet), types.DefaultNetworkName)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			err = util.SetNodeLocalNatAnnotation(nodeAnnotator, []net.IP{ovntest.MustParseIP(dnatSnatIP)})
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -1086,7 +1099,7 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 
 			updatedNode, err := fakeClient.KubeClient.CoreV1().Nodes().Get(context.TODO(), testNode.Name, metav1.GetOptions{})
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			l3GatewayConfig, err := util.ParseNodeL3GatewayAnnotation(updatedNode)
+			l3GatewayConfig, err := util.ParseNodeL3GatewayAnnotation(updatedNode, types.DefaultNetworkName)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			fexec.AddFakeCmdsNoOutputNoError([]string{
@@ -1198,9 +1211,10 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 			f, err = factory.NewMasterWatchFactory(fakeClient)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-			clusterController := NewOvnController(fakeClient, f, stopChan,
-				addressset.NewFakeAddressSetFactory(), ovntest.NewMockOVNClient(goovn.DBNB),
-				ovntest.NewMockOVNClient(goovn.DBSB), record.NewFakeRecorder(0))
+			ovnMHController, _ := NewOvnMHController(fakeClient, "", f,
+				stopChan, addressset.NewFakeAddressSetFactory(), ovntest.NewMockOVNClient(goovn.DBNB), ovntest.NewMockOVNClient(goovn.DBSB),
+				record.NewFakeRecorder(0), nil)
+			clusterController := ovnMHController.ovnController
 			gomega.Expect(clusterController).NotTo(gomega.BeNil())
 			clusterController.TCPLoadBalancerUUID = tcpLBUUID
 			clusterController.UDPLoadBalancerUUID = udpLBUUID

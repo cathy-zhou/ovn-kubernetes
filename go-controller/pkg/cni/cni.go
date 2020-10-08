@@ -15,6 +15,7 @@ import (
 	utilnet "k8s.io/utils/net"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 )
 
@@ -69,27 +70,36 @@ func (pr *PodRequest) cmdAdd(podLister corev1listers.PodLister) ([]byte, error) 
 	if namespace == "" || podName == "" {
 		return nil, fmt.Errorf("required CNI variable missing")
 	}
+	netName := types.DefaultNetworkName
+	mtu := config.Default.MTU
+	if pr.CNIConf.NotDefault {
+		netName = pr.CNIConf.Name
+		if pr.CNIConf.MTU != 0 {
+			mtu = pr.CNIConf.MTU
+		}
+	}
 
 	// Get the IP address and MAC address of the pod
-	annotations, err := getPodAnnotations(pr.ctx, podLister, pr.PodNamespace, pr.PodName)
+	annotations, err := getPodAnnotations(pr.ctx, podLister, netName, pr.PodNamespace, pr.PodName)
 	if err != nil {
 		return nil, err
 	}
 
-	podInfo, err := util.UnmarshalPodAnnotation(annotations)
+	podInfo, err := util.UnmarshalPodAnnotation(annotations, netName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal ovn annotation: %v", err)
+		return nil, fmt.Errorf("failed to unmarshal ovn annotation for network %s: %v", netName, err)
 	}
 
 	ingress, egress, err := extractPodBandwidthResources(annotations)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse bandwidth request: %v", err)
+		return nil, fmt.Errorf("failed to parse bandwidth request for network %s: %v", netName, err)
 	}
 	podInterfaceInfo := &PodInterfaceInfo{
 		PodAnnotation: *podInfo,
-		MTU:           config.Default.MTU,
+		MTU:           mtu,
 		Ingress:       ingress,
 		Egress:        egress,
+		NetworkName:   netName,
 	}
 	response := &Response{}
 	if !config.UnprivilegedMode {
@@ -103,7 +113,7 @@ func (pr *PodRequest) cmdAdd(podLister corev1listers.PodLister) ([]byte, error) 
 
 	responseBytes, err := json.Marshal(response)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal pod request response: %v", err)
+		return nil, fmt.Errorf("failed to marshal pod request response for network %s: %v", netName, err)
 	}
 
 	return responseBytes, nil
@@ -119,12 +129,16 @@ func (pr *PodRequest) cmdDel() ([]byte, error) {
 func (pr *PodRequest) cmdCheck(podLister corev1listers.PodLister) ([]byte, error) {
 	namespace := pr.PodNamespace
 	podName := pr.PodName
+	netName := types.DefaultNetworkName
+	if pr.CNIConf.NotDefault {
+		netName = pr.CNIConf.Name
+	}
 	if namespace == "" || podName == "" {
 		return nil, fmt.Errorf("required CNI variable missing")
 	}
 
 	// Get the IP address and MAC address of the pod
-	annotations, err := getPodAnnotations(pr.ctx, podLister, pr.PodNamespace, pr.PodName)
+	annotations, err := getPodAnnotations(pr.ctx, podLister, netName, pr.PodNamespace, pr.PodName)
 	if err != nil {
 		return nil, err
 	}
@@ -240,7 +254,7 @@ func (pr *PodRequest) getCNIResult(podInterfaceInfo *PodInterfaceInfo) (*current
 }
 
 // getPodAnnotations obtains the pod annotation from the cache
-func getPodAnnotations(ctx context.Context, podLister corev1listers.PodLister, namespace, name string) (map[string]string, error) {
+func getPodAnnotations(ctx context.Context, podLister corev1listers.PodLister, netName, namespace, name string) (map[string]string, error) {
 	timeout := time.After(30 * time.Second)
 	for {
 		select {
@@ -254,7 +268,7 @@ func getPodAnnotations(ctx context.Context, podLister corev1listers.PodLister, n
 				return nil, fmt.Errorf("failed to get annotations: %v", err)
 			}
 			annotations := pod.ObjectMeta.Annotations
-			if _, ok := annotations[util.OvnPodAnnotationName]; ok {
+			if _, ok := annotations[util.GetAnnotationName(util.OvnPodAnnotationName, netName)]; ok {
 				return annotations, nil
 			}
 			// try again later

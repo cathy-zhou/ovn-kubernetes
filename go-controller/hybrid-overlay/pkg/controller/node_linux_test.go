@@ -96,7 +96,8 @@ func createPod(namespace, name, node, podIP, podMAC string) *v1.Pod {
 	if podIP != "" || podMAC != "" {
 		ipn := ovntest.MustParseIPNet(podIP)
 		gatewayIP := util.NextIP(ipn.IP)
-		annotations[util.OvnPodAnnotationName] = fmt.Sprintf(`{"default": {"ip_address":"` + podIP + `", "mac_address":"` + podMAC + `", "gateway_ip": "` + gatewayIP.String() + `"}}`)
+		podAnnotationName := util.GetAnnotationName(util.OvnPodAnnotationName, types.DefaultNetworkName)
+		annotations[podAnnotationName] = fmt.Sprintf(`{"default": {"ip_address":"` + podIP + `", "mac_address":"` + podMAC + `", "gateway_ip": "` + gatewayIP.String() + `"}}`)
 	}
 
 	return &v1.Pod{
@@ -163,7 +164,7 @@ func appRun(app *cli.App, netns ns.NetNS) {
 }
 
 func createNodeAnnotationsForSubnet(subnet string) map[string]string {
-	subnetAnnotations, err := util.CreateNodeHostSubnetAnnotation(ovntest.MustParseIPNets(subnet))
+	subnetAnnotations, err := util.CreateNodeHostSubnetAnnotation(ovntest.MustParseIPNets(subnet), types.DefaultNetworkName)
 	Expect(err).NotTo(HaveOccurred())
 	annotations := make(map[string]string)
 	for k, v := range subnetAnnotations {

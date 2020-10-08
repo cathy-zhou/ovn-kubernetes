@@ -12,6 +12,7 @@ import (
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
+	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	v1 "k8s.io/api/core/v1"
@@ -26,7 +27,7 @@ import (
 func getPodAnnotations(fakeClient kubernetes.Interface, namespace, name string) string {
 	pod, err := fakeClient.CoreV1().Pods(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-	return pod.Annotations[util.OvnPodAnnotationName]
+	return pod.Annotations[util.GetAnnotationName(util.OvnPodAnnotationName, ovntypes.DefaultNetworkName)]
 }
 
 func newPodMeta(namespace, name string, additionalLabels map[string]string) metav1.ObjectMeta {
@@ -121,7 +122,7 @@ func newTPod(nodeName, nodeSubnet, nodeMgtIP, nodeGWIP, podName, podIP, podMAC, 
 
 func (p pod) baseCmds(fexec *ovntest.FakeExec) {
 	fexec.AddFakeCmd(&ovntest.ExpectedCmd{
-		Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true",
+		Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true external_ids:network_name{=}[]",
 		Output: "\n",
 	})
 }
@@ -208,7 +209,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 				)
 
 				fExec.AddFakeCmd(&ovntest.ExpectedCmd{
-					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true",
+					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true external_ids:network_name{=}[]",
 					Output: "\n",
 				})
 
@@ -231,7 +232,8 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				gomega.Expect(fExec.CalledMatchesExpected()).To(gomega.BeTrue(), fExec.ErrorDesc)
 
-				_, ok := pod.Annotations[util.OvnPodAnnotationName]
+				podAnnotationName := util.GetAnnotationName(util.OvnPodAnnotationName, ovntypes.DefaultNetworkName)
+				_, ok := pod.Annotations[podAnnotationName]
 				gomega.Expect(ok).To(gomega.BeFalse())
 
 				// Assign it and perform the update
@@ -316,7 +318,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 				)
 
 				fExec.AddFakeCmd(&ovntest.ExpectedCmd{
-					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true",
+					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true external_ids:network_name{=}[]",
 					Output: "\n",
 				})
 
@@ -371,7 +373,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 				)
 
 				fExec.AddFakeCmd(&ovntest.ExpectedCmd{
-					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true",
+					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true external_ids:network_name{=}[]",
 					Output: "\n",
 				})
 
@@ -438,7 +440,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 				podJSON := `{"default": {"ip_addresses":["` + t.podIP + `/24"], "mac_address":"` + t.podMAC + `", "gateway_ips": ["` + t.nodeGWIP + `"], "ip_address":"` + t.podIP + `/24", "gateway_ip": "` + t.nodeGWIP + `"}}`
 
 				fExec.AddFakeCmd(&ovntest.ExpectedCmd{
-					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true",
+					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true external_ids:network_name{=}[]",
 					Output: "\n",
 				})
 
@@ -494,7 +496,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 				)
 
 				fExec.AddFakeCmd(&ovntest.ExpectedCmd{
-					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true",
+					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true external_ids:network_name{=}[]",
 					Output: t.portName + "\n",
 				})
 				fExec.AddFakeCmdsNoOutputNoError([]string{
@@ -518,7 +520,8 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 				pod, err := fakeOvn.fakeClient.KubeClient.CoreV1().Pods(t.namespace).Get(context.TODO(), t.podName, metav1.GetOptions{})
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-				_, ok := pod.Annotations[util.OvnPodAnnotationName]
+				podAnnotationName := util.GetAnnotationName(util.OvnPodAnnotationName, ovntypes.DefaultNetworkName)
+				_, ok := pod.Annotations[podAnnotationName]
 				gomega.Expect(ok).To(gomega.BeFalse())
 
 				fakeOvn.controller.WatchNamespaces()
@@ -549,7 +552,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 				)
 
 				fExec.AddFakeCmd(&ovntest.ExpectedCmd{
-					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true",
+					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true external_ids:network_name{=}[]",
 					Output: t.portName + "\n",
 				})
 				fExec.AddFakeCmdsNoOutputNoError([]string{
@@ -583,7 +586,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 				)
 
 				fExec.AddFakeCmd(&ovntest.ExpectedCmd{
-					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true",
+					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true external_ids:network_name{=}[]",
 					Output: "\n",
 				})
 
@@ -631,7 +634,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 				)
 
 				fExec.AddFakeCmd(&ovntest.ExpectedCmd{
-					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true",
+					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true external_ids:network_name{=}[]",
 					Output: "\n",
 				})
 
@@ -655,7 +658,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 				gomega.Eventually(func() string { return getPodAnnotations(fakeOvn.fakeClient.KubeClient, t.namespace, t.podName) }, 2).Should(gomega.MatchJSON(`{"default": {"ip_addresses":["` + t.podIP + `/24"], "mac_address":"` + t.podMAC + `", "gateway_ips": ["` + t.nodeGWIP + `"], "ip_address":"` + t.podIP + `/24", "gateway_ip": "` + t.nodeGWIP + `"}}`))
 				// Simulate an OVN restart with a new IP assignment and verify that the pod annotation is updated.
 				fExec.AddFakeCmd(&ovntest.ExpectedCmd{
-					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true",
+					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true external_ids:network_name{=}[]",
 					Output: "\n",
 				})
 				t.populateLogicalSwitchCache(fakeOvn)
@@ -691,7 +694,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 				)
 
 				fExec.AddFakeCmd(&ovntest.ExpectedCmd{
-					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true",
+					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true external_ids:network_name{=}[]",
 					Output: "\n",
 				})
 
@@ -716,7 +719,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 
 				// Simulate an OVN restart with a new IP assignment and verify that the pod annotation is updated.
 				fExec.AddFakeCmd(&ovntest.ExpectedCmd{
-					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true",
+					Cmd:    "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name find logical_switch_port external_ids:pod=true external_ids:network_name{=}[]",
 					Output: "\n",
 				})
 				t.populateLogicalSwitchCache(fakeOvn)

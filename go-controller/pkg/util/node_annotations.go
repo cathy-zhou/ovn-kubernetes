@@ -10,6 +10,7 @@ import (
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 )
 
 // This handles the annotations used by the node to pass information about its local
@@ -40,23 +41,23 @@ import (
 // values.)
 
 const (
-	// ovnNodeL3GatewayConfig is the constant string representing the l3 gateway annotation key
-	ovnNodeL3GatewayConfig = "k8s.ovn.org/l3-gateway-config"
+	// OvnNodeL3GatewayConfig is the constant string representing the l3 gateway annotation key
+	OvnNodeL3GatewayConfig = "l3-gateway-config"
 
 	// OvnDefaultNetworkGateway captures L3 gateway config for default OVN network interface
 	ovnDefaultNetworkGateway = "default"
 
 	// ovnNodeManagementPortMacAddress is the constant string representing the annotation key
-	ovnNodeManagementPortMacAddress = "k8s.ovn.org/node-mgmt-port-mac-address"
+	ovnNodeManagementPortMacAddress = "node-mgmt-port-mac-address"
 
 	// ovnNodeChassisID is the systemID of the node needed for creating L3 gateway
-	ovnNodeChassisID = "k8s.ovn.org/node-chassis-id"
+	ovnNodeChassisID = "node-chassis-id"
 
 	// ovnNodeCIDR is the CIDR form representation of primary network interface's attached IP address (i.e: 192.168.126.31/24 or 0:0:0:0:0:feff:c0a8:8e0c/64)
-	ovnNodeIfAddr = "k8s.ovn.org/node-primary-ifaddr"
+	ovnNodeIfAddr = "node-primary-ifaddr"
 
 	// OvnNodeEgressLabel is a user assigned node label indicating to ovn-kubernetes that the node is to be used for egress IP assignment
-	ovnNodeEgressLabel = "k8s.ovn.org/egress-assignable"
+	ovnNodeEgressLabel = "egress-assignable"
 )
 
 type L3GatewayConfig struct {
@@ -187,11 +188,11 @@ func (cfg *L3GatewayConfig) UnmarshalJSON(bytes []byte) error {
 
 func SetL3GatewayConfig(nodeAnnotator kube.Annotator, cfg *L3GatewayConfig) error {
 	gatewayAnnotation := map[string]*L3GatewayConfig{ovnDefaultNetworkGateway: cfg}
-	if err := nodeAnnotator.Set(ovnNodeL3GatewayConfig, gatewayAnnotation); err != nil {
+	if err := nodeAnnotator.Set(GetAnnotationName(OvnNodeL3GatewayConfig, types.DefaultNetworkName), gatewayAnnotation); err != nil {
 		return err
 	}
 	if cfg.ChassisID != "" {
-		if err := nodeAnnotator.Set(ovnNodeChassisID, cfg.ChassisID); err != nil {
+		if err := nodeAnnotator.Set(GetAnnotationName(ovnNodeChassisID, types.DefaultNetworkName), cfg.ChassisID); err != nil {
 			return err
 		}
 	}
@@ -199,10 +200,10 @@ func SetL3GatewayConfig(nodeAnnotator kube.Annotator, cfg *L3GatewayConfig) erro
 }
 
 // ParseNodeL3GatewayAnnotation returns the parsed l3-gateway-config annotation
-func ParseNodeL3GatewayAnnotation(node *kapi.Node) (*L3GatewayConfig, error) {
-	l3GatewayAnnotation, ok := node.Annotations[ovnNodeL3GatewayConfig]
+func ParseNodeL3GatewayAnnotation(node *kapi.Node, netName string) (*L3GatewayConfig, error) {
+	l3GatewayAnnotation, ok := node.Annotations[GetAnnotationName(OvnNodeL3GatewayConfig, netName)]
 	if !ok {
-		return nil, newAnnotationNotSetError("%s annotation not found for node %q", ovnNodeL3GatewayConfig, node.Name)
+		return nil, newAnnotationNotSetError("%s annotation not found for network %s node %q", OvnNodeL3GatewayConfig, netName, node.Name)
 	}
 
 	var cfgs map[string]*L3GatewayConfig
@@ -212,11 +213,11 @@ func ParseNodeL3GatewayAnnotation(node *kapi.Node) (*L3GatewayConfig, error) {
 
 	cfg, ok := cfgs[ovnDefaultNetworkGateway]
 	if !ok {
-		return nil, fmt.Errorf("%s annotation for %s network not found", ovnNodeL3GatewayConfig, ovnDefaultNetworkGateway)
+		return nil, fmt.Errorf("%s annotation for %s network not found", OvnNodeL3GatewayConfig, ovnDefaultNetworkGateway)
 	}
 
-	if cfg.Mode != config.GatewayModeDisabled {
-		cfg.ChassisID, ok = node.Annotations[ovnNodeChassisID]
+	if cfg.Mode != config.GatewayModeDisabled && netName == types.DefaultNetworkName {
+		cfg.ChassisID, ok = node.Annotations[GetAnnotationName(ovnNodeChassisID, netName)]
 		if !ok {
 			return nil, fmt.Errorf("%s annotation not found", ovnNodeChassisID)
 		}
@@ -226,13 +227,13 @@ func ParseNodeL3GatewayAnnotation(node *kapi.Node) (*L3GatewayConfig, error) {
 }
 
 func SetNodeManagementPortMACAddress(nodeAnnotator kube.Annotator, macAddress net.HardwareAddr) error {
-	return nodeAnnotator.Set(ovnNodeManagementPortMacAddress, macAddress.String())
+	return nodeAnnotator.Set(GetAnnotationName(ovnNodeManagementPortMacAddress, types.DefaultNetworkName), macAddress.String())
 }
 
 func ParseNodeManagementPortMACAddress(node *kapi.Node) (net.HardwareAddr, error) {
-	macAddress, ok := node.Annotations[ovnNodeManagementPortMacAddress]
+	macAddress, ok := node.Annotations[GetAnnotationName(ovnNodeManagementPortMacAddress, types.DefaultNetworkName)]
 	if !ok {
-		return nil, newAnnotationNotSetError("macAddress annotation not found for node %q ", node.Name)
+		return nil, newAnnotationNotSetError("macAddress annotation not found node %q ", node.Name)
 	}
 
 	return net.ParseMAC(macAddress)
@@ -252,26 +253,26 @@ func SetNodePrimaryIfAddr(nodeAnnotator kube.Annotator, nodeIPNetv4, nodeIPNetv6
 	if nodeIPNetv6 != nil {
 		primaryIfAddrAnnotation.IPv6 = nodeIPNetv6.String()
 	}
-	return nodeAnnotator.Set(ovnNodeIfAddr, primaryIfAddrAnnotation)
+	return nodeAnnotator.Set(GetAnnotationName(ovnNodeIfAddr, types.DefaultNetworkName), primaryIfAddrAnnotation)
 }
 
 // ParseNodePrimaryIfAddr returns the IPv4 / IPv6 values for the node's primary network interface
-func ParseNodePrimaryIfAddr(node *kapi.Node) (string, string, error) {
-	nodeIfAddrAnnotation, ok := node.Annotations[ovnNodeIfAddr]
+func ParseNodePrimaryIfAddr(node *kapi.Node, netName string) (string, string, error) {
+	nodeIfAddrAnnotation, ok := node.Annotations[GetAnnotationName(ovnNodeIfAddr, netName)]
 	if !ok {
-		return "", "", newAnnotationNotSetError("%s annotation not found for node %q", ovnNodeIfAddr, node.Name)
+		return "", "", newAnnotationNotSetError("%s annotation for network %s not found for node %q", ovnNodeIfAddr, netName, node.Name)
 	}
 	nodeIfAddr := primaryIfAddrAnnotation{}
 	if err := json.Unmarshal([]byte(nodeIfAddrAnnotation), &nodeIfAddr); err != nil {
-		return "", "", fmt.Errorf("failed to unmarshal annotation: %s for node %q, err: %v", ovnNodeIfAddr, node.Name, err)
+		return "", "", fmt.Errorf("failed to unmarshal annotation: %s for network %s for node %q, err: %v", ovnNodeIfAddr, netName, node.Name, err)
 	}
 	if nodeIfAddr.IPv4 == "" && nodeIfAddr.IPv6 == "" {
-		return "", "", fmt.Errorf("node: %q does not have any IP information set", node.Name)
+		return "", "", fmt.Errorf("node: %q does not have any IP information set for network %s", node.Name, netName)
 	}
 	return nodeIfAddr.IPv4, nodeIfAddr.IPv6, nil
 }
 
 // GetNodeEgressLabel returns label annotation needed for marking nodes as egress assignable
-func GetNodeEgressLabel() string {
-	return ovnNodeEgressLabel
+func GetNodeEgressLabel(netName string) string {
+	return GetAnnotationName(ovnNodeEgressLabel, netName)
 }

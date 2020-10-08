@@ -8,6 +8,7 @@ import (
 	kapi "k8s.io/api/core/v1"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 )
 
 // This handles the annotations related to subnets assigned to a node. The annotations are
@@ -37,10 +38,10 @@ import (
 
 const (
 	// ovnNodeSubnets is the constant string representing the node subnets annotation key
-	ovnNodeSubnets = "k8s.ovn.org/node-subnets"
+	OvnNodeSubnets = "node-subnets"
 	// ovnNodeLocalNatIP is the constant string representing the node management port's NAT IP
 	// used in the case of the shared gateway mode
-	ovnNodeLocalNatIP = "k8s.ovn.org/node-local-nat-ip"
+	ovnNodeLocalNatIP = "node-local-nat-ip"
 )
 
 func createSubnetAnnotation(annotationName string, defaultSubnets []*net.IPNet) (map[string]interface{}, error) {
@@ -111,28 +112,28 @@ func parseSubnetAnnotation(node *kapi.Node, annotationName string) ([]*net.IPNet
 	return ipnets, nil
 }
 
-// CreateNodeHostSubnetAnnotation creates a "k8s.ovn.org/node-subnets" annotation,
+// CreateNodeHostSubnetAnnotation creates a "k8s.ovn.org/[netName_]node-subnets" annotation,
 // with a single "default" network, suitable for passing to kube.SetAnnotationsOnNode
-func CreateNodeHostSubnetAnnotation(defaultSubnets []*net.IPNet) (map[string]interface{}, error) {
-	return createSubnetAnnotation(ovnNodeSubnets, defaultSubnets)
+func CreateNodeHostSubnetAnnotation(defaultSubnets []*net.IPNet, netName string) (map[string]interface{}, error) {
+	return createSubnetAnnotation(GetAnnotationName(OvnNodeSubnets, netName), defaultSubnets)
 }
 
-// SetNodeHostSubnetAnnotation sets a "k8s.ovn.org/node-subnets" annotation
+// SetNodeHostSubnetAnnotation sets a "k8s.ovn.org/[netName_]node-subnets" annotation
 // using a kube.Annotator
-func SetNodeHostSubnetAnnotation(nodeAnnotator kube.Annotator, defaultSubnets []*net.IPNet) error {
-	return setSubnetAnnotation(nodeAnnotator, ovnNodeSubnets, defaultSubnets)
+func SetNodeHostSubnetAnnotation(nodeAnnotator kube.Annotator, defaultSubnets []*net.IPNet, netName string) error {
+	return setSubnetAnnotation(nodeAnnotator, GetAnnotationName(OvnNodeSubnets, netName), defaultSubnets)
 }
 
-// DeleteNodeHostSubnetAnnotation removes a "k8s.ovn.org/node-subnets" annotation
+// DeleteNodeHostSubnetAnnotation removes a "k8s.ovn.org/[netName_]node-subnets" annotation
 // using a kube.Annotator
-func DeleteNodeHostSubnetAnnotation(nodeAnnotator kube.Annotator) {
-	nodeAnnotator.Delete(ovnNodeSubnets)
+func DeleteNodeHostSubnetAnnotation(nodeAnnotator kube.Annotator, netName string) {
+	nodeAnnotator.Delete(GetAnnotationName(OvnNodeSubnets, netName))
 }
 
 // ParseNodeHostSubnetAnnotation parses the "k8s.ovn.org/node-subnets" annotation
 // on a node and returns the "default" host subnet.
-func ParseNodeHostSubnetAnnotation(node *kapi.Node) ([]*net.IPNet, error) {
-	return parseSubnetAnnotation(node, ovnNodeSubnets)
+func ParseNodeHostSubnetAnnotation(node *kapi.Node, netName string) ([]*net.IPNet, error) {
+	return parseSubnetAnnotation(node, GetAnnotationName(OvnNodeSubnets, netName))
 }
 
 // CreateNodeLocalNatAnnotation creates a "k8s.ovn.org/node-local-nat-ip" annotation,
@@ -149,22 +150,23 @@ func CreateNodeLocalNatAnnotation(nodeLocalNatIPs []net.IP) (map[string]interfac
 		return nil, err
 	}
 	return map[string]interface{}{
-		ovnNodeLocalNatIP: string(bytes),
+		GetAnnotationName(ovnNodeLocalNatIP, types.DefaultNetworkName): string(bytes),
 	}, nil
 }
 
-// SetNodeLocalNatAnnotation sets a "k8s.ovn.org/node-local-nat-ip" annotation
+// SetNodeLocalNatAnnotation sets a "node-local-nat-ip" annotation
 // using a kube.Annotator
 func SetNodeLocalNatAnnotation(nodeAnnotator kube.Annotator, defaultNodeLocalNatIPs []net.IP) error {
 	annotation, err := CreateNodeLocalNatAnnotation(defaultNodeLocalNatIPs)
 	if err != nil {
 		return err
 	}
-	return nodeAnnotator.Set(ovnNodeLocalNatIP, annotation[ovnNodeLocalNatIP])
+	key := GetAnnotationName(ovnNodeLocalNatIP, types.DefaultNetworkName)
+	return nodeAnnotator.Set(key, annotation[key])
 }
 
 func ParseNodeLocalNatIPAnnotation(node *kapi.Node) ([]net.IP, error) {
-	annotationJson, ok := node.Annotations[ovnNodeLocalNatIP]
+	annotationJson, ok := node.Annotations[GetAnnotationName(ovnNodeLocalNatIP, types.DefaultNetworkName)]
 	if !ok {
 		return nil, newAnnotationNotSetError("node %q has no %q annotation", node.Name, ovnNodeLocalNatIP)
 	}

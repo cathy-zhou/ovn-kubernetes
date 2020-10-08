@@ -8,6 +8,7 @@ import (
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -24,7 +25,7 @@ func TestCreateSubnetAnnotation(t *testing.T) {
 	}{
 		{
 			desc:              "non-zero length annotation name and subnet list size of ONE provided as input",
-			inpAnnotName:      ovnNodeSubnets,
+			inpAnnotName:      GetAnnotationName(OvnNodeSubnets, types.DefaultNetworkName),
 			inpDefaultSubnets: []string{"192.168.1.12/24"},
 		},
 		{
@@ -34,12 +35,12 @@ func TestCreateSubnetAnnotation(t *testing.T) {
 		},
 		{
 			desc:              "non-zero length annotation name and subnet list size greater than ONE provided as input",
-			inpAnnotName:      ovnNodeSubnets,
+			inpAnnotName:      GetAnnotationName(OvnNodeSubnets, types.DefaultNetworkName),
 			inpDefaultSubnets: []string{"192.168.1.12/24", "fd02:0:0:2::2895/64"},
 		},
 		{
 			desc:              "subnet list of size 0 provided as input",
-			inpAnnotName:      ovnNodeSubnets,
+			inpAnnotName:      GetAnnotationName(OvnNodeSubnets, types.DefaultNetworkName),
 			inpDefaultSubnets: []string{},
 		},
 	}
@@ -77,7 +78,7 @@ func TestSetSubnetAnnotation(t *testing.T) {
 		{
 			desc:             "tests function coverage, success path",
 			inpNodeAnnotator: testAnnotator,
-			inpAnnotName:     ovnNodeSubnets,
+			inpAnnotName:     GetAnnotationName(OvnNodeSubnets, types.DefaultNetworkName),
 			inpDefSubnetIps:  ovntest.MustParseIPNets("192.168.1.12/24"),
 		},
 	}
@@ -114,7 +115,7 @@ func TestParseSubnetAnnotation(t *testing.T) {
 		},
 		{
 			desc:    "correct annotation with one subnet",
-			annName: ovnNodeSubnets,
+			annName: GetAnnotationName(OvnNodeSubnets, types.DefaultNetworkName),
 			inpNode: v1.Node{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "testNode",
@@ -126,7 +127,7 @@ func TestParseSubnetAnnotation(t *testing.T) {
 		},
 		{
 			desc:    "parse as dual-stack",
-			annName: ovnNodeSubnets,
+			annName: GetAnnotationName(OvnNodeSubnets, types.DefaultNetworkName),
 			inpNode: v1.Node{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "testNode",
@@ -138,7 +139,7 @@ func TestParseSubnetAnnotation(t *testing.T) {
 		},
 		{
 			desc:        "error:cannot parse as single or dual stack",
-			annName:     ovnNodeSubnets,
+			annName:     GetAnnotationName(OvnNodeSubnets, types.DefaultNetworkName),
 			errExpected: true,
 			inpNode: v1.Node{
 				ObjectMeta: metav1.ObjectMeta{
@@ -151,7 +152,7 @@ func TestParseSubnetAnnotation(t *testing.T) {
 		},
 		{
 			desc:        "error: annotation has no default network",
-			annName:     ovnNodeSubnets,
+			annName:     GetAnnotationName(OvnNodeSubnets, types.DefaultNetworkName),
 			errExpected: true,
 			inpNode: v1.Node{
 				ObjectMeta: metav1.ObjectMeta{
@@ -200,7 +201,7 @@ func TestCreateNodeHostSubnetAnnotation(t *testing.T) {
 	}
 	for i, tc := range tests {
 		t.Run(fmt.Sprintf("%d:%s", i, tc.desc), func(t *testing.T) {
-			res, err := CreateNodeHostSubnetAnnotation(tc.inpDefSubnetIps)
+			res, err := CreateNodeHostSubnetAnnotation(tc.inpDefSubnetIps, types.DefaultNetworkName)
 			t.Log(res, err)
 			if tc.errExp {
 				assert.NotNil(t, err)
@@ -230,7 +231,7 @@ func TestSetNodeHostSubnetAnnotation(t *testing.T) {
 	}
 	for i, tc := range tests {
 		t.Run(fmt.Sprintf("%d:%s", i, tc.desc), func(t *testing.T) {
-			err := SetNodeHostSubnetAnnotation(tc.inpNodeAnnotator, tc.inpDefSubnetIps)
+			err := SetNodeHostSubnetAnnotation(tc.inpNodeAnnotator, tc.inpDefSubnetIps, types.DefaultNetworkName)
 			t.Log(err)
 			if tc.errExp {
 				assert.NotNil(t, err)
@@ -255,7 +256,7 @@ func TestDeleteNodeHostSubnetAnnotation(t *testing.T) {
 	}
 	for i, tc := range tests {
 		t.Run(fmt.Sprintf("%d:%s", i, tc.desc), func(t *testing.T) {
-			DeleteNodeHostSubnetAnnotation(tc.inpNodeAnnotator)
+			DeleteNodeHostSubnetAnnotation(tc.inpNodeAnnotator, types.DefaultNetworkName)
 		})
 	}
 }
@@ -280,7 +281,7 @@ func TestParseNodeHostSubnetAnnotation(t *testing.T) {
 	}
 	for i, tc := range tests {
 		t.Run(fmt.Sprintf("%d:%s", i, tc.desc), func(t *testing.T) {
-			res, err := ParseNodeHostSubnetAnnotation(&tc.inpNode)
+			res, err := ParseNodeHostSubnetAnnotation(&tc.inpNode, types.DefaultNetworkName)
 			t.Log(res, err)
 			if tc.errExp {
 				assert.NotNil(t, err)

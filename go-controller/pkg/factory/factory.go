@@ -17,6 +17,12 @@ import (
 	egressipapi "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressip/v1"
 	egressipscheme "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressip/v1/apis/clientset/versioned/scheme"
 	egressipinformerfactory "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressip/v1/apis/informers/externalversions"
+
+	networkattachmentdefinitionapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
+	//networkattachmentdefinitionclientset "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned"
+	networkattachmentdefinitionscheme "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/scheme"
+	networkattachmentdefinitioninformerfactory "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/informers/externalversions"
+
 	apiextensionsapi "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
 	apiextensionsscheme "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
 	apiextensionsinformerfactory "k8s.io/apiextensions-apiserver/pkg/client/informers/externalversions"
@@ -47,6 +53,7 @@ type WatchFactory struct {
 	efFactory   egressfirewallinformerfactory.SharedInformerFactory
 	efClientset egressfirewallclientset.Interface
 	crdFactory  apiextensionsinformerfactory.SharedInformerFactory
+	nadFactory  networkattachmentdefinitioninformerfactory.SharedInformerFactory
 	informers   map[reflect.Type]*informer
 
 	stopChan               chan struct{}
@@ -70,15 +77,16 @@ const (
 )
 
 var (
-	podType            reflect.Type = reflect.TypeOf(&kapi.Pod{})
-	serviceType        reflect.Type = reflect.TypeOf(&kapi.Service{})
-	endpointsType      reflect.Type = reflect.TypeOf(&kapi.Endpoints{})
-	policyType         reflect.Type = reflect.TypeOf(&knet.NetworkPolicy{})
-	namespaceType      reflect.Type = reflect.TypeOf(&kapi.Namespace{})
-	nodeType           reflect.Type = reflect.TypeOf(&kapi.Node{})
-	egressFirewallType reflect.Type = reflect.TypeOf(&egressfirewallapi.EgressFirewall{})
-	crdType            reflect.Type = reflect.TypeOf(&apiextensionsapi.CustomResourceDefinition{})
-	egressIPType       reflect.Type = reflect.TypeOf(&egressipapi.EgressIP{})
+	podType                         reflect.Type = reflect.TypeOf(&kapi.Pod{})
+	serviceType                     reflect.Type = reflect.TypeOf(&kapi.Service{})
+	endpointsType                   reflect.Type = reflect.TypeOf(&kapi.Endpoints{})
+	policyType                      reflect.Type = reflect.TypeOf(&knet.NetworkPolicy{})
+	namespaceType                   reflect.Type = reflect.TypeOf(&kapi.Namespace{})
+	nodeType                        reflect.Type = reflect.TypeOf(&kapi.Node{})
+	egressFirewallType              reflect.Type = reflect.TypeOf(&egressfirewallapi.EgressFirewall{})
+	networkattachmentdefinitionType reflect.Type = reflect.TypeOf(&networkattachmentdefinitionapi.NetworkAttachmentDefinition{})
+	crdType                         reflect.Type = reflect.TypeOf(&apiextensionsapi.CustomResourceDefinition{})
+	egressIPType                    reflect.Type = reflect.TypeOf(&egressipapi.EgressIP{})
 )
 
 // NewMasterWatchFactory initializes a new watch factory for the master or master+node processes.
@@ -94,8 +102,10 @@ func NewMasterWatchFactory(ovnClientset *util.OVNClientset) (*WatchFactory, erro
 		eipFactory:  egressipinformerfactory.NewSharedInformerFactory(ovnClientset.EgressIPClient, resyncInterval),
 		efClientset: ovnClientset.EgressFirewallClient,
 		crdFactory:  apiextensionsinformerfactory.NewSharedInformerFactory(ovnClientset.APIExtensionsClient, resyncInterval),
-		informers:   make(map[reflect.Type]*informer),
-		stopChan:    make(chan struct{}),
+		//nadClientset: ovnClientset.NetworkAttchDefClient,
+		nadFactory: networkattachmentdefinitioninformerfactory.NewSharedInformerFactory(ovnClientset.NetworkAttchDefClient, resyncInterval),
+		informers:  make(map[reflect.Type]*informer),
+		stopChan:   make(chan struct{}),
 	}
 	var err error
 
@@ -104,6 +114,10 @@ func NewMasterWatchFactory(ovnClientset *util.OVNClientset) (*WatchFactory, erro
 		return nil, err
 	}
 	err = egressipapi.AddToScheme(egressipscheme.Scheme)
+	if err != nil {
+		return nil, err
+	}
+	err = networkattachmentdefinitionapi.AddToScheme(networkattachmentdefinitionscheme.Scheme)
 	if err != nil {
 		return nil, err
 	}
@@ -157,6 +171,11 @@ func NewMasterWatchFactory(ovnClientset *util.OVNClientset) (*WatchFactory, erro
 	if err != nil {
 		return nil, err
 	}
+	wf.informers[networkattachmentdefinitionType], err = newInformer(networkattachmentdefinitionType,
+		wf.nadFactory.K8sCniCncfIo().V1().NetworkAttachmentDefinitions().Informer())
+	if err != nil {
+		return nil, err
+	}
 
 	wf.crdFactory.Start(wf.stopChan)
 	for oType, synced := range wf.crdFactory.WaitForCacheSync(wf.stopChan) {
@@ -166,6 +185,12 @@ func NewMasterWatchFactory(ovnClientset *util.OVNClientset) (*WatchFactory, erro
 	}
 	wf.iFactory.Start(wf.stopChan)
 	for oType, synced := range wf.iFactory.WaitForCacheSync(wf.stopChan) {
+		if !synced {
+			return nil, fmt.Errorf("error in syncing cache for %v informer", oType)
+		}
+	}
+	wf.nadFactory.Start(wf.stopChan)
+	for oType, synced := range wf.nadFactory.WaitForCacheSync(wf.stopChan) {
 		if !synced {
 			return nil, fmt.Errorf("error in syncing cache for %v informer", oType)
 		}
@@ -193,6 +218,7 @@ func NewNodeWatchFactory(ovnClientset *util.OVNClientset, nodeName string) (*Wat
 		eipFactory:  egressipinformerfactory.NewSharedInformerFactory(ovnClientset.EgressIPClient, resyncInterval),
 		efClientset: ovnClientset.EgressFirewallClient,
 		crdFactory:  apiextensionsinformerfactory.NewSharedInformerFactory(ovnClientset.APIExtensionsClient, resyncInterval),
+		nadFactory:  networkattachmentdefinitioninformerfactory.NewSharedInformerFactory(ovnClientset.NetworkAttchDefClient, resyncInterval),
 		informers:   make(map[reflect.Type]*informer),
 		stopChan:    make(chan struct{}),
 	}
@@ -325,6 +351,10 @@ func getObjectMeta(objType reflect.Type, obj interface{}) (*metav1.ObjectMeta, e
 		if egressIP, ok := obj.(*egressipapi.EgressIP); ok {
 			return &egressIP.ObjectMeta, nil
 		}
+	case networkattachmentdefinitionType:
+		if networkattachmentdefinition, ok := obj.(*networkattachmentdefinitionapi.NetworkAttachmentDefinition); ok {
+			return &networkattachmentdefinition.ObjectMeta, nil
+		}
 	}
 	return nil, fmt.Errorf("cannot get ObjectMeta from type %v", objType)
 }
@@ -442,6 +472,16 @@ func (wf *WatchFactory) AddEgressFirewallHandler(handlerFuncs cache.ResourceEven
 // RemoveEgressFirewallHandler removes an EgressFirewall object event handler function
 func (wf *WatchFactory) RemoveEgressFirewallHandler(handler *Handler) {
 	wf.removeHandler(egressFirewallType, handler)
+}
+
+// AddNetworkattachmentdefinitionHandler adds a handler function that will be executed on EgressFirewall object changes
+func (wf *WatchFactory) AddNetworkattachmentdefinitionHandler(handlerFuncs cache.ResourceEventHandler, processExisting func([]interface{})) *Handler {
+	return wf.addHandler(networkattachmentdefinitionType, "", nil, handlerFuncs, processExisting)
+}
+
+// RemoveNetworkattachmentdefinitionHandler removes an EgressFirewall object event handler function
+func (wf *WatchFactory) RemoveNetworkattachmentdefinitionHandler(handler *Handler) {
+	wf.removeHandler(networkattachmentdefinitionType, handler)
 }
 
 // AddCRDHandler adds a handler function that will be executed on CRD obje changes
