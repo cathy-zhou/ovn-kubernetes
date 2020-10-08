@@ -9,6 +9,8 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	libovsdbtest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/libovsdb"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/gomega"
@@ -45,6 +47,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 	var (
 		app             *cli.App
 		asFactory       AddressSetFactory
+		netNameInfo     util.NetNameInfo
 		libovsdbCleanup *libovsdbtest.Cleanup
 	)
 
@@ -56,6 +59,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 		app.Name = "test"
 		app.Flags = config.Flags
 
+		netNameInfo = util.NetNameInfo{NetName: types.DefaultNetworkName, Prefix: "", IsSecondary: false}
 		libovsdbCleanup = nil
 	})
 
@@ -87,7 +91,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				var err error
 				libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 
 				_, err = config.InitConfig(ctx, nil, nil)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -147,7 +151,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				var err error
 				libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 
 				_, err = config.InitConfig(ctx, nil, nil)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -185,7 +189,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				_, err = config.InitConfig(ctx, nil, nil)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 				_, err = asFactory.NewAddressSet("foobar", nil)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				expectedDatabaseState := &nbdb.AddressSet{
@@ -208,7 +212,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				var err error
 				libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 
 				_, err = config.InitConfig(ctx, nil, nil)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -245,7 +249,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				var err error
 				libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 
 				_, err = config.InitConfig(ctx, nil, nil)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -294,7 +298,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				var err error
 				libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 				_, err = config.InitConfig(ctx, nil, nil)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				config.IPv6Mode = true
@@ -345,7 +349,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				var err error
 				libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 				_, err = config.InitConfig(ctx, nil, nil)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
@@ -383,7 +387,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				var err error
 				libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 
 				_, err = config.InitConfig(ctx, nil, nil)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -415,7 +419,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 			var err error
 			libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+			asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 
 			_, err = config.InitConfig(ctx, nil, nil)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -444,7 +448,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				var err error
 				libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 
 				_, err = config.InitConfig(ctx, nil, nil)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -477,7 +481,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				var err error
 				libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 
 				_, err = config.InitConfig(ctx, nil, nil)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -520,7 +524,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				var err error
 				libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 				_, err = config.InitConfig(ctx, nil, nil)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				config.IPv4Mode = true
@@ -550,7 +554,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				var libovsdbOvnNBClient libovsdbclient.Client
 				libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 				as, err := asFactory.NewAddressSet("foobar", []net.IP{net.ParseIP(addr1)})
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
@@ -585,7 +589,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				var libovsdbOvnNBClient libovsdbclient.Client
 				libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 				as, err := asFactory.NewAddressSet("foobar", []net.IP{net.ParseIP(addr1)})
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
@@ -622,7 +626,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				var libovsdbOvnNBClient libovsdbclient.Client
 				libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 				as, err := asFactory.NewAddressSet("foobar", []net.IP{net.ParseIP(addr1)})
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
@@ -664,7 +668,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				var libovsdbOvnNBClient libovsdbclient.Client
 				libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 
 				_, err = asFactory.NewAddressSet("foobar", []net.IP{net.ParseIP(addr1), net.ParseIP(addr2),
 					net.ParseIP(addr3), net.ParseIP(addr4)})
@@ -705,7 +709,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				var libovsdbOvnNBClient libovsdbclient.Client
 				libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 
 				_, err = asFactory.NewAddressSet("foobar", []net.IP{net.ParseIP(addr1), net.ParseIP(addr2),
 					net.ParseIP(addr3), net.ParseIP(addr4)})
@@ -749,7 +753,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				var libovsdbOvnNBClient libovsdbclient.Client
 				libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 
 				_, err = asFactory.NewAddressSet("foobar", []net.IP{net.ParseIP(addr1), net.ParseIP(addr2),
 					net.ParseIP(addr3), net.ParseIP(addr4)})
@@ -791,7 +795,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 			var libovsdbOvnNBClient libovsdbclient.Client
 			libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+			asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 
 			as, err := asFactory.NewAddressSet("foobar", []net.IP{net.ParseIP(addr1), net.ParseIP(addr2),
 				net.ParseIP(addr3), net.ParseIP(addr4)})
@@ -835,7 +839,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				var libovsdbOvnNBClient libovsdbclient.Client
 				libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 
 				as, err := asFactory.NewAddressSet("foobar", nil)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -894,7 +898,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 				as, err := asFactory.NewAddressSet("foobar", []net.IP{net.ParseIP(addr1), net.ParseIP(addr2)})
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				expectedDatabaseState := []libovsdbtest.TestData{
@@ -1023,9 +1027,9 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 				var libovsdbOvnNBClient libovsdbclient.Client
 				libovsdbOvnNBClient, _, libovsdbCleanup, err = libovsdbtest.NewNBSBTestHarness(dbSetup)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				asFactory = NewOvnAddressSetFactory(libovsdbOvnNBClient)
+				asFactory = NewOvnAddressSetFactory(netNameInfo, libovsdbOvnNBClient)
 
-				err = NonDualStackAddressSetCleanup(libovsdbOvnNBClient)
+				err = NonDualStackAddressSetCleanup(netNameInfo, libovsdbOvnNBClient)
 				gomega.Eventually(libovsdbOvnNBClient).Should(libovsdbtest.HaveDataIgnoringUUIDs(expectedDatabaseState))
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				return nil

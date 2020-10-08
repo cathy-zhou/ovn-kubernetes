@@ -239,7 +239,7 @@ func (oc *Controller) reconcileEgressIP(old, new *egressipv1.EgressIP) (err erro
 		// matching the old and not matching the new, and add setup for the pod
 		// matching the new and which didn't match the old.
 		if !reflect.DeepEqual(newNamespaceSelector, oldNamespaceSelector) && reflect.DeepEqual(newPodSelector, oldPodSelector) {
-			namespaces, err := oc.watchFactory.GetNamespaces()
+			namespaces, err := oc.mc.watchFactory.GetNamespaces()
 			if err != nil {
 				return err
 			}
@@ -260,12 +260,12 @@ func (oc *Controller) reconcileEgressIP(old, new *egressipv1.EgressIP) (err erro
 			// matching the old and not matching the new, and add setup for the pod
 			// matching the new and which didn't match the old.
 		} else if reflect.DeepEqual(newNamespaceSelector, oldNamespaceSelector) && !reflect.DeepEqual(newPodSelector, oldPodSelector) {
-			namespaces, err := oc.watchFactory.GetNamespacesBySelector(newEIP.Spec.NamespaceSelector)
+			namespaces, err := oc.mc.watchFactory.GetNamespacesBySelector(newEIP.Spec.NamespaceSelector)
 			if err != nil {
 				return err
 			}
 			for _, namespace := range namespaces {
-				pods, err := oc.watchFactory.GetPods(namespace.Name)
+				pods, err := oc.mc.watchFactory.GetPods(namespace.Name)
 				if err != nil {
 					return err
 				}
@@ -287,7 +287,7 @@ func (oc *Controller) reconcileEgressIP(old, new *egressipv1.EgressIP) (err erro
 			// old ones and not matching the new ones, and add setup for all
 			// matching the new ones but which didn't match the old ones.
 		} else if !reflect.DeepEqual(newNamespaceSelector, oldNamespaceSelector) && !reflect.DeepEqual(newPodSelector, oldPodSelector) {
-			namespaces, err := oc.watchFactory.GetNamespaces()
+			namespaces, err := oc.mc.watchFactory.GetNamespaces()
 			if err != nil {
 				return err
 			}
@@ -305,7 +305,7 @@ func (oc *Controller) reconcileEgressIP(old, new *egressipv1.EgressIP) (err erro
 				// which match the new pod selector or if the podSelector is empty
 				// then just perform the setup.
 				if newNamespaceSelector.Matches(namespaceLabels) && !oldNamespaceSelector.Matches(namespaceLabels) {
-					pods, err := oc.watchFactory.GetPods(namespace.Name)
+					pods, err := oc.mc.watchFactory.GetPods(namespace.Name)
 					if err != nil {
 						return err
 					}
@@ -321,7 +321,7 @@ func (oc *Controller) reconcileEgressIP(old, new *egressipv1.EgressIP) (err erro
 				// If the namespace continues to match, look at the pods
 				// selector and pods in that namespace.
 				if newNamespaceSelector.Matches(namespaceLabels) && oldNamespaceSelector.Matches(namespaceLabels) {
-					pods, err := oc.watchFactory.GetPods(namespace.Name)
+					pods, err := oc.mc.watchFactory.GetPods(namespace.Name)
 					if err != nil {
 						return err
 					}
@@ -370,7 +370,7 @@ func (oc *Controller) reconcileEgressIPNamespace(old, new *v1.Namespace) error {
 	// all "blue" pods in namespace A, and a second EgressIP object match all
 	// "red" pods in namespace A), so continue iterating all EgressIP objects
 	// before finishing.
-	egressIPs, err := oc.watchFactory.GetEgressIPs()
+	egressIPs, err := oc.mc.watchFactory.GetEgressIPs()
 	if err != nil {
 		return err
 	}
@@ -395,14 +395,14 @@ func (oc *Controller) reconcileEgressIPPod(old, new *v1.Pod) (err error) {
 	namespace := &v1.Namespace{}
 	if old != nil {
 		oldPod = old
-		namespace, err = oc.watchFactory.GetNamespace(oldPod.Namespace)
+		namespace, err = oc.mc.watchFactory.GetNamespace(oldPod.Namespace)
 		if err != nil {
 			return err
 		}
 	}
 	if new != nil {
 		newPod = new
-		namespace, err = oc.watchFactory.GetNamespace(newPod.Namespace)
+		namespace, err = oc.mc.watchFactory.GetNamespace(newPod.Namespace)
 		if err != nil {
 			return err
 		}
@@ -428,7 +428,7 @@ func (oc *Controller) reconcileEgressIPPod(old, new *v1.Pod) (err error) {
 	// gets changed to a blue label: we need add and remove the set up for both
 	// EgressIP obejcts - since we can't be sure of which EgressIP object we
 	// process first, always iterate all.
-	egressIPs, err := oc.watchFactory.GetEgressIPs()
+	egressIPs, err := oc.mc.watchFactory.GetEgressIPs()
 	if err != nil {
 		return err
 	}
@@ -544,7 +544,7 @@ func (oc *Controller) reconcileCloudPrivateIPConfig(old, new *ocpcloudnetworkapi
 		// a CloudPrivateIPConfig delete because the EgressIP has been deleted
 		// then we need to remove the setup made for it, but not update the
 		// object.
-		egressIP, err := oc.kube.GetEgressIP(egressIPName)
+		egressIP, err := oc.mc.kube.GetEgressIP(egressIPName)
 		if err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
@@ -578,7 +578,7 @@ func (oc *Controller) reconcileCloudPrivateIPConfig(old, new *ocpcloudnetworkapi
 		if !exists {
 			return fmt.Errorf("CloudPrivateIPConfig object: %s is missing the egress IP owner reference annotation", newCloudPrivateIPConfig.Name)
 		}
-		egressIP, err := oc.kube.GetEgressIP(egressIPName)
+		egressIP, err := oc.mc.kube.GetEgressIP(egressIPName)
 		if err != nil {
 			return err
 		}
@@ -642,7 +642,7 @@ func (oc *Controller) executeCloudPrivateIPConfigChange(egressIPName string, toA
 func (oc *Controller) executeCloudPrivateIPConfigOps(egressIPName string, ops map[string]*cloudPrivateIPConfigOp) error {
 	for egressIP, op := range ops {
 		cloudPrivateIPConfigName := ipStringToCloudPrivateIPConfigName(egressIP)
-		cloudPrivateIPConfig, err := oc.watchFactory.GetCloudPrivateIPConfig(cloudPrivateIPConfigName)
+		cloudPrivateIPConfig, err := oc.mc.watchFactory.GetCloudPrivateIPConfig(cloudPrivateIPConfigName)
 		// toAdd and toDelete is non-empty, this indicates an UPDATE for which
 		// the object **must** exist, if not: that's an error.
 		if op.toAdd != "" && op.toDelete != "" {
@@ -650,12 +650,12 @@ func (oc *Controller) executeCloudPrivateIPConfigOps(egressIPName string, ops ma
 				return fmt.Errorf("cloud update request failed for CloudPrivateIPConfig: %s, could not get item, err: %v", cloudPrivateIPConfigName, err)
 			}
 			cloudPrivateIPConfig.Spec.Node = op.toAdd
-			if _, err := oc.kube.UpdateCloudPrivateIPConfig(cloudPrivateIPConfig); err != nil {
+			if _, err := oc.mc.kube.UpdateCloudPrivateIPConfig(cloudPrivateIPConfig); err != nil {
 				eIPRef := kapi.ObjectReference{
 					Kind: "EgressIP",
 					Name: egressIPName,
 				}
-				oc.recorder.Eventf(&eIPRef, kapi.EventTypeWarning, "CloudUpdateFailed", "egress IP: %s for object EgressIP: %s could not be updated, err: %v", egressIP, egressIPName, err)
+				oc.mc.recorder.Eventf(&eIPRef, kapi.EventTypeWarning, "CloudUpdateFailed", "egress IP: %s for object EgressIP: %s could not be updated, err: %v", egressIP, egressIPName, err)
 				return fmt.Errorf("cloud update request failed for CloudPrivateIPConfig: %s, err: %v", cloudPrivateIPConfigName, err)
 			}
 			// toAdd is non-empty, this indicates an ADD for which
@@ -675,12 +675,12 @@ func (oc *Controller) executeCloudPrivateIPConfigOps(egressIPName string, ops ma
 					Node: op.toAdd,
 				},
 			}
-			if _, err := oc.kube.CreateCloudPrivateIPConfig(&cloudPrivateIPConfig); err != nil {
+			if _, err := oc.mc.kube.CreateCloudPrivateIPConfig(&cloudPrivateIPConfig); err != nil {
 				eIPRef := kapi.ObjectReference{
 					Kind: "EgressIP",
 					Name: egressIPName,
 				}
-				oc.recorder.Eventf(&eIPRef, kapi.EventTypeWarning, "CloudAssignmentFailed", "egress IP: %s for object EgressIP: %s could not be created, err: %v", egressIP, egressIPName, err)
+				oc.mc.recorder.Eventf(&eIPRef, kapi.EventTypeWarning, "CloudAssignmentFailed", "egress IP: %s for object EgressIP: %s could not be created, err: %v", egressIP, egressIPName, err)
 				return fmt.Errorf("cloud add request failed for CloudPrivateIPConfig: %s, err: %v", cloudPrivateIPConfigName, err)
 			}
 			// toDelete is non-empty, this indicates an DELETE for which
@@ -689,12 +689,12 @@ func (oc *Controller) executeCloudPrivateIPConfigOps(egressIPName string, ops ma
 			if err != nil {
 				return fmt.Errorf("cloud deletion request failed for CloudPrivateIPConfig: %s, could not get item, err: %v", cloudPrivateIPConfigName, err)
 			}
-			if err := oc.kube.DeleteCloudPrivateIPConfig(cloudPrivateIPConfigName); err != nil {
+			if err := oc.mc.kube.DeleteCloudPrivateIPConfig(cloudPrivateIPConfigName); err != nil {
 				eIPRef := kapi.ObjectReference{
 					Kind: "EgressIP",
 					Name: egressIPName,
 				}
-				oc.recorder.Eventf(&eIPRef, kapi.EventTypeWarning, "CloudDeletionFailed", "egress IP: %s for object EgressIP: %s could not be deleted, err: %v", egressIP, egressIPName, err)
+				oc.mc.recorder.Eventf(&eIPRef, kapi.EventTypeWarning, "CloudDeletionFailed", "egress IP: %s for object EgressIP: %s could not be deleted, err: %v", egressIP, egressIPName, err)
 				return fmt.Errorf("cloud deletion request failed for CloudPrivateIPConfig: %s, err: %v", cloudPrivateIPConfigName, err)
 			}
 		}
@@ -711,7 +711,7 @@ func (oc *Controller) validateEgressIPSpec(name string, egressIPs []string) (set
 				Kind: "EgressIP",
 				Name: name,
 			}
-			oc.recorder.Eventf(&eIPRef, kapi.EventTypeWarning, "InvalidEgressIP", "egress IP: %s for object EgressIP: %s is not a valid IP address", egressIP, name)
+			oc.mc.recorder.Eventf(&eIPRef, kapi.EventTypeWarning, "InvalidEgressIP", "egress IP: %s for object EgressIP: %s is not a valid IP address", egressIP, name)
 			return nil, fmt.Errorf("unable to parse provided EgressIP: %s, invalid", egressIP)
 		}
 		validatedEgressIPs.Insert(ip.String())
@@ -796,7 +796,7 @@ func (oc *Controller) addAllocatorEgressIPAssignments(name string, statusAssignm
 }
 
 func (oc *Controller) addEgressIPAssignments(name string, statusAssignments []egressipv1.EgressIPStatusItem, namespaceSelector, podSelector metav1.LabelSelector) error {
-	namespaces, err := oc.watchFactory.GetNamespacesBySelector(namespaceSelector)
+	namespaces, err := oc.mc.watchFactory.GetNamespacesBySelector(namespaceSelector)
 	if err != nil {
 		return err
 	}
@@ -813,12 +813,12 @@ func (oc *Controller) addNamespaceEgressIPAssignments(name string, statusAssignm
 	var err error
 	selector, _ := metav1.LabelSelectorAsSelector(&podSelector)
 	if !selector.Empty() {
-		pods, err = oc.watchFactory.GetPodsBySelector(namespace.Name, podSelector)
+		pods, err = oc.mc.watchFactory.GetPodsBySelector(namespace.Name, podSelector)
 		if err != nil {
 			return err
 		}
 	} else {
-		pods, err = oc.watchFactory.GetPods(namespace.Name)
+		pods, err = oc.mc.watchFactory.GetPods(namespace.Name)
 		if err != nil {
 			return err
 		}
@@ -855,7 +855,7 @@ func (oc *Controller) addPodEgressIPAssignments(name string, statusAssignments [
 		// addLogicalPort has finished successfully setting up networking for
 		// the pod, so we can proceed with retrieving its IP and deleting the
 		// external GW configuration created in addLogicalPort for the pod.
-		logicalPort, err := oc.logicalPortCache.get(util.GetLogicalPortName(pod.Namespace, pod.Name))
+		logicalPort, err := oc.logicalPortCache.get(util.GetLogicalPortName(pod.Namespace, pod.Name, types.DefaultNetworkName, true))
 		if err != nil {
 			return nil
 		}
@@ -928,12 +928,12 @@ func (oc *Controller) deleteNamespaceEgressIPAssignment(name string, statusAssig
 	var err error
 	selector, _ := metav1.LabelSelectorAsSelector(&podSelector)
 	if !selector.Empty() {
-		pods, err = oc.watchFactory.GetPodsBySelector(namespace.Name, podSelector)
+		pods, err = oc.mc.watchFactory.GetPodsBySelector(namespace.Name, podSelector)
 		if err != nil {
 			return err
 		}
 	} else {
-		pods, err = oc.watchFactory.GetPods(namespace.Name)
+		pods, err = oc.mc.watchFactory.GetPods(namespace.Name)
 		if err != nil {
 			return err
 		}
@@ -1039,7 +1039,7 @@ func (oc *Controller) syncStaleEgressReroutePolicy(egressIPToPodIPCache map[stri
 			},
 		},
 	}
-	if err := oc.modelClient.Delete(opModels...); err != nil {
+	if err := oc.mc.modelClient.Delete(opModels...); err != nil {
 		klog.Errorf("Unable to remove stale logical router policies, err: %v", err)
 	}
 }
@@ -1060,7 +1060,7 @@ func (oc *Controller) syncStaleSNATRules(egressIPToPodIPCache map[string]sets.St
 		return false
 	}
 
-	nats, err := libovsdbops.FindNATsUsingPredicate(oc.nbClient, predicate)
+	nats, err := libovsdbops.FindNATsUsingPredicate(oc.mc.nbClient, predicate)
 	if err != nil {
 		klog.Errorf("Unable to sync egress IPs err: %v", err)
 		return
@@ -1071,7 +1071,7 @@ func (oc *Controller) syncStaleSNATRules(egressIPToPodIPCache map[string]sets.St
 		return
 	}
 
-	routers, err := libovsdbops.FindRoutersUsingNAT(oc.nbClient, nats)
+	routers, err := libovsdbops.FindRoutersUsingNAT(oc.mc.nbClient, nats)
 	if err != nil {
 		klog.Errorf("Unable to sync egress IPs, err: %v", err)
 		return
@@ -1079,14 +1079,14 @@ func (oc *Controller) syncStaleSNATRules(egressIPToPodIPCache map[string]sets.St
 
 	ops := []ovsdb.Operation{}
 	for _, router := range routers {
-		ops, err = libovsdbops.DeleteNATsFromRouterOps(oc.nbClient, ops, &router, nats...)
+		ops, err = libovsdbops.DeleteNATsFromRouterOps(oc.mc.nbClient, ops, &router, nats...)
 		if err != nil {
 			klog.Errorf("Error deleting stale NAT from router %s: %v", router.Name, err)
 			continue
 		}
 	}
 
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
+	_, err = libovsdbops.TransactAndCheck(oc.mc.nbClient, ops)
 	if err != nil {
 		klog.Errorf("Error deleting stale NATs: %v", err)
 	}
@@ -1105,13 +1105,13 @@ func (oc *Controller) generatePodIPCacheForEgressIP(eIPs []interface{}) (map[str
 			continue
 		}
 		egressIPToPodIPCache[egressIP.Name] = sets.NewString()
-		namespaces, err := oc.watchFactory.GetNamespacesBySelector(egressIP.Spec.NamespaceSelector)
+		namespaces, err := oc.mc.watchFactory.GetNamespacesBySelector(egressIP.Spec.NamespaceSelector)
 		if err != nil {
 			klog.Errorf("Error building egress IP sync cache, cannot retrieve namespaces for EgressIP: %s, err: %v", egressIP.Name, err)
 			continue
 		}
 		for _, namespace := range namespaces {
-			pods, err := oc.watchFactory.GetPodsBySelector(namespace.Name, egressIP.Spec.PodSelector)
+			pods, err := oc.mc.watchFactory.GetPodsBySelector(namespace.Name, egressIP.Spec.PodSelector)
 			if err != nil {
 				klog.Errorf("Error building egress IP sync cache, cannot retrieve pods for namespace: %s and egress IP: %s, err: %v", namespace.Name, egressIP.Name, err)
 				continue
@@ -1165,7 +1165,7 @@ func (oc *Controller) patchReplaceEgressIPStatus(name string, statusItems []egre
 		if err != nil {
 			return fmt.Errorf("error serializing status patch operation: %+v, err: %v", statusItems, err)
 		}
-		return oc.kube.PatchEgressIP(name, op)
+		return oc.mc.kube.PatchEgressIP(name, op)
 	})
 }
 
@@ -1191,7 +1191,7 @@ func (oc *Controller) assignEgressIPs(name string, egressIPs []string) []egressi
 			Kind: "EgressIP",
 			Name: name,
 		}
-		oc.recorder.Eventf(&eIPRef, kapi.EventTypeWarning, "NoMatchingNodeFound", "no assignable nodes for EgressIP: %s, please tag at least one node with label: %s", name, util.GetNodeEgressLabel())
+		oc.mc.recorder.Eventf(&eIPRef, kapi.EventTypeWarning, "NoMatchingNodeFound", "no assignable nodes for EgressIP: %s, please tag at least one node with label: %s", name, util.GetNodeEgressLabel())
 		klog.Errorf("No assignable nodes found for EgressIP: %s and requested IPs: %v", name, egressIPs)
 		return assignments
 	}
@@ -1219,7 +1219,7 @@ func (oc *Controller) assignEgressIPs(name string, egressIPs []string) []egressi
 				Kind: "EgressIP",
 				Name: name,
 			}
-			oc.recorder.Eventf(
+			oc.mc.recorder.Eventf(
 				&eIPRef,
 				kapi.EventTypeWarning,
 				"UnsupportedRequest",
@@ -1269,7 +1269,7 @@ func (oc *Controller) assignEgressIPs(name string, egressIPs []string) []egressi
 			Kind: "EgressIP",
 			Name: name,
 		}
-		oc.recorder.Eventf(&eIPRef, kapi.EventTypeWarning, "NoMatchingNodeFound", "No matching nodes found, which can host any of the egress IPs: %v for object EgressIP: %s", egressIPs, name)
+		oc.mc.recorder.Eventf(&eIPRef, kapi.EventTypeWarning, "NoMatchingNodeFound", "No matching nodes found, which can host any of the egress IPs: %v for object EgressIP: %s", egressIPs, name)
 		klog.Errorf("No matching host found for EgressIP: %s", name)
 		return assignments
 	}
@@ -1278,7 +1278,7 @@ func (oc *Controller) assignEgressIPs(name string, egressIPs []string) []egressi
 			Kind: "EgressIP",
 			Name: name,
 		}
-		oc.recorder.Eventf(&eIPRef, kapi.EventTypeWarning, "UnassignedRequest", "Not all egress IPs for EgressIP: %s could be assigned, please tag more nodes", name)
+		oc.mc.recorder.Eventf(&eIPRef, kapi.EventTypeWarning, "UnassignedRequest", "Not all egress IPs for EgressIP: %s could be assigned, please tag more nodes", name)
 	}
 	return assignments
 }
@@ -1372,7 +1372,7 @@ func (oc *Controller) addEgressNode(egressNode *kapi.Node) error {
 		},
 		ErrNotFound: true,
 	}
-	if _, err := oc.modelClient.CreateOrUpdate(opModel); err != nil {
+	if _, err := oc.mc.modelClient.CreateOrUpdate(opModel); err != nil {
 		klog.Errorf("Unable to configure GARP on external logical switch port for egress node: %s, "+
 			"this will result in packet drops during egress IP re-assignment,  err: %v", egressNode.Name, err)
 
@@ -1381,7 +1381,7 @@ func (oc *Controller) addEgressNode(egressNode *kapi.Node) error {
 	// egress IPs which are missing an assignment. If there are, we need to send a
 	// synthetic update since reconcileEgressIP will then try to assign those IPs to
 	// this node (if possible)
-	egressIPs, err := oc.kube.GetEgressIPs()
+	egressIPs, err := oc.mc.kube.GetEgressIPs()
 	if err != nil {
 		return fmt.Errorf("unable to list EgressIPs, err: %v", err)
 	}
@@ -1417,13 +1417,13 @@ func (oc *Controller) deleteEgressNode(egressNode *kapi.Node) error {
 		},
 		ErrNotFound: true,
 	}
-	if err := oc.modelClient.Delete(opModel); err != nil {
+	if err := oc.mc.modelClient.Delete(opModel); err != nil {
 		klog.Errorf("Unable to remove GARP configuration on external logical switch port for egress node: %s, err: %v", egressNode.Name, err)
 	}
 	// Since the node has been labelled as "not usable" for egress IP
 	// assignments we need to find all egress IPs which have an assignment to
 	// it, and move them elsewhere.
-	egressIPs, err := oc.kube.GetEgressIPs()
+	egressIPs, err := oc.mc.kube.GetEgressIPs()
 	if err != nil {
 		return fmt.Errorf("unable to list EgressIPs, err: %v", err)
 	}
@@ -1903,7 +1903,7 @@ func (oc *Controller) checkEgressNodesReachability() {
 		}
 		oc.eIPC.allocator.Unlock()
 		for nodeName, shouldDelete := range reAddOrDelete {
-			node, err := oc.watchFactory.GetNode(nodeName)
+			node, err := oc.mc.watchFactory.GetNode(nodeName)
 			if err != nil {
 				klog.Errorf("Node: %s reachability changed, but could not retrieve node from cache, err: %v", nodeName, err)
 			}
@@ -2076,7 +2076,7 @@ func (oc *Controller) createLogicalRouterPolicy(match string, priority int) erro
 			ErrNotFound: true,
 		},
 	}
-	if _, err := oc.modelClient.CreateOrUpdate(opModels...); err != nil {
+	if _, err := oc.mc.modelClient.CreateOrUpdate(opModels...); err != nil {
 		return fmt.Errorf("unable to create logical router policy, err: %v", err)
 	}
 	return nil
@@ -2105,7 +2105,7 @@ func (oc *Controller) deleteLogicalRouterPolicy(match string, priority int) erro
 		},
 	}
 
-	if err := oc.modelClient.Delete(opModels...); err != nil {
+	if err := oc.mc.modelClient.Delete(opModels...); err != nil {
 		return fmt.Errorf("unable to delete logical router policy, err: %v", err)
 	}
 	return nil
