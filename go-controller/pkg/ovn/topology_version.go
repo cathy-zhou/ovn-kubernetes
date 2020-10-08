@@ -27,7 +27,7 @@ func (oc *Controller) ovnTopologyCleanup() error {
 	}
 
 	// Cleanup address sets in non dual stack formats in all versions known to possibly exist.
-	if ver <= ovntypes.OvnPortBindingTopoVersion {
+	if !oc.nadInfo.IsSecondary && ver <= ovntypes.OvnPortBindingTopoVersion {
 		err = addressset.NonDualStackAddressSetCleanup(oc.nbClient)
 	}
 	return err
@@ -38,28 +38,31 @@ func (oc *Controller) ovnTopologyCleanup() error {
 // - a ConfigMap. This is used by nodes to determine the cluster's topology
 func (oc *Controller) reportTopologyVersion(ctx context.Context) error {
 	currentTopologyVersion := strconv.Itoa(ovntypes.OvnCurrentTopologyVersion)
+	clusterRouterName := oc.nadInfo.Prefix + ovntypes.OVNClusterRouter
 	logicalRouter := nbdb.LogicalRouter{
-		Name:        ovntypes.OVNClusterRouter,
+		Name:        clusterRouterName,
 		ExternalIDs: map[string]string{"k8s-ovn-topo-version": currentTopologyVersion},
 	}
 	err := libovsdbops.UpdateLogicalRouterSetExternalIDs(oc.nbClient, &logicalRouter)
 	if err != nil {
-		return fmt.Errorf("failed to generate set topology version in OVN, err: %v", err)
+		return fmt.Errorf("failed to generate set topology version in OVN for network %s, err: %v", oc.nadInfo.NetName, err)
 	}
-	klog.Infof("Updated Logical_Router %s topology version to %s", ovntypes.OVNClusterRouter, currentTopologyVersion)
+	klog.Infof("Updated topology version to %s for network %s", currentTopologyVersion, oc.nadInfo.NetName)
 
 	// Report topology version in a ConfigMap
 	// (we used to report this via annotations on our Node)
-	cm := corev1apply.ConfigMap(ovntypes.OvnK8sStatusCMName, globalconfig.Kubernetes.OVNConfigNamespace)
-	cm.Data = map[string]string{ovntypes.OvnK8sStatusKeyTopoVersion: currentTopologyVersion}
-	if _, err := oc.client.CoreV1().ConfigMaps(globalconfig.Kubernetes.OVNConfigNamespace).Apply(ctx, cm, metav1.ApplyOptions{
-		Force:        true,
-		FieldManager: "ovn-kubernetes",
-	}); err != nil {
-		return err
-	}
+	if !oc.nadInfo.IsSecondary {
+		cm := corev1apply.ConfigMap(ovntypes.OvnK8sStatusCMName, globalconfig.Kubernetes.OVNConfigNamespace)
+		cm.Data = map[string]string{ovntypes.OvnK8sStatusKeyTopoVersion: currentTopologyVersion}
+		if _, err := oc.client.CoreV1().ConfigMaps(globalconfig.Kubernetes.OVNConfigNamespace).Apply(ctx, cm, metav1.ApplyOptions{
+			Force:        true,
+			FieldManager: "ovn-kubernetes",
+		}); err != nil {
+			return err
+		}
 
-	klog.Infof("Updated ConfigMap %s/%s topology version to %s", *cm.Namespace, *cm.Name, currentTopologyVersion)
+		klog.Infof("Updated ConfigMap %s/%s topology version to %s", *cm.Namespace, *cm.Name, currentTopologyVersion)
+	}
 
 	return oc.cleanTopologyAnnotation()
 }
@@ -104,10 +107,11 @@ func (oc *Controller) cleanTopologyAnnotation() error {
 // If "k8s-ovn-topo-version" key in external_ids column does not exist, it is prior to OVN topology versioning
 // and therefore set version number to OvnCurrentTopologyVersion
 func (oc *Controller) determineOVNTopoVersionFromOVN() (int, error) {
-	logicalRouter := &nbdb.LogicalRouter{Name: ovntypes.OVNClusterRouter}
+	clusterRouterName := oc.nadInfo.Prefix + ovntypes.OVNClusterRouter
+	logicalRouter := &nbdb.LogicalRouter{Name: clusterRouterName}
 	logicalRouter, err := libovsdbops.GetLogicalRouter(oc.nbClient, logicalRouter)
 	if err != nil && err != libovsdbclient.ErrNotFound {
-		return 0, fmt.Errorf("error getting router %s: %v", ovntypes.OVNClusterRouter, err)
+		return 0, fmt.Errorf("error getting router %s: %v", clusterRouterName, err)
 	}
 	if err == libovsdbclient.ErrNotFound {
 		// no OVNClusterRouter exists, DB is empty, nothing to upgrade

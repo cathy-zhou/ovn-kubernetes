@@ -64,7 +64,7 @@ func (oc *Controller) gatewayCleanup(nodeName string) error {
 	lbCache.RemoveRouter(gatewayRouter)
 
 	// Remove the gateway router associated with nodeName
-	err = libovsdbops.DeleteLogicalRouter(oc.nbClient, &logicalRouter)
+	err = libovsdbops.DeleteLogicalRouter(oc.nbClient, logicalRouter.Name)
 	if err != nil {
 		return fmt.Errorf("failed to delete gateway router %s: %v", gatewayRouter, err)
 	}
@@ -222,7 +222,7 @@ func (oc *Controller) multiJoinSwitchGatewayCleanup(nodeName string, upgradeOnly
 	lbCache.RemoveRouter(gatewayRouter)
 
 	// Remove the gateway router associated with nodeName
-	err = libovsdbops.DeleteLogicalRouter(oc.nbClient, &logicalRouter)
+	err = libovsdbops.DeleteLogicalRouter(oc.nbClient, logicalRouter.Name)
 	if err != nil {
 		return fmt.Errorf("failed to delete gateway router %s: %v", gatewayRouter, err)
 	}
@@ -263,6 +263,9 @@ func (oc *Controller) removeLRPolicies(nodeName string, priorities []string) {
 
 // removes DGP, snat_and_dnat entries, and LRPs
 func (oc *Controller) cleanupDGP(nodes *kapi.NodeList) error {
+	if oc.nadInfo.IsSecondary {
+		return nil
+	}
 	klog.Infof("Removing DGP %v", nodes)
 	// remove dnat_snat entries as well as LRPs
 	for _, node := range nodes.Items {

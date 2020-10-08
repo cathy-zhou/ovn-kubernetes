@@ -3,7 +3,6 @@ package ovn
 import (
 	"fmt"
 	"math/rand"
-	"net"
 	"reflect"
 	"strings"
 	"sync"
@@ -394,23 +393,18 @@ func getResourceKey(objType reflect.Type, obj interface{}) (string, error) {
 	return "", fmt.Errorf("object type %s not supported", objType)
 }
 
-func (oc *Controller) getPortInfo(pod *kapi.Pod) *lpInfo {
-	var portInfo *lpInfo
-	key := util.GetLogicalPortName(pod.Namespace, pod.Name)
-	if !util.PodWantsNetwork(pod) {
-		// create dummy logicalPortInfo for host-networked pods
-		mac, _ := net.ParseMAC("00:00:00:00:00:00")
-		portInfo = &lpInfo{
-			logicalSwitch: "host-networked",
-			name:          key,
-			uuid:          "host-networked",
-			ips:           []*net.IPNet{},
-			mac:           mac,
+func (oc *Controller) getPortInfo(pod *kapi.Pod) map[string]*lpInfo {
+	portInfoMap := map[string]*lpInfo{}
+	if util.PodWantsNetwork(pod) {
+		on, networkMap, err := util.IsNetworkOnPod(pod, oc.nadInfo)
+		if err == nil && on {
+			for nadName := range networkMap {
+				key := util.GetLogicalPortName(pod.Namespace, pod.Name, nadName, oc.nadInfo.NetNameInfo)
+				portInfoMap[nadName], _ = oc.logicalPortCache.get(key)
+			}
 		}
-	} else {
-		portInfo, _ = oc.logicalPortCache.get(key)
 	}
-	return portInfo
+	return portInfoMap
 }
 
 // Given an object and its type, getInternalCacheEntry returns the internal cache entry for this object.
@@ -481,12 +475,12 @@ func (oc *Controller) recordAddEvent(objType reflect.Type, obj interface{}) {
 	case factory.PodType:
 		klog.V(5).Infof("Recording add event on pod")
 		pod := obj.(*kapi.Pod)
-		oc.podRecorder.AddPod(pod.UID)
-		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name)
+		oc.podRecorder.AddPod(pod.UID, oc.nadInfo.NetNameInfo)
+		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name, oc.nadInfo.NetNameInfo)
 	case factory.PolicyType:
 		klog.V(5).Infof("Recording add event on network policy")
 		np := obj.(*knet.NetworkPolicy)
-		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
+		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name, oc.nadInfo.NetNameInfo)
 	}
 }
 
@@ -496,11 +490,11 @@ func (oc *Controller) recordUpdateEvent(objType reflect.Type, obj interface{}) {
 	case factory.PodType:
 		klog.V(5).Infof("Recording update event on pod")
 		pod := obj.(*kapi.Pod)
-		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name)
+		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name, oc.nadInfo.NetNameInfo)
 	case factory.PolicyType:
 		klog.V(5).Infof("Recording update event on network policy")
 		np := obj.(*knet.NetworkPolicy)
-		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
+		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name, oc.nadInfo.NetNameInfo)
 	}
 }
 
@@ -510,12 +504,12 @@ func (oc *Controller) recordDeleteEvent(objType reflect.Type, obj interface{}) {
 	case factory.PodType:
 		klog.V(5).Infof("Recording delete event on pod")
 		pod := obj.(*kapi.Pod)
-		oc.podRecorder.CleanPod(pod.UID)
-		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name)
+		oc.podRecorder.CleanPod(pod.UID, oc.nadInfo.NetNameInfo)
+		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name, oc.nadInfo.NetNameInfo)
 	case factory.PolicyType:
 		klog.V(5).Infof("Recording delete event on network policy")
 		np := obj.(*knet.NetworkPolicy)
-		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
+		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name, oc.nadInfo.NetNameInfo)
 	}
 }
 
@@ -524,11 +518,11 @@ func (oc *Controller) recordSuccessEvent(objType reflect.Type, obj interface{}) 
 	case factory.PodType:
 		klog.V(5).Infof("Recording success event on pod")
 		pod := obj.(*kapi.Pod)
-		metrics.GetConfigDurationRecorder().End("pod", pod.Namespace, pod.Name)
+		metrics.GetConfigDurationRecorder().End("pod", pod.Namespace, pod.Name, oc.nadInfo.NetNameInfo)
 	case factory.PolicyType:
 		klog.V(5).Infof("Recording success event on network policy")
 		np := obj.(*knet.NetworkPolicy)
-		metrics.GetConfigDurationRecorder().End("networkpolicy", np.Namespace, np.Name)
+		metrics.GetConfigDurationRecorder().End("networkpolicy", np.Namespace, np.Name, oc.nadInfo.NetNameInfo)
 	}
 }
 
@@ -611,7 +605,8 @@ func (oc *Controller) addResource(objectsToRetry *RetryObjs, obj interface{}, fr
 				mgmtSync,
 				gwSync}
 		} else {
-			nodeParams = &nodeSyncs{true, true, true, true}
+			// syncMgmtPort and syncGw are false for secondary networks
+			nodeParams = &nodeSyncs{true, true, !oc.nadInfo.IsSecondary, !oc.nadInfo.IsSecondary}
 		}
 
 		if err = oc.addUpdateNodeEvent(node, nodeParams); err != nil {
@@ -782,12 +777,14 @@ func (oc *Controller) updateResource(objectsToRetry *RetryObjs, oldObj, newObj i
 		// determine what actually changed in this update
 		_, nodeSync := oc.addNodeFailed.Load(newNode.Name)
 		_, failed := oc.nodeClusterRouterPortFailed.Load(newNode.Name)
-		clusterRtrSync := failed || nodeChassisChanged(oldNode, newNode) || nodeSubnetChanged(oldNode, newNode)
+		chassisChanged := nodeChassisChanged(oldNode, newNode)
+		subnetChanged := nodeSubnetChanged(oldNode, newNode, oc.nadInfo.NetName)
+		clusterRtrSync := failed || chassisChanged || subnetChanged
 		_, failed = oc.mgmtPortFailed.Load(newNode.Name)
-		mgmtSync := failed || macAddressChanged(oldNode, newNode) || nodeSubnetChanged(oldNode, newNode)
+		mgmtSync := !oc.nadInfo.IsSecondary && (failed || macAddressChanged(oldNode, newNode) || subnetChanged)
 		_, failed = oc.gatewaysFailed.Load(newNode.Name)
-		gwSync := (failed || gatewayChanged(oldNode, newNode) ||
-			nodeSubnetChanged(oldNode, newNode) || hostAddressesChanged(oldNode, newNode))
+		gwSync := !oc.nadInfo.IsSecondary && (failed || gatewayChanged(oldNode, newNode) ||
+			subnetChanged || hostAddressesChanged(oldNode, newNode))
 
 		return oc.addUpdateNodeEvent(newNode, &nodeSyncs{nodeSync, clusterRtrSync, mgmtSync, gwSync})
 
@@ -900,14 +897,13 @@ func (oc *Controller) updateResource(objectsToRetry *RetryObjs, oldObj, newObj i
 func (oc *Controller) deleteResource(objectsToRetry *RetryObjs, obj, cachedObj interface{}) error {
 	switch objectsToRetry.oType {
 	case factory.PodType:
-		var portInfo *lpInfo
+		var portInfoMap map[string]*lpInfo
 		pod := obj.(*kapi.Pod)
 
 		if cachedObj != nil {
-			portInfo = cachedObj.(*lpInfo)
+			portInfoMap = cachedObj.(map[string]*lpInfo)
 		}
-		oc.logicalPortCache.remove(util.GetLogicalPortName(pod.Namespace, pod.Name))
-		return oc.removePod(pod, portInfo)
+		return oc.removePod(pod, portInfoMap)
 
 	case factory.PolicyType:
 		knp, ok := obj.(*knet.NetworkPolicy)
@@ -1306,7 +1302,7 @@ func (oc *Controller) WatchResource(objectsToRetry *RetryObjs) (*factory.Handler
 					klog.Errorf("Upon add event: %v", err)
 					return
 				}
-				klog.V(5).Infof("Add event received for %s, key=%s", objectsToRetry.oType, key)
+				klog.V(5).Infof("Add event received for %s, key=%s, network %s", objectsToRetry.oType, key, oc.nadInfo.NetName)
 
 				objectsToRetry.DoWithLock(key, func(key string) {
 					// This only applies to pod watchers (pods + dynamic network policy handlers watching pods):
@@ -1327,7 +1323,7 @@ func (oc *Controller) WatchResource(objectsToRetry *RetryObjs) (*factory.Handler
 						internalCacheEntry := oc.getInternalCacheEntry(objectsToRetry.oType, obj)
 						if err := oc.deleteResource(objectsToRetry, retryObj.oldObj, internalCacheEntry); err != nil {
 							klog.Errorf("Failed to delete old object %s of type %s,"+
-								" during add event: %v", key, objectsToRetry.oType, err)
+								" during add event network %s: %v", key, objectsToRetry.oType, oc.nadInfo.NetName, err)
 							oc.recordErrorEvent(objectsToRetry.oType, obj, err)
 							objectsToRetry.increaseFailedAttemptsCounter(retryObj)
 							return
@@ -1336,12 +1332,12 @@ func (oc *Controller) WatchResource(objectsToRetry *RetryObjs) (*factory.Handler
 					}
 					start := time.Now()
 					if err := oc.addResource(objectsToRetry, obj, false); err != nil {
-						klog.Errorf("Failed to create %s %s, error: %v", objectsToRetry.oType, key, err)
+						klog.Errorf("Failed to create %s %s network %s, error: %v", objectsToRetry.oType, key, oc.nadInfo.NetName, err)
 						oc.recordErrorEvent(objectsToRetry.oType, obj, err)
 						objectsToRetry.increaseFailedAttemptsCounter(retryObj)
 						return
 					}
-					klog.Infof("Creating %s %s took: %v", objectsToRetry.oType, key, time.Since(start))
+					klog.Infof("Creating %s %s network %s took: %v", objectsToRetry.oType, key, oc.nadInfo.NetName, time.Since(start))
 					// delete retryObj if handling was successful
 					objectsToRetry.deleteRetryObj(key)
 					oc.recordSuccessEvent(objectsToRetry.oType, obj)
@@ -1355,8 +1351,8 @@ func (oc *Controller) WatchResource(objectsToRetry *RetryObjs) (*factory.Handler
 						objectsToRetry.oType, err)
 					return
 				}
-				klog.V(5).Infof("Update event received for resource %s, old object is equal to new: %t",
-					objectsToRetry.oType, areEqual)
+				klog.V(5).Infof("Update event received for resource %s, old object is equal to new: %t, network %s",
+					objectsToRetry.oType, areEqual, oc.nadInfo.NetName)
 				if areEqual {
 					return
 				}
@@ -1376,8 +1372,8 @@ func (oc *Controller) WatchResource(objectsToRetry *RetryObjs) (*factory.Handler
 					return
 				}
 				if newKey != oldKey {
-					klog.Errorf("Could not update resource object of type %s: the key was changed from %s to %s",
-						objectsToRetry.oType, oldKey, newKey)
+					klog.Errorf("Could not update resource object of type %s network %s: the key was changed from %s to %s",
+						objectsToRetry.oType, oc.nadInfo.NetName, oldKey, newKey)
 					return
 				}
 
@@ -1398,8 +1394,8 @@ func (oc *Controller) WatchResource(objectsToRetry *RetryObjs) (*factory.Handler
 					return
 				}
 
-				klog.V(5).Infof("Update event received for %s %s",
-					objectsToRetry.oType, newKey)
+				klog.V(5).Infof("Update event received for %s %s network %s",
+					objectsToRetry.oType, newKey, oc.nadInfo.NetName)
 
 				hasUpdateFunc := hasResourceAnUpdateFunc(objectsToRetry.oType)
 
@@ -1419,7 +1415,7 @@ func (oc *Controller) WatchResource(objectsToRetry *RetryObjs) (*factory.Handler
 							objectsToRetry.oType, oldKey)
 						if err := oc.deleteResource(objectsToRetry, retryEntryOrNil.oldObj,
 							retryEntryOrNil.config); err != nil {
-							klog.Errorf("Failed to delete stale object %s, during update: %v", oldKey, err)
+							klog.Errorf("Failed to delete stale object %s, during update network %s: %v", oldKey, oc.nadInfo.NetName, err)
 							oc.recordErrorEvent(objectsToRetry.oType, retryEntryOrNil.oldObj, err)
 							retryEntry := objectsToRetry.initRetryObjWithAdd(latest, key)
 							objectsToRetry.increaseFailedAttemptsCounter(retryEntry)
@@ -1443,10 +1439,10 @@ func (oc *Controller) WatchResource(objectsToRetry *RetryObjs) (*factory.Handler
 						if found {
 							existingCacheEntry = retryEntryOrNil.config
 						}
-						klog.Infof("Deleting old %s of type %s during update", oldKey, objectsToRetry.oType)
+						klog.Infof("Deleting old %s of type %s network %s during update", oldKey, objectsToRetry.oType, oc.nadInfo.NetName)
 						if err := oc.deleteResource(objectsToRetry, old, existingCacheEntry); err != nil {
-							klog.Errorf("Failed to delete %s %s, during update: %v",
-								objectsToRetry.oType, oldKey, err)
+							klog.Errorf("Failed to delete %s %s, during update network %s: %v",
+								objectsToRetry.oType, oldKey, oc.nadInfo.NetName, err)
 							oc.recordErrorEvent(objectsToRetry.oType, old, err)
 							retryEntry := objectsToRetry.initRetryObjWithDelete(old, key, nil, false)
 							objectsToRetry.initRetryObjWithAdd(latest, key)
@@ -1464,8 +1460,8 @@ func (oc *Controller) WatchResource(objectsToRetry *RetryObjs) (*factory.Handler
 					if hasUpdateFunc {
 						// if this resource type has an update func, just call the update function
 						if err := oc.updateResource(objectsToRetry, old, latest, found); err != nil {
-							klog.Errorf("Failed to update %s, old=%s, new=%s, error: %v",
-								objectsToRetry.oType, oldKey, newKey, err)
+							klog.Errorf("Failed to update %s, old=%s, new=%s, network %s, error: %v",
+								objectsToRetry.oType, oldKey, newKey, oc.nadInfo.NetName, err)
 							oc.recordErrorEvent(objectsToRetry.oType, latest, err)
 							var retryEntry *retryObjEntry
 							if resourceNeedsUpdate(objectsToRetry.oType) {
@@ -1481,8 +1477,8 @@ func (oc *Controller) WatchResource(objectsToRetry *RetryObjs) (*factory.Handler
 							oc.recordErrorEvent(objectsToRetry.oType, latest, err)
 							retryEntry := objectsToRetry.initRetryObjWithAdd(latest, key)
 							objectsToRetry.increaseFailedAttemptsCounter(retryEntry)
-							klog.Errorf("Failed to add %s %s, during update: %v",
-								objectsToRetry.oType, newKey, err)
+							klog.Errorf("Failed to add %s %s, during update network %s: %v",
+								objectsToRetry.oType, newKey, oc.nadInfo.NetName, err)
 							return
 						}
 					}
@@ -1494,10 +1490,10 @@ func (oc *Controller) WatchResource(objectsToRetry *RetryObjs) (*factory.Handler
 				oc.recordDeleteEvent(objectsToRetry.oType, obj)
 				key, err := getResourceKey(objectsToRetry.oType, obj)
 				if err != nil {
-					klog.Errorf("Delete of %s failed: %v", objectsToRetry.oType, err)
+					klog.Errorf("Delete of %s network %s failed: %v", objectsToRetry.oType, oc.nadInfo.NetName, err)
 					return
 				}
-				klog.V(5).Infof("Delete event received for %s %s", objectsToRetry.oType, key)
+				klog.V(5).Infof("Delete event received for %s %s network %s", objectsToRetry.oType, key, oc.nadInfo.NetName)
 				// If object is in terminal state, we would have already deleted it during update.
 				// No reason to attempt to delete it here again.
 				if oc.isObjectInTerminalState(objectsToRetry.oType, obj) {
@@ -1510,7 +1506,7 @@ func (oc *Controller) WatchResource(objectsToRetry *RetryObjs) (*factory.Handler
 					retryEntry := objectsToRetry.initRetryObjWithDelete(obj, key, internalCacheEntry, false) // set up the retry obj for deletion
 					if err = oc.deleteResource(objectsToRetry, obj, internalCacheEntry); err != nil {
 						retryEntry.failedAttempts++
-						klog.Errorf("Failed to delete %s %s, error: %v", objectsToRetry.oType, key, err)
+						klog.Errorf("Failed to delete %s %s network %s, error: %v", objectsToRetry.oType, key, oc.nadInfo.NetName, err)
 						return
 					}
 					objectsToRetry.deleteRetryObj(key)
@@ -1522,7 +1518,7 @@ func (oc *Controller) WatchResource(objectsToRetry *RetryObjs) (*factory.Handler
 
 	if err != nil {
 		return nil, fmt.Errorf("watchResource for resource %v. "+
-			"Failed addHandlerFunc: %v", objectsToRetry.oType, err)
+			"Failed addHandlerFunc network %s: %v", objectsToRetry.oType, oc.nadInfo.NetName, err)
 	}
 
 	// track the retry entries and every 30 seconds (or upon explicit request) check if any objects
