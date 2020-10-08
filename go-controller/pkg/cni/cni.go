@@ -14,6 +14,7 @@ import (
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 )
 
 var minRsrc = resource.MustParse("1k")
@@ -67,6 +68,14 @@ func (pr *PodRequest) cmdAdd(podLister corev1listers.PodLister, useOVSExternalID
 	if namespace == "" || podName == "" {
 		return nil, fmt.Errorf("required CNI variable missing")
 	}
+	netName := types.DefaultNetworkName
+	mtu := config.Default.MTU
+	if pr.CNIConf.NotDefault {
+		netName = pr.CNIConf.Name
+		if pr.CNIConf.MTU != 0 {
+			mtu = pr.CNIConf.MTU
+		}
+	}
 
 	kubecli := &kube.Kube{KClient: kclient}
 	annotCondFn := isOvnReady
@@ -86,7 +95,7 @@ func (pr *PodRequest) cmdAdd(podLister corev1listers.PodLister, useOVSExternalID
 		return nil, fmt.Errorf("failed to get pod annotation: %v", err)
 	}
 
-	podInterfaceInfo, err := PodAnnotation2PodInfo(annotations, useOVSExternalIDs, pr.IsSmartNIC)
+	podInterfaceInfo, err := PodAnnotation2PodInfo(annotations, useOVSExternalIDs, pr.IsSmartNIC, mtu, netName)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +112,7 @@ func (pr *PodRequest) cmdAdd(podLister corev1listers.PodLister, useOVSExternalID
 
 	responseBytes, err := json.Marshal(response)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal pod request response: %v", err)
+		return nil, fmt.Errorf("failed to marshal pod request response for network %s: %v", netName, err)
 	}
 
 	return responseBytes, nil
