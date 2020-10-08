@@ -11,7 +11,7 @@ import (
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/ipallocator"
-	ovstypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
+	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
@@ -116,7 +116,7 @@ type testPod struct {
 }
 
 func newTPod(nodeName, nodeSubnet, nodeMgtIP, nodeGWIP, podName, podIP, podMAC, namespace string) (to testPod) {
-	portName := util.GetLogicalPortName(namespace, podName)
+	portName := util.GetLogicalPortName(namespace, podName, "", true)
 	to = testPod{
 		nodeName:   nodeName,
 		nodeSubnet: nodeSubnet,
@@ -150,7 +150,7 @@ func setPodAnnotations(podObj *v1.Pod, testPod testPod) {
 }
 
 func getLogicalSwitchUUID(client libovsdbclient.Client, name string) string {
-	ctext, cancel := context.WithTimeout(context.Background(), ovstypes.OVSDBTimeout)
+	ctext, cancel := context.WithTimeout(context.Background(), ovntypes.OVSDBTimeout)
 	defer cancel()
 	lsl := []nbdb.LogicalSwitch{}
 	err := client.WhereCache(
@@ -168,7 +168,7 @@ func getExpectedDataPodsAndSwitches(pods []testPod, nodes []string) []libovsdbte
 	nodeslsps := make(map[string][]string)
 	var logicalSwitchPorts []*nbdb.LogicalSwitchPort
 	for _, pod := range pods {
-		portName := util.GetLogicalPortName(pod.namespace, pod.podName)
+		portName := util.GetLogicalPortName(pod.namespace, pod.podName, "", true)
 		var lspUUID string
 		if len(pod.portUUID) == 0 {
 			lspUUID = portName + "-UUID"
@@ -277,10 +277,10 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					},
 				)
 
-				ctext, cancel := context.WithTimeout(context.Background(), ovstypes.OVSDBTimeout)
+				ctext, cancel := context.WithTimeout(context.Background(), ovntypes.OVSDBTimeout)
 				defer cancel()
 				lsl := []nbdb.LogicalSwitch{}
-				err := fakeOvn.controller.nbClient.WhereCache(
+				err := fakeOvn.nbClient.WhereCache(
 					func(ls *nbdb.LogicalSwitch) bool {
 						return ls.Name == "node1"
 					}).List(ctext, &lsl)
@@ -300,8 +300,8 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 
 				// Assign it and perform the update
 				t.nodeName = "node1"
-				t.portName = util.GetLogicalPortName(t.namespace, t.podName)
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.portName = util.GetLogicalPortName(t.namespace, t.podName, "", true)
+				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.nbClient, "node1"))
 
 				_, err = fakeOvn.fakeClient.KubeClient.CoreV1().Pods(t.namespace).Update(context.TODO(),
 					newPod(t.namespace, t.podName, t.nodeName, t.podIP), metav1.UpdateOptions{})
@@ -344,7 +344,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					},
 				)
 
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.nbClient, "node1"))
 				err := fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				fakeOvn.controller.WatchPods()
@@ -393,7 +393,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					},
 				)
 
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.nbClient, "node1"))
 				err := fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				fakeOvn.controller.WatchPods()
@@ -450,7 +450,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 				// port should be gone or marked for removal in logical port cache
-				logicalPort := util.GetLogicalPortName(myPod.Namespace, myPod.Name)
+				logicalPort := util.GetLogicalPortName(myPod.Namespace, myPod.Name, "", true)
 				gomega.Eventually(func() bool {
 					info, err := fakeOvn.controller.logicalPortCache.get(logicalPort)
 					return err != nil || !info.expires.IsZero()
@@ -498,7 +498,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					},
 				)
 
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.nbClient, "node1"))
 				fakeOvn.controller.WatchNamespaces()
 				fakeOvn.controller.WatchPods()
 
@@ -553,7 +553,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 				// port should be gone or marked for removal in logical port cache
-				logicalPort := util.GetLogicalPortName(myPod.Namespace, myPod.Name)
+				logicalPort := util.GetLogicalPortName(myPod.Namespace, myPod.Name, "", true)
 				gomega.Eventually(func() bool {
 					info, err := fakeOvn.controller.logicalPortCache.get(logicalPort)
 					return err != nil || !info.expires.IsZero()
@@ -592,7 +592,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 				// sleep a small amount to ensure the event was processed
 				time.Sleep(time.Second)
 				// try to allocate the IP and it should not work
-				annotation, err := util.UnmarshalPodAnnotation(myPod2.Annotations)
+				annotation, err := util.UnmarshalPodAnnotation(myPod2.Annotations, ovntypes.DefaultNetworkName)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				err = fakeOvn.controller.lsManager.AllocateIPs(t.nodeName, annotation.IPs)
 				gomega.Expect(err).To(gomega.Equal(ipallocator.ErrAllocated))
@@ -664,7 +664,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					},
 				)
 
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.nbClient, "node1"))
 				fakeOvn.controller.WatchNamespaces()
 				fakeOvn.controller.WatchPods()
 
@@ -704,7 +704,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					},
 				)
 
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.nbClient, "node1"))
 				err := fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				fakeOvn.controller.WatchPods()
@@ -779,38 +779,38 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					},
 				)
 
-				podTest.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				podTest.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.nbClient, "node1"))
 				err = fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				fakeOvn.asf.ExpectAddressSetWithIPs(podTest.namespace, []string{podTest.podIP})
-				gomega.Eventually(fakeOvn.controller.nbClient).Should(
+				gomega.Eventually(fakeOvn.nbClient).Should(
 					libovsdbtest.HaveData(getExpectedDataPodsAndSwitches([]testPod{}, []string{"node1"})...))
 
 				// inject transient problem, nbdb is down
-				fakeOvn.controller.nbClient.Close()
+				fakeOvn.nbClient.Close()
 				gomega.Eventually(func() bool {
-					return fakeOvn.controller.nbClient.Connected()
+					return fakeOvn.nbClient.Connected()
 				}).Should(gomega.BeFalse())
 				// trigger pod add which will fail with "context deadline exceeded: while awaiting reconnection"
 				fakeOvn.controller.WatchPods()
 
 				// sleep long enough for TransactWithRetry to fail, causing pod delete to fail
-				time.Sleep(ovstypes.OVSDBTimeout + time.Second)
+				time.Sleep(ovntypes.OVSDBTimeout + time.Second)
 
 				// check to see if the pod retry cache has an entry for this policy
 				gomega.Eventually(func() *retryObjEntry {
 					return fakeOvn.controller.retryPods.getObjRetryEntry(key)
 				}).ShouldNot(gomega.BeNil())
-				connCtx, cancel := context.WithTimeout(context.Background(), ovstypes.OVSDBTimeout)
+				connCtx, cancel := context.WithTimeout(context.Background(), ovntypes.OVSDBTimeout)
 
 				defer cancel()
-				resetNBClient(connCtx, fakeOvn.controller.nbClient)
+				resetNBClient(connCtx, fakeOvn.nbClient)
 				fakeOvn.controller.retryPods.requestRetryObjs() // retry the failed entry
 
 				_, err = fakeOvn.fakeClient.KubeClient.CoreV1().Pods(podTest.namespace).Get(context.TODO(), podTest.podName, metav1.GetOptions{})
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				fakeOvn.asf.ExpectAddressSetWithIPs(podTest.namespace, []string{podTest.podIP})
-				gomega.Eventually(fakeOvn.controller.nbClient).Should(
+				gomega.Eventually(fakeOvn.nbClient).Should(
 					libovsdbtest.HaveData(getExpectedDataPodsAndSwitches([]testPod{podTest}, []string{"node1"})...))
 				// check the retry cache no longer has the entry
 				gomega.Eventually(func() *retryObjEntry {
@@ -851,7 +851,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					},
 				)
 
-				podTest.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				podTest.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.nbClient, "node1"))
 				err = fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				fakeOvn.controller.WatchPods()
@@ -862,29 +862,29 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 				fakeOvn.asf.ExpectAddressSetWithIPs(podTest.namespace, []string{podTest.podIP})
 
 				// inject transient problem, nbdb is down
-				fakeOvn.controller.nbClient.Close()
+				fakeOvn.nbClient.Close()
 				gomega.Eventually(func() bool {
-					return fakeOvn.controller.nbClient.Connected()
+					return fakeOvn.nbClient.Connected()
 				}).Should(gomega.BeFalse())
 				// trigger pod delete which will fail with "context deadline exceeded: while awaiting reconnection"
 				err = fakeOvn.fakeClient.KubeClient.CoreV1().Pods(pod.Namespace).Delete(context.TODO(), pod.Name, *metav1.NewDeleteOptions(0))
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 				// sleep long enough for TransactWithRetry to fail, causing pod delete to fail
-				time.Sleep(ovstypes.OVSDBTimeout + time.Second)
+				time.Sleep(ovntypes.OVSDBTimeout + time.Second)
 
 				// check to see if the pod retry cache has an entry for this pod
 				gomega.Eventually(func() *retryObjEntry {
 					return fakeOvn.controller.retryPods.getObjRetryEntry(key)
 				}).ShouldNot(gomega.BeNil())
-				connCtx, cancel := context.WithTimeout(context.Background(), ovstypes.OVSDBTimeout)
+				connCtx, cancel := context.WithTimeout(context.Background(), ovntypes.OVSDBTimeout)
 
 				defer cancel()
-				resetNBClient(connCtx, fakeOvn.controller.nbClient)
+				resetNBClient(connCtx, fakeOvn.nbClient)
 				fakeOvn.controller.retryPods.requestRetryObjs() // retry the failed entry
 
 				fakeOvn.asf.ExpectEmptyAddressSet(podTest.namespace)
-				gomega.Eventually(fakeOvn.controller.nbClient).Should(
+				gomega.Eventually(fakeOvn.nbClient).Should(
 					libovsdbtest.HaveData(getExpectedDataPodsAndSwitches([]testPod{}, []string{"node1"})...))
 				// check the retry cache no longer has the entry
 				gomega.Eventually(func() *retryObjEntry {
@@ -965,7 +965,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 						},
 					},
 				)
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.mc.nbClient, "node1"))
 
 				err := fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -1020,7 +1020,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 						},
 					},
 				)
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.mc.nbClient, "node1"))
 
 				err := fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -1068,7 +1068,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 				podJSON := t.getAnnotationsJson()
 
 				fakeOvn.startWithDBSetup(initialDB)
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.nbClient, "node1"))
 				err := fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				fakeOvn.controller.WatchPods()
@@ -1121,7 +1121,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 						},
 					},
 				)
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.mc.nbClient, "node1"))
 				// pod exists, networks annotations don't
 				pod, err := fakeOvn.fakeClient.KubeClient.CoreV1().Pods(t.namespace).Get(context.TODO(), t.podName, metav1.GetOptions{})
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -1174,7 +1174,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 						},
 					},
 				)
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.mc.nbClient, "node1"))
 				// pod annotations exist, lsp doesn't
 				annotations := getPodAnnotations(fakeOvn.fakeClient.KubeClient, t.namespace, t.podName)
 				gomega.Expect(annotations).To(gomega.MatchJSON(t.getAnnotationsJson()))
@@ -1295,7 +1295,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					NBData: []libovsdbtest.TestData{
 						&nbdb.LogicalSwitchPort{
 							UUID:      t1.portUUID,
-							Name:      util.GetLogicalPortName(t1.namespace, t1.podName),
+							Name:      util.GetLogicalPortName(t1.namespace, t1.podName, "", true),
 							Addresses: []string{t1.podMAC, t1.podIP},
 							ExternalIDs: map[string]string{
 								"pod":       "true",
@@ -1311,7 +1311,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 						},
 						&nbdb.LogicalSwitchPort{
 							UUID:      t2.portUUID,
-							Name:      util.GetLogicalPortName(t2.namespace, t2.podName),
+							Name:      util.GetLogicalPortName(t2.namespace, t2.podName, "", true),
 							Addresses: []string{t2.podMAC, t2.podIP},
 							ExternalIDs: map[string]string{
 								"pod":       "true",
@@ -1353,8 +1353,8 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 						},
 					},
 				)
-				t1.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
-				t2.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node2"))
+				t1.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.mc.nbClient, "node1"))
+				t2.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.mc.nbClient, "node2"))
 				// pod annotations and lsp exist now
 
 				err := fakeOvn.controller.WatchNamespaces()

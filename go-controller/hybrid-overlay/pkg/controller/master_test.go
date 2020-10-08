@@ -56,7 +56,8 @@ func newTestNode(name, os, ovnHostSubnet, hybridHostSubnet, drMAC string) v1.Nod
 func newTestWinNode(name, os, ovnHostSubnet, hybridHostSubnet, drMAC string) v1.Node {
 	annotations := make(map[string]string)
 	if ovnHostSubnet != "" {
-		subnetAnnotations, err := util.CreateNodeHostSubnetAnnotation(ovntest.MustParseIPNets(ovnHostSubnet))
+		subnetAnnotations := map[string]string{}
+		err := util.UpdateNodeHostSubnetAnnotation(subnetAnnotations, ovntest.MustParseIPNets(ovnHostSubnet), types.DefaultNetworkName)
 		Expect(err).NotTo(HaveOccurred())
 		for k, v := range subnetAnnotations {
 			annotations[k] = fmt.Sprintf("%s", v)
@@ -951,7 +952,7 @@ var _ = Describe("Hybrid SDN Master Operations", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			nodeAnnotator := kube.NewNodeAnnotator(k, updatedNode.Name)
-			util.DeleteNodeHostSubnetAnnotation(nodeAnnotator)
+			util.DeleteNodeHostSubnetAnnotation(nodeAnnotator, types.DefaultNetworkName)
 			err = nodeAnnotator.Run()
 			Expect(err).NotTo(HaveOccurred())
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 
+	networkattachmentdefinition "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
+	networkattachmentdefinitionfake "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/fake"
 	"github.com/onsi/gomega"
 	libovsdbclient "github.com/ovn-org/libovsdb/client"
 	egressfirewall "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1"
@@ -39,6 +41,7 @@ const (
 type FakeOVN struct {
 	fakeClient   *util.OVNClientset
 	watcher      *factory.WatchFactory
+	mhController *OvnMHController
 	controller   *Controller
 	stopChan     chan struct{}
 	asf          *addressset.FakeAddressSetFactory
@@ -66,6 +69,7 @@ func (o *FakeOVN) start(objects ...runtime.Object) {
 	egressIPObjects := []runtime.Object{}
 	egressFirewallObjects := []runtime.Object{}
 	egressQoSObjects := []runtime.Object{}
+	netAttchDefObjects := []runtime.Object{}
 	v1Objects := []runtime.Object{}
 	for _, object := range objects {
 		if _, isEgressIPObject := object.(*egressip.EgressIPList); isEgressIPObject {
@@ -74,15 +78,18 @@ func (o *FakeOVN) start(objects ...runtime.Object) {
 			egressFirewallObjects = append(egressFirewallObjects, object)
 		} else if _, isEgressQoSObject := object.(*egressqos.EgressQoSList); isEgressQoSObject {
 			egressQoSObjects = append(egressQoSObjects, object)
+		} else if _, isNetAttchDefObject := object.(*networkattachmentdefinition.NetworkAttachmentDefinitionList); isNetAttchDefObject {
+			netAttchDefObjects = append(netAttchDefObjects, object)
 		} else {
 			v1Objects = append(v1Objects, object)
 		}
 	}
 	o.fakeClient = &util.OVNClientset{
-		KubeClient:           fake.NewSimpleClientset(v1Objects...),
-		EgressIPClient:       egressipfake.NewSimpleClientset(egressIPObjects...),
-		EgressFirewallClient: egressfirewallfake.NewSimpleClientset(egressFirewallObjects...),
-		EgressQoSClient:      egressqosfake.NewSimpleClientset(egressQoSObjects...),
+		KubeClient:            fake.NewSimpleClientset(v1Objects...),
+		EgressIPClient:        egressipfake.NewSimpleClientset(egressIPObjects...),
+		EgressFirewallClient:  egressfirewallfake.NewSimpleClientset(egressFirewallObjects...),
+		EgressQoSClient:       egressqosfake.NewSimpleClientset(egressQoSObjects...),
+		NetworkAttchDefClient: networkattachmentdefinitionfake.NewSimpleClientset(netAttchDefObjects...),
 	}
 	o.init()
 }
@@ -109,10 +116,11 @@ func (o *FakeOVN) init() {
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 	o.stopChan = make(chan struct{})
-	o.controller = NewOvnController(o.fakeClient, o.watcher,
-		o.stopChan, o.asf,
-		o.nbClient, o.sbClient,
-		o.fakeRecorder)
+	o.mhController = NewOvnMHController(o.fakeClient, "", o.watcher,
+		o.stopChan, o.nbClient, o.sbClient,
+		o.fakeRecorder, nil)
+	_ = o.mhController.setDefaultOvnController(o.asf)
+	o.controller = o.mhController.ovnController
 	o.controller.multicastSupport = true
 	o.controller.loadBalancerGroupUUID = types.ClusterLBGroupName + "-UUID"
 }

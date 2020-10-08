@@ -3,7 +3,6 @@ package ovn
 import (
 	"fmt"
 	"math/rand"
-	"net"
 	"reflect"
 	"strings"
 	"sync"
@@ -417,23 +416,20 @@ func getResourceKey(objType reflect.Type, obj interface{}) (string, error) {
 	return "", fmt.Errorf("object type %v not supported", objType)
 }
 
-func (oc *Controller) getPortInfo(pod *kapi.Pod) *lpInfo {
-	var portInfo *lpInfo
-	key := util.GetLogicalPortName(pod.Namespace, pod.Name)
+func (oc *Controller) getPortInfo(pod *kapi.Pod) map[string]*lpInfo {
+	portInfoMap := map[string]*lpInfo{}
 	if !util.PodWantsNetwork(pod) {
-		// create dummy logicalPortInfo for host-networked pods
-		mac, _ := net.ParseMAC("00:00:00:00:00:00")
-		portInfo = &lpInfo{
-			logicalSwitch: "host-networked",
-			name:          key,
-			uuid:          "host-networked",
-			ips:           []*net.IPNet{},
-			mac:           mac,
-		}
+		return portInfoMap
 	} else {
-		portInfo, _ = oc.logicalPortCache.get(key)
+		on, networkMap, err := util.IsNetworkOnPod(pod, oc.nadInfo)
+		if err == nil && on {
+			for nadName := range networkMap {
+				key := util.GetLogicalPortName(pod.Namespace, pod.Name, nadName, !oc.nadInfo.IsSecondary)
+				portInfoMap[nadName], _ = oc.logicalPortCache.get(key)
+			}
+		}
 	}
-	return portInfo
+	return portInfoMap
 }
 
 // Given an object and its type, getInternalCacheEntry returns the internal cache entry for this object.
@@ -457,15 +453,15 @@ func (oc *Controller) getResourceFromInformerCache(objType reflect.Type, key str
 	switch objType {
 	case factory.PolicyType:
 		namespace, name := splitNamespacedName(key)
-		obj, err = oc.watchFactory.GetNetworkPolicy(namespace, name)
+		obj, err = oc.mc.watchFactory.GetNetworkPolicy(namespace, name)
 
 	case factory.NodeType,
 		factory.EgressNodeType:
-		obj, err = oc.watchFactory.GetNode(key)
+		obj, err = oc.mc.watchFactory.GetNode(key)
 
 	case factory.PeerServiceType:
 		namespace, name := splitNamespacedName(key)
-		obj, err = oc.watchFactory.GetService(namespace, name)
+		obj, err = oc.mc.watchFactory.GetService(namespace, name)
 
 	case factory.PodType,
 		factory.PeerPodSelectorType,
@@ -473,22 +469,22 @@ func (oc *Controller) getResourceFromInformerCache(objType reflect.Type, key str
 		factory.LocalPodSelectorType,
 		factory.EgressIPPodType:
 		namespace, name := splitNamespacedName(key)
-		obj, err = oc.watchFactory.GetPod(namespace, name)
+		obj, err = oc.mc.watchFactory.GetPod(namespace, name)
 
 	case factory.PeerNamespaceAndPodSelectorType,
 		factory.PeerNamespaceSelectorType,
 		factory.EgressIPNamespaceType:
-		obj, err = oc.watchFactory.GetNamespace(key)
+		obj, err = oc.mc.watchFactory.GetNamespace(key)
 
 	case factory.EgressFirewallType:
 		namespace, name := splitNamespacedName(key)
-		obj, err = oc.watchFactory.GetEgressFirewall(namespace, name)
+		obj, err = oc.mc.watchFactory.GetEgressFirewall(namespace, name)
 
 	case factory.EgressIPType:
-		obj, err = oc.watchFactory.GetEgressIP(key)
+		obj, err = oc.mc.watchFactory.GetEgressIP(key)
 
 	case factory.CloudPrivateIPConfigType:
-		obj, err = oc.watchFactory.GetCloudPrivateIPConfig(key)
+		obj, err = oc.mc.watchFactory.GetCloudPrivateIPConfig(key)
 
 	default:
 		err = fmt.Errorf("object type %v not supported, cannot retrieve it from informers cache",
@@ -497,6 +493,7 @@ func (oc *Controller) getResourceFromInformerCache(objType reflect.Type, key str
 	return obj, err
 }
 
+// TBD Cathy
 // Given an object and its type, recordAddEvent records the add event on this object.
 func (oc *Controller) recordAddEvent(objType reflect.Type, obj interface{}) {
 	switch objType {
@@ -512,6 +509,7 @@ func (oc *Controller) recordAddEvent(objType reflect.Type, obj interface{}) {
 	}
 }
 
+// TBD Cathy
 // Given an object and its type, recordUpdateEvent records the update event on this object.
 func (oc *Controller) recordUpdateEvent(objType reflect.Type, obj interface{}) {
 	switch objType {
@@ -526,6 +524,7 @@ func (oc *Controller) recordUpdateEvent(objType reflect.Type, obj interface{}) {
 	}
 }
 
+// TBD Cathy
 // Given an object and its type, recordDeleteEvent records the delete event on this object. Only used for pods now.
 func (oc *Controller) recordDeleteEvent(objType reflect.Type, obj interface{}) {
 	switch objType {
@@ -541,6 +540,7 @@ func (oc *Controller) recordDeleteEvent(objType reflect.Type, obj interface{}) {
 	}
 }
 
+// TBD Cathy
 func (oc *Controller) recordSuccessEvent(objType reflect.Type, obj interface{}) {
 	switch objType {
 	case factory.PodType:
@@ -554,6 +554,7 @@ func (oc *Controller) recordSuccessEvent(objType reflect.Type, obj interface{}) 
 	}
 }
 
+// TBD Cathy
 // Given an object and its type, recordErrorEvent records an error event on this object.
 // Only used for pods now.
 func (oc *Controller) recordErrorEvent(objType reflect.Type, obj interface{}, err error) {
@@ -682,7 +683,7 @@ func (oc *Controller) addResource(objectsToRetry *retryObjs, obj interface{}, fr
 		extraParameters.np.Lock()
 		defer extraParameters.np.Unlock()
 		if extraParameters.np.deleted {
-			oc.watchFactory.RemovePodHandler(podHandler)
+			oc.mc.watchFactory.RemovePodHandler(podHandler)
 			return nil
 		}
 		extraParameters.np.podHandlerList = append(extraParameters.np.podHandlerList, podHandler)
@@ -798,12 +799,12 @@ func (oc *Controller) updateResource(objectsToRetry *retryObjs, oldObj, newObj i
 		// determine what actually changed in this update
 		_, nodeSync := oc.addNodeFailed.Load(newNode.Name)
 		_, failed := oc.nodeClusterRouterPortFailed.Load(newNode.Name)
-		clusterRtrSync := failed || nodeChassisChanged(oldNode, newNode) || nodeSubnetChanged(oldNode, newNode)
+		clusterRtrSync := failed || nodeChassisChanged(oldNode, newNode) || nodeSubnetChanged(oldNode, newNode, oc.nadInfo.NetName)
 		_, failed = oc.mgmtPortFailed.Load(newNode.Name)
-		mgmtSync := failed || macAddressChanged(oldNode, newNode) || nodeSubnetChanged(oldNode, newNode)
+		mgmtSync := failed || macAddressChanged(oldNode, newNode) || nodeSubnetChanged(oldNode, newNode, oc.nadInfo.NetName)
 		_, failed = oc.gatewaysFailed.Load(newNode.Name)
-		gwSync := (failed || gatewayChanged(oldNode, newNode) ||
-			nodeSubnetChanged(oldNode, newNode) || hostAddressesChanged(oldNode, newNode))
+		gwSync := (failed || oc.gatewayChanged(oldNode, newNode) ||
+			nodeSubnetChanged(oldNode, newNode, oc.nadInfo.NetName) || hostAddressesChanged(oldNode, newNode))
 
 		return oc.addUpdateNodeEvent(newNode, &nodeSyncs{nodeSync, clusterRtrSync, mgmtSync, gwSync})
 
@@ -914,14 +915,13 @@ func (oc *Controller) updateResource(objectsToRetry *retryObjs, oldObj, newObj i
 func (oc *Controller) deleteResource(objectsToRetry *retryObjs, obj, cachedObj interface{}) error {
 	switch objectsToRetry.oType {
 	case factory.PodType:
-		var portInfo *lpInfo
+		var portInfoMap map[string]*lpInfo
 		pod := obj.(*kapi.Pod)
 
 		if cachedObj != nil {
-			portInfo = cachedObj.(*lpInfo)
+			portInfoMap = cachedObj.(map[string]*lpInfo)
 		}
-		oc.logicalPortCache.remove(util.GetLogicalPortName(pod.Namespace, pod.Name))
-		return oc.removePod(pod, portInfo)
+		return oc.removePod(pod, portInfoMap)
 
 	case factory.PolicyType:
 		var cachedNP *networkPolicy
@@ -962,7 +962,7 @@ func (oc *Controller) deleteResource(objectsToRetry *retryObjs, obj, cachedObj i
 		// remove the namespaces pods from the address_set
 		var errs []error
 		namespace := obj.(*kapi.Namespace)
-		pods, _ := oc.watchFactory.GetPods(namespace.Name)
+		pods, _ := oc.mc.watchFactory.GetPods(namespace.Name)
 
 		for _, pod := range pods {
 			if err := oc.handlePeerPodSelectorDelete(extraParameters.gp, pod); err != nil {
@@ -1300,7 +1300,7 @@ func (oc *Controller) processObjectInTerminalState(objectsToRetry *retryObjs, ob
 // Note: when applying WatchResource to a new resource type, the appropriate resource-specific logic must be added to the
 // the different methods it calls.
 func (oc *Controller) WatchResource(objectsToRetry *retryObjs) (*factory.Handler, error) {
-	addHandlerFunc, err := oc.watchFactory.GetResourceHandlerFunc(objectsToRetry.oType)
+	addHandlerFunc, err := oc.mc.watchFactory.GetResourceHandlerFunc(objectsToRetry.oType)
 	if err != nil {
 		return nil, fmt.Errorf("no resource handler function found for resource %v. "+
 			"Cannot watch this resource.", objectsToRetry.oType)
