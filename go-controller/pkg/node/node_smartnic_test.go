@@ -12,6 +12,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube/mocks"
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
 	linkMock "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/mocks/github.com/vishvananda/netlink"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	utilMocks "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util/mocks"
 )
@@ -118,6 +119,7 @@ var _ = Describe("Node Smart NIC tests", func() {
 				Ingress:       -1,
 				Egress:        -1,
 				IsSmartNic:    true,
+				NetworkName:   types.DefaultNetworkName,
 			}
 
 			// set pod annotations

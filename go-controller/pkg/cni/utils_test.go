@@ -6,6 +6,7 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	mocks "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/mocks/k8s.io/client-go/listers/core/v1"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	"github.com/stretchr/testify/mock"
 	v1 "k8s.io/api/core/v1"
@@ -156,25 +157,25 @@ var _ = Describe("CNI Utils tests", func() {
 "gateway_ip":"192.168.2.1"}}`,
 		}
 		It("Creates PodInterfaceInfo with IsSmartNIC false", func() {
-			pif, err := PodAnnotation2PodInfo(podAnnot, false, false)
+			pif, err := PodAnnotation2PodInfo(podAnnot, false, false, 1500, types.DefaultNetworkName)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pif.IsSmartNic).To(BeFalse())
 		})
 
 		It("Creates PodInterfaceInfo with IsSmartNIC true", func() {
-			pif, err := PodAnnotation2PodInfo(podAnnot, false, true)
+			pif, err := PodAnnotation2PodInfo(podAnnot, false, true, 1500, types.DefaultNetworkName)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pif.IsSmartNic).To(BeTrue())
 		})
 
 		It("Creates PodInterfaceInfo with checkExtIDs false", func() {
-			pif, err := PodAnnotation2PodInfo(podAnnot, false, false)
+			pif, err := PodAnnotation2PodInfo(podAnnot, false, false, 1500, types.DefaultNetworkName)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pif.CheckExtIDs).To(BeFalse())
 		})
 
 		It("Creates PodInterfaceInfo with checkExtIDs true", func() {
-			pif, err := PodAnnotation2PodInfo(podAnnot, true, false)
+			pif, err := PodAnnotation2PodInfo(podAnnot, true, false, 1500, types.DefaultNetworkName)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pif.CheckExtIDs).To(BeTrue())
 		})

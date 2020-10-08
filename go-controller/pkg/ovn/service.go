@@ -154,7 +154,7 @@ func (ovn *Controller) createService(service *kapi.Service) error {
 
 	// We can end up in a situation where the endpoint creation is triggered before the service creation.
 	// NOTE: we can also end up in a situation where a service matching no pods is created. Such a service still has an endpoint, but with no subsets.
-	ep, err := ovn.watchFactory.GetEndpoint(service.Namespace, service.Name)
+	ep, err := ovn.mc.watchFactory.GetEndpoint(service.Namespace, service.Name)
 	if err == nil {
 		if len(ep.Subsets) > 0 {
 			klog.V(5).Infof("service: %s has endpoint, will create load balancer VIPs", service.Name)
@@ -186,7 +186,7 @@ func (ovn *Controller) createService(service *kapi.Service) error {
 			if err != nil {
 				klog.Errorf("Could not get reference for pod %v: %v\n", service.Name, err)
 			} else {
-				ovn.recorder.Event(ref, kapi.EventTypeWarning, "Unsupported protocol error", "SCTP protocol is unsupported by this version of OVN")
+				ovn.mc.recorder.Event(ref, kapi.EventTypeWarning, "Unsupported protocol error", "SCTP protocol is unsupported by this version of OVN")
 			}
 			return fmt.Errorf("invalid service port %s: SCTP is unsupported by this version of OVN", svcPort.Name)
 		}

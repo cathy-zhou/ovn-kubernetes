@@ -14,6 +14,7 @@ import (
 
 	"k8s.io/klog/v2"
 
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	"github.com/containernetworking/cni/pkg/types/current"
@@ -113,6 +114,7 @@ func setupNetwork(link netlink.Link, ifInfo *PodInterfaceInfo) error {
 func setupInterface(netns ns.NetNS, containerID, ifName string, ifInfo *PodInterfaceInfo) (*current.Interface, *current.Interface, error) {
 	hostIface := &current.Interface{}
 	contIface := &current.Interface{}
+	ifnameSuffix := ""
 
 	var oldHostVethName string
 	err := netns.Do(func(hostNS ns.NetNS) error {
@@ -138,6 +140,11 @@ func setupInterface(netns ns.NetNS, containerID, ifName string, ifInfo *PodInter
 
 		oldHostVethName = hostVeth.Name
 
+		// to generate the unique host interface name, postfix it with the podInterface index for non-default network
+		if ifInfo.NetworkName != types.DefaultNetworkName {
+			ifnameSuffix = fmt.Sprintf("_%d", containerVeth.Index)
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -145,7 +152,7 @@ func setupInterface(netns ns.NetNS, containerID, ifName string, ifInfo *PodInter
 	}
 
 	// rename the host end of veth pair
-	hostIface.Name = containerID[:15]
+	hostIface.Name = containerID[:(15-len(ifnameSuffix))] + ifnameSuffix
 	if err := renameLink(oldHostVethName, hostIface.Name); err != nil {
 		return nil, nil, fmt.Errorf("failed to rename %s to %s: %v", oldHostVethName, hostIface.Name, err)
 	}
@@ -254,7 +261,8 @@ func setupSriovInterface(netns ns.NetNS, containerID, ifName string, ifInfo *Pod
 func ConfigureOVS(ctx context.Context, namespace string, podName string, hostIfaceName string,
 	ifInfo *PodInterfaceInfo, sandboxID string) error {
 	klog.Infof("ConfigureOVS: namespace: %s, podName: %s", namespace, podName)
-	ifaceID := fmt.Sprintf("%s_%s", namespace, podName)
+	netPrefix := util.GetNetworkPrefix(ifInfo.NetworkName)
+	ifaceID := fmt.Sprintf("%s%s_%s", netPrefix, namespace, podName)
 
 	// Find and remove any existing OVS port with this iface-id. Pods can
 	// have multiple sandboxes if some are waiting for garbage collection,

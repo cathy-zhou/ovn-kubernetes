@@ -26,6 +26,7 @@ import (
 	"github.com/containernetworking/plugins/pkg/testutils"
 	"github.com/vishvananda/netlink"
 
+	//networkattachmentdefinitionfake "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/fake"
 	egressfirewallfake "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1/apis/clientset/versioned/fake"
 	egressipfake "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressip/v1/apis/clientset/versioned/fake"
 	apiextensionsfake "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/fake"
@@ -159,10 +160,12 @@ func shareGatewayInterfaceTest(app *cli.App, testNS ns.NetNS,
 		egressFirewallFakeClient := &egressfirewallfake.Clientset{}
 		crdFakeClient := &apiextensionsfake.Clientset{}
 		egressIPFakeClient := &egressipfake.Clientset{}
+		//networkAttchDefClient := &networkattachmentdefinitionfake.Clientset{}
 		fakeClient := &util.OVNClientset{
 			KubeClient:           kubeFakeClient,
 			EgressFirewallClient: egressFirewallFakeClient,
 			APIExtensionsClient:  crdFakeClient,
+			//NetworkAttchDefClient: networkAttchDefClient,
 		}
 
 		stop := make(chan struct{})
@@ -320,7 +323,9 @@ func localNetInterfaceTest(app *cli.App, testNS ns.NetNS,
 			},
 		)
 
-		nodeAnnotator := kube.NewNodeAnnotator(&kube.Kube{fakeOvnNode.fakeClient.KubeClient, &egressipfake.Clientset{}, &egressfirewallfake.Clientset{}}, &existingNode)
+		nodeAnnotator := kube.NewNodeAnnotator(&kube.Kube{fakeOvnNode.fakeClient.KubeClient, &egressipfake.Clientset{},
+            &egressfirewallfake.Clientset{}, &apiextensionsfake.Clientset{},
+            &networkattachmentdefinitionfake.Clientset{}}, &existingNode)
 		err := util.SetNodeHostSubnetAnnotation(nodeAnnotator, subnets)
 		Expect(err).NotTo(HaveOccurred())
 		err = nodeAnnotator.Run()
