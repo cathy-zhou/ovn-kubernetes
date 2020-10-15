@@ -508,10 +508,6 @@ func (oc *Controller) ovnControllerEventChecker() {
 	}
 }
 
-func podWantsNetwork(pod *kapi.Pod) bool {
-	return !pod.Spec.HostNetwork
-}
-
 func podScheduled(pod *kapi.Pod) bool {
 	return pod.Spec.NodeName != ""
 }
@@ -535,7 +531,7 @@ func (oc *Controller) WatchPods() {
 	oc.watchFactory.AddPodHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			pod := obj.(*kapi.Pod)
-			if !podWantsNetwork(pod) {
+			if !util.PodWantsNetwork(pod) {
 				// host network pod is able to serve as external gw for other pods
 				if err := oc.addPodExternalGW(pod); err != nil {
 					klog.Errorf(err.Error())
@@ -558,7 +554,7 @@ func (oc *Controller) WatchPods() {
 			pod := newer.(*kapi.Pod)
 
 			_, retry := retryPods.Load(pod.UID)
-			if podScheduled(pod) && retry && podWantsNetwork(pod) {
+			if podScheduled(pod) && retry && util.PodWantsNetwork(pod) {
 				if err := oc.addLogicalPort(pod); err != nil {
 					klog.Errorf(err.Error())
 					oc.recordPodEvent(err, pod)
@@ -580,7 +576,7 @@ func (oc *Controller) WatchPods() {
 		},
 		DeleteFunc: func(obj interface{}) {
 			pod := obj.(*kapi.Pod)
-			if !podWantsNetwork(pod) {
+			if !util.PodWantsNetwork(pod) {
 				oc.deletePodExternalGW(pod)
 				return
 			}
