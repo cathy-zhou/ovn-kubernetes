@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	egressfirewallapi "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -116,7 +115,7 @@ func (oc *Controller) addEgressFirewall(egressFirewall *egressfirewallapi.Egress
 		return []error{fmt.Errorf("unable to add egress firewall policy, namespace: %s has no address set", egressFirewall.Namespace)}
 	}
 
-	err = ef.addLogicalRouterPolicyToClusterRouter(nsInfo.addressSet.GetIPv4HashName(), nsInfo.addressSet.GetIPv6HashName(), egressFirewallStartPriorityInt)
+	err = ef.addACLToJoinSwitch(nsInfo.addressSet.GetIPv4HashName(), nsInfo.addressSet.GetIPv6HashName(), egressFirewallStartPriorityInt)
 	if err != nil {
 		return []error{err}
 	}
@@ -139,19 +138,22 @@ func (oc *Controller) deleteEgressFirewall(egressFirewall *egressfirewallapi.Egr
 		nsInfo.egressFirewallPolicy = nil
 		nsInfo.Unlock()
 	}
-	stdout, stderr, err := util.RunOVNNbctl("--data=bare", "--no-heading", "--columns=_uuid", "find", "logical_router_policy", fmt.Sprintf("external-ids:egressFirewall=%s", egressFirewall.Namespace))
+
+	stdout, stderr, err := util.RunOVNNbctl("--data=bare", "--no-heading",
+		"--columns=_uuid", "find", "ACL",
+		fmt.Sprintf("external-ids:egressFirewall=%s", egressFirewall.Namespace))
 	if err != nil {
-		return []error{fmt.Errorf("error deleting egressFirewall for namespace %s, cannot get logical router policies from LR %s - %s:%s",
-			egressFirewall.Namespace, types.OVNClusterRouter, err, stderr)}
+		return []error{fmt.Errorf("error deleting egressFirewall for namespace %s, cannot get ACL policies - %s:%s",
+			egressFirewall.Namespace, err, stderr)}
 	}
 	var errList []error
 
 	uuids := strings.Fields(stdout)
 	for _, uuid := range uuids {
-		_, stderr, err := util.RunOVNNbctl("lr-policy-del", types.OVNClusterRouter, uuid)
+		_, stderr, err := util.RunOVNNbctl("remove", "logical_switch", types.OVNJoinSwitch, "acls", uuid)
 		if err != nil {
-			errList = append(errList, fmt.Errorf("failed to delete the rules for "+
-				"egressFirewall in namespace %s on logical switch %s, stderr: %q (%v)", egressFirewall.Namespace, types.OVNClusterRouter, stderr, err))
+			errList = append(errList, fmt.Errorf("failed to delete the ACL rules for "+
+				"egressFirewall in namespace %s on logical switch %s, stderr: %q (%v)", egressFirewall.Namespace, types.OVNJoinSwitch, stderr, err))
 		}
 	}
 	return errList
@@ -163,7 +165,7 @@ func (oc *Controller) updateEgressFirewallWithRetry(egressfirewall *egressfirewa
 	})
 }
 
-func (ef *egressFirewall) addLogicalRouterPolicyToClusterRouter(hashedAddressSetNameIPv4, hashedAddressSetNameIPv6 string, efStartPriority int) error {
+func (ef *egressFirewall) addACLToJoinSwitch(hashedAddressSetNameIPv4, hashedAddressSetNameIPv6 string, efStartPriority int) error {
 	for _, rule := range ef.egressRules {
 		var match string
 		var action string
@@ -172,7 +174,12 @@ func (ef *egressFirewall) addLogicalRouterPolicyToClusterRouter(hashedAddressSet
 		} else {
 			action = "drop"
 		}
-		if !utilnet.IsIPv6CIDRString(rule.to.cidrSelector) {
+
+		ipAddress, _, err := net.ParseCIDR(rule.to.cidrSelector)
+		if err != nil {
+			return fmt.Errorf("error rule.to.cidrSelector %s is not a valid CIDR (%+v)", rule.to.cidrSelector, err)
+		}
+		if !utilnet.IsIPv6(ipAddress) {
 			match = fmt.Sprintf("match=\"ip4.dst == %s && ip4.src == $%s", rule.to.cidrSelector, hashedAddressSetNameIPv4)
 		} else {
 			match = fmt.Sprintf("match=\"ip6.dst == %s && ip6.src == $%s", rule.to.cidrSelector, hashedAddressSetNameIPv6)
@@ -182,18 +189,31 @@ func (ef *egressFirewall) addLogicalRouterPolicyToClusterRouter(hashedAddressSet
 			match = fmt.Sprintf("%s && ( %s )", match, egressGetL4Match(rule.ports))
 		}
 
-		match = fmt.Sprintf("%s && %s\"", match, getClusterSubnetsExclusion())
+		match = fmt.Sprintf("%s && inport == \\\"%s%s\\\"\"", match,
+			types.JoinSwitchToGWRouterPrefix, types.OVNClusterRouter)
 
-		_, stderr, err := util.RunOVNNbctl("--id=@logical_router_policy", "create", "logical_router_policy",
-			fmt.Sprintf("priority=%d", efStartPriority-rule.id),
-			match, "action="+action, fmt.Sprintf("external-ids:egressFirewall=%s", ef.namespace),
-			"--", "add", "logical_router", types.OVNClusterRouter, "policies", "@logical_router_policy")
+		uuid, stderr, err := util.RunOVNNbctl("--data=bare", "--no-heading",
+			"--columns=_uuid", "find", "ACL", match, "action="+action,
+			fmt.Sprintf("external-ids:egressFirewall=%s", ef.namespace))
+
 		if err != nil {
-			// TODO: lr-policy-add doesn't support --may-exist, resort to this workaround for now.
-			// Have raised an issue against ovn repository (https://github.com/ovn-org/ovn/issues/49)
-			if !strings.Contains(stderr, "already existed") {
-				return fmt.Errorf("failed to add policy route '%s' to %s "+
-					"stderr: %s, error: %v", match, types.OVNClusterRouter, stderr, err)
+			return fmt.Errorf("error executing find ACL command, stderr: %q, %+v", stderr, err)
+		}
+		if uuid == "" {
+			_, stderr, err := util.RunOVNNbctl("--id=@acl", "create", "acl",
+				fmt.Sprintf("priority=%d", efStartPriority-rule.id),
+				fmt.Sprintf("direction=%s", fromLport), match, "action="+action,
+				fmt.Sprintf("external-ids:egressFirewall=%s", ef.namespace),
+				"--", "add", "logical_switch", types.OVNJoinSwitch,
+				"acls", "@acl")
+			if err != nil {
+				return fmt.Errorf("error executing create ACL command, stderr: %q, %+v", stderr, err)
+			}
+		} else {
+			_, stderr, err := util.RunOVNNbctl("add", "logical_switch", types.OVNJoinSwitch, "acls", uuid)
+			if err != nil {
+				return fmt.Errorf("error adding ACL to joinsSwitch %s failed, stderr: %q, %+v", types.OVNJoinSwitch, stderr, err)
+
 			}
 		}
 	}
@@ -262,18 +282,18 @@ func egressGetL4Match(ports []egressfirewallapi.EgressFirewallPort) string {
 	}
 	return l4Match
 }
-
-func getClusterSubnetsExclusion() string {
-	var exclusion string
-	for _, clusterSubnet := range config.Default.ClusterSubnets {
-		if exclusion != "" {
-			exclusion += " && "
-		}
-		if utilnet.IsIPv6CIDR(clusterSubnet.CIDR) {
-			exclusion += fmt.Sprintf("%s.dst != %s", "ip6", clusterSubnet.CIDR)
-		} else {
-			exclusion += fmt.Sprintf("%s.dst != %s", "ip4", clusterSubnet.CIDR)
-		}
-	}
-	return exclusion
-}
+//
+//func getClusterSubnetsExclusion() string {
+//	var exclusion string
+//	for _, clusterSubnet := range config.Default.ClusterSubnets {
+//		if exclusion != "" {
+//			exclusion += " && "
+//		}
+//		if utilnet.IsIPv6CIDR(clusterSubnet.CIDR) {
+//			exclusion += fmt.Sprintf("%s.dst != %s", "ip6", clusterSubnet.CIDR)
+//		} else {
+//			exclusion += fmt.Sprintf("%s.dst != %s", "ip4", clusterSubnet.CIDR)
+//		}
+//	}
+//	return exclusion
+//}
