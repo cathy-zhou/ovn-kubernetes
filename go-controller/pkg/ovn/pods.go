@@ -208,16 +208,10 @@ func (oc *Controller) addRoutesGatewayIP(pod *kapi.Pod, podAnnotation *util.PodA
 	networks []*networkattachmentdefinitionapi.NetworkSelectionElement) (err error) {
 
 	if oc.netconf.NotDefault {
-		hasDefaultRouteV4 := false
-		hasDefaultRouteV6 := false
 		// non default network, see if its network-attachment's annotation has default-route key.
 		// If present, then we need to add default route for it
 		for _, gatewayRequest := range network.GatewayRequest {
-			if utilnet.IsIPv6(gatewayRequest) {
-				hasDefaultRouteV6 = true
-			} else {
-				hasDefaultRouteV4 = true
-			}
+			podAnnotation.Gateways = append(podAnnotation.Gateways, gatewayRequest)
 		}
 		for _, podIfAddr := range podAnnotation.IPs {
 			isIPv6 := utilnet.IsIPv6CIDR(podIfAddr)
@@ -227,12 +221,13 @@ func (oc *Controller) addRoutesGatewayIP(pod *kapi.Pod, podAnnotation *util.PodA
 			}
 			gatewayIPnet := util.GetNodeGatewayIfAddr(nodeSubnet)
 
-			hasDefaultRoute := hasDefaultRouteV4
-			if isIPv6 {
-				hasDefaultRoute = hasDefaultRouteV6
-			}
-			if hasDefaultRoute {
-				podAnnotation.Gateways = append(podAnnotation.Gateways, gatewayIPnet.IP)
+			for _, clusterSubnet := range oc.clusterSubnets {
+				if isIPv6 == utilnet.IsIPv6CIDR(clusterSubnet.CIDR) {
+					podAnnotation.Routes = append(podAnnotation.Routes, util.PodRoute{
+						Dest:    clusterSubnet.CIDR,
+						NextHop: gatewayIPnet.IP,
+					})
+				}
 			}
 		}
 		return nil
@@ -271,7 +266,7 @@ func (oc *Controller) addRoutesGatewayIP(pod *kapi.Pod, podAnnotation *util.PodA
 		hasRoutingExternalGWs := len(oc.getRoutingExternalGWs(pod.Namespace)) > 0
 		hasPodRoutingGWs := len(oc.getRoutingPodGWs(pod.Namespace)) > 0
 		if otherDefaultRoute || (hasRoutingExternalGWs && hasPodRoutingGWs) {
-			for _, clusterSubnet := range config.Default.ClusterSubnets {
+			for _, clusterSubnet := range oc.clusterSubnets {
 				if isIPv6 == utilnet.IsIPv6CIDR(clusterSubnet.CIDR) {
 					podAnnotation.Routes = append(podAnnotation.Routes, util.PodRoute{
 						Dest:    clusterSubnet.CIDR,
