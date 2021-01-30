@@ -94,9 +94,9 @@ type podRoute struct {
 	NextHop string `json:"nextHop"`
 }
 
-// MarshalPodAnnotation returns a JSON-formatted annotation describing the pod's
+// podInfo2Annotation convert podInfo to JSON-formatted annotation describing the pod's
 // network details
-func MarshalPodAnnotation(podInfo *PodAnnotation, netName string) (map[string]string, error) {
+func podInfo2Annotation(podInfo *PodAnnotation) (*podAnnotation, error) {
 	pa := podAnnotation{
 		MAC: podInfo.MAC.String(),
 	}
@@ -130,17 +130,29 @@ func MarshalPodAnnotation(podInfo *PodAnnotation, netName string) (map[string]st
 		})
 	}
 
-	podNetworks := map[string]podAnnotation{
-		OvnPodDefaultNetwork: pa,
+	return &pa, nil
+}
+
+func MarshalPodAnnotation(annotations map[string]string, podInfo *PodAnnotation, netName string) error {
+	podNetworks := make(map[string]podAnnotation)
+	ovnAnnotation, ok := annotations[OvnPodAnnotationName]
+	if ok {
+		if err := json.Unmarshal([]byte(ovnAnnotation), &podNetworks); err != nil {
+			return fmt.Errorf("failed to unmarshal ovn pod annotation %q: %v",
+				ovnAnnotation, err)
+		}
 	}
+	a, err := podInfo2Annotation(podInfo)
+	if err != nil {
+		return err
+	}
+	podNetworks[netName] = *a
 	bytes, err := json.Marshal(podNetworks)
 	if err != nil {
-		klog.Errorf("Failed marshaling podNetworks map %v", podNetworks)
-		return nil, err
+		return fmt.Errorf("Failed marshaling podNetworks map %v: %v", podNetworks, err)
 	}
-	return map[string]string{
-		GetAnnotationName(OvnPodAnnotationName, netName): string(bytes),
-	}, nil
+	annotations[OvnPodAnnotationName] = string(bytes)
+	return nil
 }
 
 // UnmarshalPodAnnotation returns the default network info from pod.Annotations

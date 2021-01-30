@@ -15,6 +15,7 @@ import (
 	util "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	kapi "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	utilnet "k8s.io/utils/net"
 )
@@ -324,6 +325,22 @@ func (oc *Controller) getRoutingPodGWs(ns string) map[string][]net.IP {
 	return nsInfo.routingExternalPodGWs
 }
 
+func (oc *Controller) updatePodAnnotationWithRetry(pod *kapi.Pod, podInfo *util.PodAnnotation, netName string) error {
+	resultErr := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		// Informer cache should not be mutated, so get a copy of the object
+		cpod := pod.DeepCopy()
+		err := util.MarshalPodAnnotation(cpod.Annotations, podInfo, netName)
+		if err != nil {
+			return err
+		}
+		return oc.mc.kube.UpdatePod(cpod)
+	})
+	if resultErr != nil {
+		return fmt.Errorf("Failed to set pod %s/%s's annotation for network %s", pod.Namespace, pod.Name, netName)
+	}
+	return nil
+}
+
 func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 	// If a node does node have an assigned hostsubnet don't wait for the logical switch to appear
 	if oc.lsManager.IsNonHostSubnetSwitch(pod.Spec.NodeName) {
@@ -470,15 +487,10 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 		if err != nil {
 			return err
 		}
-		var marshalledAnnotation map[string]string
-		marshalledAnnotation, err = util.MarshalPodAnnotation(&podAnnotation, oc.netconf.Name)
-		if err != nil {
-			return fmt.Errorf("error creating pod network annotation: %v", err)
-		}
+		klog.V(5).Infof("Annotation values: ip=%v ; mac=%s ; gw=%s\n",
+			podIfAddrs, podMac, podAnnotation.Gateways)
 
-		klog.V(5).Infof("Annotation values: ip=%v ; mac=%s ; gw=%s\nAnnotation=%s",
-			podIfAddrs, podMac, podAnnotation.Gateways, marshalledAnnotation)
-		if err = oc.mc.kube.SetAnnotationsOnPod(pod, marshalledAnnotation); err != nil {
+		if err = oc.updatePodAnnotationWithRetry(pod, &podAnnotation, oc.netconf.Name); err != nil {
 			return fmt.Errorf("failed to set annotation on pod %s: %v", pod.Name, err)
 		}
 		releaseIPs = false

@@ -37,6 +37,7 @@ type Interface interface {
 	GetEndpoint(namespace, name string) (*kapi.Endpoints, error)
 	CreateEndpoint(namespace string, ep *kapi.Endpoints) (*kapi.Endpoints, error)
 	Events() kv1core.EventInterface
+	UpdatePod(pod *kapi.Pod) error
 }
 
 // Kube is the structure object upon which the Interface is implemented
@@ -147,6 +148,13 @@ func (k *Kube) UpdateNodeStatus(node *kapi.Node) error {
 	if err != nil {
 		klog.Errorf("Error in updating status on node %s: %v", node.Name, err)
 	}
+	return err
+}
+
+// UpdatePod update pod with provided pod data
+func (k *Kube) UpdatePod(pod *kapi.Pod) error {
+	klog.Infof("Updating pod %s/%s", pod.Namespace, pod.Name)
+	_, err := k.KClient.CoreV1().Pods(pod.Namespace).Update(context.TODO(), pod, metav1.UpdateOptions{})
 	return err
 }
 
