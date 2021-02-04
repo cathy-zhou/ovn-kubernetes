@@ -38,11 +38,7 @@ windows:
 # Note: `--security-opt label=disable` option is required on systems where SELinux is enabled for `podman` to successfully run the
 # tests in a container. Refer: https://www.projectatomic.io/blog/2016/03/dwalsh_selinux_containers/ for additional context
 check test:
-ifeq ($(CONTAINER_RUNNABLE), 0)
-	$(CONTAINER_RUNTIME) run --security-opt label=disable --cap-add=NET_ADMIN --cap-add=SYS_ADMIN -v $(shell dirname $(PWD)):/go/src/github.com/ovn-org/ovn-kubernetes -w /go/src/github.com/ovn-org/ovn-kubernetes/go-controller -e COVERALLS=${COVERALLS} $(GO_DOCKER_IMG) sh -c "RACE=1 DOCKER_TEST=1 COVERALLS=${COVERALLS} hack/test-go.sh ${PKGS}"
-else
 	RACE=1 hack/test-go.sh ${PKGS}
-endif
 
 codegen:
 	hack/update-codegen.sh
@@ -63,15 +59,7 @@ install.tools:
 	curl -sfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | bash -s -- -b ${GOPATH}/bin
 
 lint:
-ifeq ($(CONTAINER_RUNNABLE), 0)
-	@GOPATH=${GOPATH} ./hack/lint.sh $(CONTAINER_RUNTIME)
-else
-	echo "linter can only be run within a container since it needs a specific golangci-lint version"
-endif
+	@GOPATH=${GOPATH} ./hack/lint.sh
 
 gofmt:
-ifeq ($(CONTAINER_RUNNABLE), 0)
-	$(CONTAINER_RUNTIME) run --security-opt label=disable -v $(shell dirname $(PWD)):/go/src/github.com/ovn-org/ovn-kubernetes -w /go/src/github.com/ovn-org/ovn-kubernetes/go-controller $(GO_DOCKER_IMG) hack/verify-gofmt.sh
-else
 	@./hack/verify-gofmt.sh
-endif
