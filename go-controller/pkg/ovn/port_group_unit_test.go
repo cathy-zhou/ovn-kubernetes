@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	goovn_mock "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/mocks/github.com/ebay/go-ovn"
 
 	goovn "github.com/ebay/go-ovn"
@@ -114,7 +115,7 @@ func TestCreatePortGroup(t *testing.T) {
 		t.Run(fmt.Sprintf("%d:%s", i, tc.desc), func(t *testing.T) {
 			ovntest.ProcessMockFnList(&mockGoOvnNBClient.Mock, tc.onRetArgMockGoOvnNBClient)
 
-			uuid, err := createPortGroup(mockGoOvnNBClient, tc.name, tc.hashName)
+			uuid, err := createPortGroup(mockGoOvnNBClient, tc.name, tc.hashName, types.DefaultNetworkName)
 
 			if tc.errMatch != nil {
 				assert.Contains(t, err.Error(), tc.errMatch.Error())
@@ -188,7 +189,7 @@ func TestDeletePortGroup(t *testing.T) {
 		t.Run(fmt.Sprintf("%d:%s", i, tc.desc), func(t *testing.T) {
 			ovntest.ProcessMockFnList(&mockGoOvnNBClient.Mock, tc.onRetArgMockGoOvnNBClient)
 
-			err := deletePortGroup(mockGoOvnNBClient, tc.hashName)
+			err := deletePortGroup(mockGoOvnNBClient, tc.hashName, types.DefaultNetworkName)
 
 			if tc.errMatch != nil {
 				assert.Contains(t, err.Error(), tc.errMatch.Error())
