@@ -31,6 +31,8 @@ import (
 
 	networkattachmentdefinitionapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	networkattachmentdefinitionfake "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/fake"
+	//multinetworkpolicyapi "github.com/k8snetworkplumbingwg/multi-networkpolicy/pkg/apis/k8s.cni.cncf.io/v1beta1"
+	//multinetworkpolicyfake "github.com/k8snetworkplumbingwg/multi-networkpolicy/tree/master/pkg/client/clientset/versioned/fake"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )

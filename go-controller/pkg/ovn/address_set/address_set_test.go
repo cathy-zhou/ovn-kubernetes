@@ -8,6 +8,7 @@ import (
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	"github.com/onsi/ginkgo"
@@ -48,7 +49,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 		err := util.SetExec(fexec)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-		asFactory = NewOvnAddressSetFactory()
+		asFactory = NewOvnAddressSetFactory(types.DefaultNetworkName)
 	})
 
 	ginkgo.Context("when iterating address sets", func() {
@@ -83,7 +84,7 @@ var _ = ginkgo.Describe("OVN Address Set operations", func() {
 					}
 				}
 				fexec.AddFakeCmd(&ovntest.ExpectedCmd{
-					Cmd:    "ovn-nbctl --timeout=15 --format=csv --data=bare --no-heading --columns=external_ids find address_set",
+					Cmd:    "ovn-nbctl --timeout=15 --format=csv --data=bare --no-heading --columns=external_ids find address_set external_ids:network_name{=}[]",
 					Output: namespacesRes,
 				})
 

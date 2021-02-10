@@ -31,6 +31,7 @@ import (
 
 	egressfirewall "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1"
 
+	multinetworkpolicy "github.com/k8snetworkplumbingwg/multi-networkpolicy/pkg/apis/k8s.cni.cncf.io/v1beta1"
 	apiextension "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
 	utilnet "k8s.io/utils/net"
 
@@ -54,6 +55,7 @@ import (
 const (
 	egressfirewallCRD                string        = "egressfirewalls.k8s.ovn.org"
 	netattachdefCRD                  string        = "network-attachment-definitions.k8s.cni.cncf.io"
+	multnetworkpolicyCRD             string        = "multi-networkpolicies.k8s.cni.cncf.io"
 	clusterPortGroupName             string        = "clusterPortGroup"
 	clusterRtrPortGroupName          string        = "clusterRtrPortGroup"
 	egressFirewallDNSDefaultDuration time.Duration = 30 * time.Minute
@@ -79,6 +81,8 @@ type ACLLoggingLevels struct {
 // manages the oc.namespaces map is ever allowed to hold an unlocked namespaceInfo.)
 type namespaceInfo struct {
 	sync.Mutex
+
+	netName string
 
 	// addressSet is an address set object that holds the IP addresses
 	// of all pods in the namespace.
@@ -149,12 +153,13 @@ type OvnMHController struct {
 // Controller structure is the object which holds the controls for starting
 // and reacting upon the watched resources (e.g. pods, endpoints)
 type Controller struct {
-	mc                    *OvnMHController
-	wg                    *sync.WaitGroup
-	stopChan              chan struct{}
-	egressFirewallHandler *factory.Handler
-	podHandler            *factory.Handler
-	nodeHandler           *factory.Handler
+	mc                        *OvnMHController
+	wg                        *sync.WaitGroup
+	stopChan                  chan struct{}
+	egressFirewallHandler     *factory.Handler
+	podHandler                *factory.Handler
+	nodeHandler               *factory.Handler
+	multiNetworkPolicyHandler *factory.Handler
 
 	netconf *cnitypes.NetConf
 
@@ -321,7 +326,7 @@ func (mc *OvnMHController) NewOvnController(netconf *cnitypes.NetConf,
 	}
 
 	if addressSetFactory == nil {
-		addressSetFactory = addressset.NewOvnAddressSetFactory()
+		addressSetFactory = addressset.NewOvnAddressSetFactory(netconf.Name)
 	}
 
 	if netconf.NetCidr == "" {
@@ -396,9 +401,7 @@ func (oc *Controller) Run(nodeName string) error {
 
 	// WatchNamespaces() should be started first because it has no other
 	// dependencies, and WatchNodes() depends on it
-	if !oc.netconf.NotDefault {
-		oc.WatchNamespaces()
-	}
+	oc.WatchNamespaces()
 
 	// WatchNodes must be started next because it creates the node switch
 	// which most other watches depend on.
@@ -406,6 +409,8 @@ func (oc *Controller) Run(nodeName string) error {
 	oc.WatchNodes()
 
 	oc.WatchPods()
+
+	oc.WatchCRD()
 
 	if !oc.netconf.NotDefault {
 		// We use a level triggered controller to handle services if the cluster
@@ -457,7 +462,6 @@ func (oc *Controller) Run(nodeName string) error {
 		}
 
 		oc.WatchNetworkPolicy()
-		oc.WatchCRD()
 
 		if config.OVNKubernetesFeature.EnableEgressIP {
 			oc.WatchEgressNodes()
@@ -749,6 +753,36 @@ func (oc *Controller) WatchEndpoints() {
 	klog.Infof("Bootstrapping existing endpoints and cleaning stale endpoints took %v", time.Since(start))
 }
 
+// WatchMultiNetworkPolicy starts the watching of multi network policy resource and calls
+// back the appropriate handler logic
+func (oc *Controller) WatchMultiNetworkPolicy() *factory.Handler {
+	start := time.Now()
+	if !oc.netconf.NotDefault {
+		klog.Infof("WatchMultiNetworkPolicy for default network %s is a no-op", oc.netconf.Name)
+		return nil
+	}
+	handler := oc.mc.watchFactory.AddMultiNetworkPolicyHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			policy := obj.(*multinetworkpolicy.MultiNetworkPolicy)
+			oc.addMultiNetworkPolicy(policy)
+		},
+		UpdateFunc: func(old, newer interface{}) {
+			oldPolicy := old.(*multinetworkpolicy.MultiNetworkPolicy)
+			newPolicy := newer.(*multinetworkpolicy.MultiNetworkPolicy)
+			if !reflect.DeepEqual(oldPolicy, newPolicy) {
+				oc.deleteMultiNetworkPolicy(oldPolicy)
+				oc.addMultiNetworkPolicy(newPolicy)
+			}
+		},
+		DeleteFunc: func(obj interface{}) {
+			policy := obj.(*multinetworkpolicy.MultiNetworkPolicy)
+			oc.deleteMultiNetworkPolicy(policy)
+		},
+	}, oc.syncMultiNetworkPolicies)
+	klog.Infof("Bootstrapping existing mulit network policies and cleaning stale policies took %v", time.Since(start))
+	return handler
+}
+
 // WatchNetworkPolicy starts the watching of network policy resource and calls
 // back the appropriate handler logic
 func (oc *Controller) WatchNetworkPolicy() {
@@ -781,17 +815,12 @@ func (oc *Controller) WatchNetworkPolicy() {
 // WatchCRD starts the watching of the CRD resource and calls back to the
 // appropriate handler logic
 func (oc *Controller) WatchCRD() {
-	if oc.netconf.NotDefault {
-		klog.Infof("WatchCRD for network %s is a no-op", oc.netconf.Name)
-		return
-	}
-
 	oc.mc.watchFactory.AddCRDHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			crd := obj.(*apiextension.CustomResourceDefinition)
 			klog.Infof("Adding CRD %s to cluster", crd.Name)
 			var err error
-			if crd.Name == egressfirewallCRD {
+			if !oc.netconf.NotDefault && crd.Name == egressfirewallCRD {
 				err = oc.mc.watchFactory.InitializeEgressFirewallWatchFactory()
 				if err != nil {
 					klog.Errorf("Error Creating WatchFactory for %s: %v", err, crd.Name)
@@ -805,6 +834,14 @@ func (oc *Controller) WatchCRD() {
 				}
 				oc.egressFirewallDNS.Run(egressFirewallDNSDefaultDuration)
 				oc.egressFirewallHandler = oc.WatchEgressFirewall()
+			} else if oc.netconf.NotDefault && crd.Name == multnetworkpolicyCRD {
+				err = oc.mc.watchFactory.InitializeMultiNetworkPolicyWatchFactory()
+				if err != nil {
+					klog.Errorf("Error Creating WatchFactory for %s: %v", err, crd.Name)
+					return
+				}
+
+				oc.multiNetworkPolicyHandler = oc.WatchMultiNetworkPolicy()
 			}
 		},
 		UpdateFunc: func(old, newer interface{}) {
@@ -812,11 +849,15 @@ func (oc *Controller) WatchCRD() {
 		DeleteFunc: func(obj interface{}) {
 			crd := obj.(*apiextension.CustomResourceDefinition)
 			klog.Infof("Deleting CRD %s from cluster", crd.Name)
-			if crd.Name == egressfirewallCRD {
+			if !oc.netconf.NotDefault && crd.Name == egressfirewallCRD {
 				oc.egressFirewallDNS.Shutdown()
 				oc.mc.watchFactory.RemoveEgressFirewallHandler(oc.egressFirewallHandler)
 				oc.egressFirewallHandler = nil
 				oc.mc.watchFactory.ShutdownEgressFirewallWatchFactory()
+			} else if oc.netconf.NotDefault && crd.Name == multnetworkpolicyCRD {
+				oc.mc.watchFactory.RemoveMultiNetworkPolicyHandler(oc.multiNetworkPolicyHandler)
+				oc.multiNetworkPolicyHandler = nil
+				oc.mc.watchFactory.ShutdownMultiNetworkPolicyWatchFactory()
 			}
 		},
 	}, nil)
@@ -1022,11 +1063,6 @@ func (oc *Controller) WatchEgressIP() {
 // WatchNamespaces starts the watching of namespace resource and calls
 // back the appropriate handler logic
 func (oc *Controller) WatchNamespaces() {
-	if oc.netconf.NotDefault {
-		klog.Infof("WatchNamespaces for network %s is a no-op", oc.netconf.Name)
-		return
-	}
-
 	start := time.Now()
 	oc.mc.watchFactory.AddNamespaceHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
@@ -1346,10 +1382,14 @@ func (mc *OvnMHController) addNetworkAttachDefinition(netattachdef *nettypes.Net
 		return
 	}
 
-	err = oc.Run(oc.mc.nodeName)
-	if err != nil {
-		klog.Errorf(err.Error())
-	}
+	oc.wg.Add(1)
+	go func() {
+		defer oc.wg.Done()
+		err = oc.Run(oc.mc.nodeName)
+		if err != nil {
+			klog.Errorf(err.Error())
+		}
+	}()
 }
 
 func (mc *OvnMHController) deleteNetworkAttachDefinition(netattachdef *nettypes.NetworkAttachmentDefinition) {
@@ -1390,6 +1430,7 @@ func (mc *OvnMHController) deleteNetworkAttachDefinition(netattachdef *nettypes.
 		klog.Errorf("Error in initializing/fetching subnets: %v", err)
 		return
 	}
+
 	// remove hostsubnet annoation for this network
 	for _, node := range existingNodes.Items {
 		err := oc.deleteNodeLogicalNetwork(node.Name)

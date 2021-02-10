@@ -10,6 +10,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -54,28 +55,36 @@ type AddressSet interface {
 	Destroy() error
 }
 
-type ovnAddressSetFactory struct{}
+type ovnAddressSetFactory struct {
+	netName string
+}
 
 // NewOvnAddressSetFactory creates a new AddressSetFactory backed by
 // address set objects that execute OVN commands
-func NewOvnAddressSetFactory() AddressSetFactory {
-	return &ovnAddressSetFactory{}
+func NewOvnAddressSetFactory(netName string) AddressSetFactory {
+	return &ovnAddressSetFactory{netName: netName}
 }
 
 // ovnAddressSetFactory implements the AddressSetFactory interface
-var _ AddressSetFactory = &ovnAddressSetFactory{}
+//var _ AddressSetFactory = &ovnAddressSetFactory{}
 
 // NewAddressSet returns a new address set object
 func (asf *ovnAddressSetFactory) NewAddressSet(name string, ips []net.IP) (AddressSet, error) {
-	return newOvnAddressSets(name, ips)
+	return newOvnAddressSets(name, asf.netName, ips)
 }
 
 // ForEachAddressSet will pass the unhashed address set name, namespace name
 // and the first suffix in the name to the 'iteratorFn' for every address_set in
 // OVN. (Unhashed address set names are of the form namespaceName[.suffix1.suffix2. .suffixN])
 func (asf *ovnAddressSetFactory) ForEachAddressSet(iteratorFn AddressSetIterFunc) error {
-	output, stderr, err := util.RunOVNNbctl("--format=csv", "--data=bare", "--no-heading",
-		"--columns=external_ids", "find", "address_set")
+	cmdArgs := []string{"--format=csv", "--data=bare", "--no-heading",
+		"--columns=external_ids", "find", "address_set"}
+	if asf.netName != types.DefaultNetworkName {
+		cmdArgs = append(cmdArgs, "external_ids:network_name="+asf.netName)
+	} else {
+		cmdArgs = append(cmdArgs, "external_ids:network_name{=}[]")
+	}
+	output, stderr, err := util.RunOVNNbctl(cmdArgs...)
 	if err != nil {
 		return fmt.Errorf("error reading address sets: "+
 			"stdout: %q, stderr: %q err: %v", output, stderr, err)
@@ -127,24 +136,24 @@ func (asf *ovnAddressSetFactory) DestroyAddressSetInBackingStore(name string) er
 	// will not have v4 and v6 suffix as they were same as namespace name. Hence we will always try to destroy
 	// the address set with raw name(namespace name), v4 name and v6 name.  The method destroyAddressSet uses
 	// --if-exists parameter which will take care of deleting the address set only if it exists.
-	err := destroyAddressSet(name)
+	err := destroyAddressSet(name, asf.netName)
 	if err != nil {
 		return err
 	}
 	ip4ASName, ip6ASName := MakeAddressSetName(name)
-	err = destroyAddressSet(ip4ASName)
+	err = destroyAddressSet(ip4ASName, asf.netName)
 	if err != nil {
 		return err
 	}
-	err = destroyAddressSet(ip6ASName)
+	err = destroyAddressSet(ip6ASName, asf.netName)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func destroyAddressSet(name string) error {
-	hashName := hashedAddressSet(name)
+func destroyAddressSet(name, netName string) error {
+	hashName := util.GetNetworkPrefix(netName) + hashedAddressSet(name)
 	_, stderr, err := util.RunOVNNbctl("--if-exists", "destroy", "address_set", hashName)
 	if err != nil {
 		return fmt.Errorf("failed to destroy address set %q, stderr: %q, (%v)",
@@ -179,7 +188,7 @@ func asDetail(as *ovnAddressSet) string {
 	return fmt.Sprintf("%s/%s/%s", as.uuid, as.name, as.hashName)
 }
 
-func newOvnAddressSets(name string, ips []net.IP) (*ovnAddressSets, error) {
+func newOvnAddressSets(name, netName string, ips []net.IP) (*ovnAddressSets, error) {
 	var (
 		v4set, v6set *ovnAddressSet
 		err          error
@@ -188,13 +197,13 @@ func newOvnAddressSets(name string, ips []net.IP) (*ovnAddressSets, error) {
 
 	ip4ASName, ip6ASName := MakeAddressSetName(name)
 	if config.IPv4Mode {
-		v4set, err = newOvnAddressSet(ip4ASName, v4IPs)
+		v4set, err = newOvnAddressSet(ip4ASName, netName, v4IPs)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if config.IPv6Mode {
-		v6set, err = newOvnAddressSet(ip6ASName, v6IPs)
+		v6set, err = newOvnAddressSet(ip6ASName, netName, v6IPs)
 		if err != nil {
 			return nil, err
 		}
@@ -202,10 +211,10 @@ func newOvnAddressSets(name string, ips []net.IP) (*ovnAddressSets, error) {
 	return &ovnAddressSets{name: name, ipv4: v4set, ipv6: v6set}, nil
 }
 
-func newOvnAddressSet(name string, ips []net.IP) (*ovnAddressSet, error) {
+func newOvnAddressSet(name, netName string, ips []net.IP) (*ovnAddressSet, error) {
 	as := &ovnAddressSet{
 		name:     name,
-		hashName: hashedAddressSet(name),
+		hashName: util.GetNetworkPrefix(netName) + hashedAddressSet(name),
 		ips:      make(map[string]net.IP),
 	}
 	for _, ip := range ips {
@@ -234,6 +243,9 @@ func newOvnAddressSet(name string, ips []net.IP) (*ovnAddressSet, error) {
 			"address_set",
 			"name=" + as.hashName,
 			"external-ids:name=" + as.name,
+		}
+		if netName != types.DefaultNetworkName {
+			args = append(args, fmt.Sprintf("external-ids:network_name=%s", netName))
 		}
 		joinedIPs := joinIPs(as.allIPs())
 		if len(joinedIPs) > 0 {

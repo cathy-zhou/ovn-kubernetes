@@ -19,6 +19,7 @@ require (
 	github.com/imdario/mergo v0.3.8 // indirect
 	github.com/juju/errors v0.0.0-20200330140219-3fe23663418f // indirect
 	github.com/juju/testing v0.0.0-20200706033705-4c23f9c453cd // indirect
+	github.com/k8snetworkplumbingwg/multi-networkpolicy v0.0.0-20200914073308-0f33b9190170
 	github.com/k8snetworkplumbingwg/network-attachment-definition-client v0.0.0-20200626054723-37f83d1996bc
 	github.com/miekg/dns v1.1.31
 	github.com/onsi/ginkgo v1.15.0
@@ -38,7 +39,7 @@ require (
 	k8s.io/apiextensions-apiserver v0.20.0
 	k8s.io/apimachinery v0.20.0
 	k8s.io/client-go v0.20.0
-	k8s.io/klog v0.0.0-20181102134211-b9b56d5dfc92
+	k8s.io/klog v0.3.0
 	k8s.io/klog/v2 v2.4.0
 	k8s.io/utils v0.0.0-20201110183641-67b214c5f920
 )
