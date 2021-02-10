@@ -538,12 +538,12 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 	// Add the pod's logical switch port to the port cache
 	portInfo := oc.logicalPortCache.add(pod.Spec.NodeName, portName, lsp.UUID, podMac, podIfAddrs)
 
-	if !oc.netconf.NotDefault {
-		// Wait for namespace to exist, no calls after this should ever use waitForNamespaceLocked
-		if err = oc.addPodToNamespace(pod.Namespace, portInfo); err != nil {
-			return err
-		}
+	// Wait for namespace to exist, no calls after this should ever use waitForNamespaceLocked
+	if err = oc.addPodToNamespace(pod.Namespace, portInfo); err != nil {
+		return err
+	}
 
+	if !oc.netconf.NotDefault {
 		// add src-ip routes to GR if external gw annotation is set
 		routingExternalGWs := oc.getRoutingExternalGWs(pod.Namespace)
 		routingPodGWs := oc.getRoutingPodGWs(pod.Namespace)

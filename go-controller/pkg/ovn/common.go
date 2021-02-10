@@ -3,6 +3,7 @@ package ovn
 import (
 	"fmt"
 
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	util "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	"k8s.io/klog/v2"
 )
@@ -12,8 +13,9 @@ func hashedPortGroup(s string) string {
 	return util.HashForOVN(s)
 }
 
-func createPortGroup(name string, hashName string) (string, error) {
-	klog.V(5).Infof("createPortGroup with %s", name)
+func createPortGroup(name, hashName, netName string) (string, error) {
+	klog.V(5).Infof("createPortGroup with %s for network %s", name, netName)
+	hashName = util.GetNetworkPrefix(netName) + hashName
 	portGroup, stderr, err := util.RunOVNNbctl("--data=bare",
 		"--no-heading", "--columns=_uuid", "find", "port_group",
 		fmt.Sprintf("name=%s", hashName))
@@ -26,9 +28,13 @@ func createPortGroup(name string, hashName string) (string, error) {
 		return portGroup, nil
 	}
 
-	portGroup, stderr, err = util.RunOVNNbctl("create", "port_group",
+	cmdArgs := []string{"create", "port_group",
 		fmt.Sprintf("name=%s", hashName),
-		fmt.Sprintf("external-ids:name=%s", name))
+		fmt.Sprintf("external-ids:name=%s", name)}
+	if netName != types.DefaultNetworkName {
+		cmdArgs = append(cmdArgs, fmt.Sprintf("external-ids:network_name=%s", netName))
+	}
+	portGroup, stderr, err = util.RunOVNNbctl(cmdArgs...)
 	if err != nil {
 		return "", fmt.Errorf("failed to create port_group %s, "+
 			"stderr: %q (%v)", name, stderr, err)
@@ -37,9 +43,10 @@ func createPortGroup(name string, hashName string) (string, error) {
 	return portGroup, nil
 }
 
-func deletePortGroup(hashName string) {
-	klog.V(5).Infof("deletePortGroup %s", hashName)
+func deletePortGroup(hashName, netName string) {
+	klog.V(5).Infof("deletePortGroup %s for network %s", hashName, netName)
 
+	hashName = util.GetNetworkPrefix(netName) + hashName
 	portGroup, stderr, err := util.RunOVNNbctl("--data=bare",
 		"--no-heading", "--columns=_uuid", "find", "port_group",
 		fmt.Sprintf("name=%s", hashName))

@@ -70,7 +70,7 @@ func (oc *Controller) addPodToNamespace(ns string, portInfo *lpInfo) error {
 	// If multicast is allowed and enabled for the namespace, add the port
 	// to the allow policy.
 	if oc.multicastSupport && nsInfo.multicastEnabled {
-		if err := podAddAllowMulticastPolicy(ns, portInfo); err != nil {
+		if err := podAddAllowMulticastPolicy(ns, oc.netconf.Name, portInfo); err != nil {
 			return err
 		}
 	}
@@ -93,7 +93,7 @@ func (oc *Controller) deletePodFromNamespace(ns string, portInfo *lpInfo) error 
 
 	// Remove the port from the multicast allow policy.
 	if oc.multicastSupport && nsInfo.multicastEnabled {
-		if err := podDeleteAllowMulticastPolicy(ns, portInfo); err != nil {
+		if err := podDeleteAllowMulticastPolicy(ns, oc.netconf.Name, portInfo); err != nil {
 			return err
 		}
 	}
@@ -129,7 +129,7 @@ func (oc *Controller) multicastUpdateNamespace(ns *kapi.Namespace, nsInfo *names
 	if enabled {
 		err = oc.createMulticastAllowPolicy(ns.Name, nsInfo)
 	} else {
-		err = deleteMulticastAllowPolicy(ns.Name, nsInfo)
+		err = oc.deleteMulticastAllowPolicy(ns.Name, nsInfo)
 	}
 	if err != nil {
 		klog.Errorf(err.Error())
@@ -142,7 +142,7 @@ func (oc *Controller) multicastUpdateNamespace(ns *kapi.Namespace, nsInfo *names
 func (oc *Controller) multicastDeleteNamespace(ns *kapi.Namespace, nsInfo *namespaceInfo) {
 	if nsInfo.multicastEnabled {
 		nsInfo.multicastEnabled = false
-		if err := deleteMulticastAllowPolicy(ns.Name, nsInfo); err != nil {
+		if err := oc.deleteMulticastAllowPolicy(ns.Name, nsInfo); err != nil {
 			klog.Errorf(err.Error())
 		}
 	}
@@ -160,13 +160,13 @@ func (nsInfo *namespaceInfo) updateNamespacePortGroup(ns string) error {
 		}
 
 		// The port group should exist but doesn't so create it
-		portGroupUUID, err := createPortGroup(ns, hashedPortGroup(ns))
+		portGroupUUID, err := createPortGroup(ns, hashedPortGroup(ns), nsInfo.netName)
 		if err != nil {
 			return fmt.Errorf("failed to create port_group for %s (%v)", ns, err)
 		}
 		nsInfo.portGroupUUID = portGroupUUID
 	} else {
-		deletePortGroup(hashedPortGroup(ns))
+		deletePortGroup(hashedPortGroup(ns), nsInfo.netName)
 		nsInfo.portGroupUUID = ""
 	}
 	return nil
@@ -191,21 +191,24 @@ func (oc *Controller) AddNamespace(ns *kapi.Namespace) {
 	defer nsInfo.Unlock()
 
 	var err error
-	annotation := ns.Annotations[routingExternalGWsAnnotation]
-	if annotation != "" {
-		nsInfo.routingExternalGWs, err = parseRoutingExternalGWAnnotation(annotation)
-		if err != nil {
-			klog.Errorf(err.Error())
+	if !oc.netconf.NotDefault {
+		annotation := ns.Annotations[routingExternalGWsAnnotation]
+		if annotation != "" {
+			nsInfo.routingExternalGWs, err = parseRoutingExternalGWAnnotation(annotation)
+			if err != nil {
+				klog.Errorf(err.Error())
+			}
+		}
+		annotation = ns.Annotations[aclLoggingAnnotation]
+		if annotation != "" {
+			if oc.aclLoggingCanEnable(annotation, nsInfo) {
+				klog.Infof("Namespace %s: ACL logging is set to deny=%s allow=%s", ns.Name, nsInfo.aclLogging.Deny, nsInfo.aclLogging.Allow)
+			} else {
+				klog.Warningf("Namespace %s: ACL logging is not enabled due to malformed annotation", ns.Name)
+			}
 		}
 	}
-	annotation = ns.Annotations[aclLoggingAnnotation]
-	if annotation != "" {
-		if oc.aclLoggingCanEnable(annotation, nsInfo) {
-			klog.Infof("Namespace %s: ACL logging is set to deny=%s allow=%s", ns.Name, nsInfo.aclLogging.Deny, nsInfo.aclLogging.Allow)
-		} else {
-			klog.Warningf("Namespace %s: ACL logging is not enabled due to malformed annotation", ns.Name)
-		}
-	}
+
 	nsInfo.addressSet, err = oc.createNamespaceAddrSetAllPods(ns.Name)
 	if err != nil {
 		klog.Errorf(err.Error())
@@ -230,68 +233,70 @@ func (oc *Controller) updateNamespace(old, newer *kapi.Namespace) {
 	defer nsInfo.Unlock()
 
 	var annotation, oldAnnotation string
-	annotation = newer.Annotations[routingExternalGWsAnnotation]
-	oldAnnotation = old.Annotations[routingExternalGWsAnnotation]
-	if annotation != oldAnnotation {
-		// if old gw annotation was empty, new one must not be empty, so we should remove any per pod SNAT
-		if oldAnnotation == "" {
-			if config.Gateway.DisableSNATMultipleGWs && (len(nsInfo.routingExternalGWs) != 0 || len(nsInfo.routingExternalPodGWs) != 0) {
+	if !oc.netconf.NotDefault {
+		annotation = newer.Annotations[routingExternalGWsAnnotation]
+		oldAnnotation = old.Annotations[routingExternalGWsAnnotation]
+		if annotation != oldAnnotation {
+			// if old gw annotation was empty, new one must not be empty, so we should remove any per pod SNAT
+			if oldAnnotation == "" {
+				if config.Gateway.DisableSNATMultipleGWs && (len(nsInfo.routingExternalGWs) != 0 || len(nsInfo.routingExternalPodGWs) != 0) {
+					existingPods, err := oc.mc.watchFactory.GetPods(old.Name)
+					if err != nil {
+						klog.Errorf("Failed to get all the pods (%v)", err)
+					}
+					for _, pod := range existingPods {
+						logicalPort := podLogicalPortName(pod, oc.netconf.Name)
+						portInfo, err := oc.logicalPortCache.get(logicalPort)
+						if err != nil {
+							klog.Warningf("Unable to get port %s in cache for SNAT rule removal", logicalPort)
+						} else {
+							oc.deletePerPodGRSNAT(pod.Spec.NodeName, portInfo.ips)
+						}
+					}
+				}
+			} else {
+				oc.deleteGWRoutesForNamespace(nsInfo)
+			}
+			exGateways, err := parseRoutingExternalGWAnnotation(annotation)
+			if err != nil {
+				klog.Error(err.Error())
+			} else {
+				err = oc.addExternalGWsForNamespace(exGateways, nsInfo, old.Name)
+				if err != nil {
+					klog.Error(err.Error())
+				}
+			}
+			// if new annotation is empty, exgws were removed, may need to add SNAT per pod
+			// check if there are any pod gateways serving this namespace as well
+			if annotation == "" && len(nsInfo.routingExternalPodGWs) == 0 && config.Gateway.DisableSNATMultipleGWs {
 				existingPods, err := oc.mc.watchFactory.GetPods(old.Name)
 				if err != nil {
 					klog.Errorf("Failed to get all the pods (%v)", err)
 				}
 				for _, pod := range existingPods {
-					logicalPort := podLogicalPortName(pod, oc.netconf.Name)
-					portInfo, err := oc.logicalPortCache.get(logicalPort)
+					podAnnotation, err := util.UnmarshalPodAnnotation(pod.Annotations, oc.netconf.Name)
 					if err != nil {
-						klog.Warningf("Unable to get port %s in cache for SNAT rule removal", logicalPort)
-					} else {
-						oc.deletePerPodGRSNAT(pod.Spec.NodeName, portInfo.ips)
-					}
-				}
-			}
-		} else {
-			oc.deleteGWRoutesForNamespace(nsInfo)
-		}
-		exGateways, err := parseRoutingExternalGWAnnotation(annotation)
-		if err != nil {
-			klog.Error(err.Error())
-		} else {
-			err = oc.addExternalGWsForNamespace(exGateways, nsInfo, old.Name)
-			if err != nil {
-				klog.Error(err.Error())
-			}
-		}
-		// if new annotation is empty, exgws were removed, may need to add SNAT per pod
-		// check if there are any pod gateways serving this namespace as well
-		if annotation == "" && len(nsInfo.routingExternalPodGWs) == 0 && config.Gateway.DisableSNATMultipleGWs {
-			existingPods, err := oc.mc.watchFactory.GetPods(old.Name)
-			if err != nil {
-				klog.Errorf("Failed to get all the pods (%v)", err)
-			}
-			for _, pod := range existingPods {
-				podAnnotation, err := util.UnmarshalPodAnnotation(pod.Annotations, oc.netconf.Name)
-				if err != nil {
-					klog.Error(err.Error())
-				} else {
-					if err = oc.addPerPodGRSNAT(pod, podAnnotation.IPs); err != nil {
 						klog.Error(err.Error())
+					} else {
+						if err = oc.addPerPodGRSNAT(pod, podAnnotation.IPs); err != nil {
+							klog.Error(err.Error())
+						}
 					}
 				}
 			}
 		}
-	}
-	annotation = newer.Annotations[aclLoggingAnnotation]
-	oldAnnotation = old.Annotations[aclLoggingAnnotation]
-	// support for ACL logging update, if new annotation is empty, make sure we propagate new setting
-	if annotation != oldAnnotation && (oc.aclLoggingCanEnable(annotation, nsInfo) || annotation == "") &&
-		len(nsInfo.networkPolicies) > 0 {
-		// deny rules are all one per namespace
-		if err := oc.setACLDenyLogging(old.Name, nsInfo, nsInfo.aclLogging.Deny); err != nil {
-			klog.Warningf(err.Error())
-		} else {
-			klog.Infof("Namespace %s: ACL logging setting updated to deny=%s allow=%s",
-				old.Name, nsInfo.aclLogging.Deny, nsInfo.aclLogging.Allow)
+		annotation = newer.Annotations[aclLoggingAnnotation]
+		oldAnnotation = old.Annotations[aclLoggingAnnotation]
+		// support for ACL logging update, if new annotation is empty, make sure we propagate new setting
+		if annotation != oldAnnotation && (oc.aclLoggingCanEnable(annotation, nsInfo) || annotation == "") &&
+			len(nsInfo.networkPolicies) > 0 {
+			// deny rules are all one per namespace
+			if err := oc.setACLDenyLogging(old.Name, nsInfo, nsInfo.aclLogging.Deny); err != nil {
+				klog.Warningf(err.Error())
+			} else {
+				klog.Infof("Namespace %s: ACL logging setting updated to deny=%s allow=%s",
+					old.Name, nsInfo.aclLogging.Deny, nsInfo.aclLogging.Allow)
+			}
 		}
 	}
 	oc.multicastUpdateNamespace(newer, nsInfo)
@@ -367,6 +372,7 @@ func (oc *Controller) createNamespaceLocked(ns string) *namespaceInfo {
 	defer oc.namespacesMutex.Unlock()
 
 	nsInfo := &namespaceInfo{
+		netName:               oc.netconf.Name,
 		networkPolicies:       make(map[string]*networkPolicy),
 		podExternalRoutes:     make(map[string]map[string]string),
 		multicastEnabled:      false,
@@ -418,7 +424,7 @@ func (oc *Controller) createNamespaceAddrSetAllPods(ns string) (addressset.Addre
 		ips = make([]net.IP, 0, len(existingPods))
 		for _, pod := range existingPods {
 			if pod.Status.PodIP != "" && !pod.Spec.HostNetwork {
-				podIPs, err := util.GetAllPodIPs(pod)
+				podIPs, err := util.GetAllPodIPs(pod, oc.netconf.Name)
 				if err != nil {
 					klog.Warningf(err.Error())
 					continue

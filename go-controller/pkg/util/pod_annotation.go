@@ -230,8 +230,8 @@ func UnmarshalPodAnnotation(annotations map[string]string, netName string) (*Pod
 // GetAllPodIPs returns the pod's default network IP addresses, first from the OVN annotation
 // and then falling back to the Pod Status IPs. This function is intended to
 // also return IPs for HostNetwork and other non-OVN-IPAM-ed pods.
-func GetAllPodIPs(pod *v1.Pod) ([]net.IP, error) {
-	annotation, err := UnmarshalPodAnnotation(pod.Annotations, types.DefaultNetworkName)
+func GetAllPodIPs(pod *v1.Pod, netName string) ([]net.IP, error) {
+	annotation, err := UnmarshalPodAnnotation(pod.Annotations, netName)
 	if annotation != nil {
 		// Use the OVN annotation if valid
 		ips := make([]net.IP, 0, len(annotation.IPs))
@@ -239,6 +239,10 @@ func GetAllPodIPs(pod *v1.Pod) ([]net.IP, error) {
 			ips = append(ips, ip.IP)
 		}
 		return ips, nil
+	}
+
+	if netName != types.DefaultNetworkName {
+		return []net.IP{}, nil
 	}
 
 	// return error if there are no IPs in pod status

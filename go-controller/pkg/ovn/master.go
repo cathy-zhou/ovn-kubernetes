@@ -134,8 +134,8 @@ func (mc *OvnMHController) Start() error {
 
 // cleanup obsolete *gressDefaultDeny port groups
 func (oc *Controller) upgradeToNamespacedDenyPGOVNTopology(existingNodeList *kapi.NodeList) error {
-	deletePortGroup("ingressDefaultDeny")
-	deletePortGroup("egressDefaultDeny")
+	deletePortGroup("ingressDefaultDeny", oc.netconf.Name)
+	deletePortGroup("egressDefaultDeny", oc.netconf.Name)
 	return nil
 }
 
@@ -301,6 +301,7 @@ func (oc *Controller) StartClusterMaster(masterNodeName string) error {
 			}
 		}
 	} else {
+		// TBD do we support multicast for non-default network? if yes, search for clusterRtrPortGroupName and clusterRtrPortGroupUUID
 		oc.multicastSupport = false
 	}
 
@@ -367,7 +368,7 @@ func (oc *Controller) SetupMaster(masterNodeName string) error {
 	}
 
 	// Create a cluster-wide port group that all logical switch ports are part of
-	oc.clusterPortGroupUUID, err = createPortGroup(clusterPortGroupName, clusterPortGroupName)
+	oc.clusterPortGroupUUID, err = createPortGroup(clusterPortGroupName, clusterPortGroupName, oc.netconf.Name)
 	if err != nil {
 		klog.Errorf("Failed to create cluster port group: %v", err)
 		return err
@@ -376,7 +377,7 @@ func (oc *Controller) SetupMaster(masterNodeName string) error {
 	// Create a cluster-wide port group with all node-to-cluster router
 	// logical switch ports.  Currently the only user is multicast but it might
 	// be used for other features in the future.
-	oc.clusterRtrPortGroupUUID, err = createPortGroup(clusterRtrPortGroupName, clusterRtrPortGroupName)
+	oc.clusterRtrPortGroupUUID, err = createPortGroup(clusterRtrPortGroupName, clusterRtrPortGroupName, oc.netconf.Name)
 	if err != nil {
 		klog.Errorf("Failed to create cluster port group: %v", err)
 		return err
@@ -523,17 +524,6 @@ func (oc *Controller) deleteMaster() {
 	if err != nil {
 		klog.Errorf("Failed to delete a distributed %s router for the cluster, "+
 			"stdout: %q, stderr: %q, error: %v", clusterRouter, stdout, stderr, err)
-	}
-
-	existingNodes, err := oc.mc.kube.GetNodes()
-	if err != nil {
-		klog.Errorf("Error in initializing/fetching subnets: %v", err)
-		return
-	}
-
-	// remove hostsubnet annoation for this network
-	for _, node := range existingNodes.Items {
-		_ = oc.updateNodeAnnotationWithRetry(&node, []*net.IPNet{})
 	}
 }
 
@@ -876,14 +866,14 @@ func isError(err error) bool {
 	return true
 }
 
-func (oc *Controller) updateNodeAnnotationWithRetry(origNode *kapi.Node, hostSubnets []*net.IPNet) error {
+func (oc *Controller) updateNodeAnnotationWithRetry(nodeName string, hostSubnets []*net.IPNet) error {
 	//// FIXME: the real solution is to reconcile the node object. Once we have a work-queue based
 	//// implementation where we can add the item back to the work queue when it fails to
 	//// reconcile, we can get rid of the PollImmediate.
 	//// Retry if it fails because of potential conflict, or temporary API server down
 	resultErr := retry.OnError(retry.DefaultBackoff, isError, func() error {
 		// Informer cache should not be mutated, so get a copy of the object
-		node, err := oc.mc.kube.GetNode(origNode.Name)
+		node, err := oc.mc.kube.GetNode(nodeName)
 		if err != nil {
 			return err
 		}
@@ -897,7 +887,7 @@ func (oc *Controller) updateNodeAnnotationWithRetry(origNode *kapi.Node, hostSub
 		return oc.mc.kube.UpdateNode(cnode)
 	})
 	if resultErr != nil {
-		return fmt.Errorf("failed to update node %s annotation for network %s", origNode.Name, oc.netconf.Name)
+		return fmt.Errorf("failed to update node %s annotation for network %s", nodeName, oc.netconf.Name)
 	}
 	return nil
 }
@@ -936,7 +926,7 @@ func (oc *Controller) addNode(node *kapi.Node) ([]*net.IPNet, error) {
 	// Set the HostSubnet annotation on the node object to signal
 	// to nodes that their logical infrastructure is set up and they can
 	// proceed with their initialization
-	err = oc.updateNodeAnnotationWithRetry(node, hostSubnets)
+	err = oc.updateNodeAnnotationWithRetry(node.Name, hostSubnets)
 	if err != nil {
 		return nil, err
 	}
