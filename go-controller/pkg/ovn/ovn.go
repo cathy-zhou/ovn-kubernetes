@@ -282,6 +282,7 @@ func NewOvnMHController(ovnClient *util.OVNClientset, nodeName string, wf *facto
 			KClient:              ovnClient.KubeClient,
 			EIPClient:            ovnClient.EgressIPClient,
 			EgressFirewallClient: ovnClient.EgressFirewallClient,
+			NetAttachDefClient:   ovnClient.NetworkAttchDefClient,
 		},
 		watchFactory: wf,
 		wg:           wg,
@@ -290,7 +291,6 @@ func NewOvnMHController(ovnClient *util.OVNClientset, nodeName string, wf *facto
 		ovnNBClient:  ovnNBClient,
 		ovnSBClient:  ovnSBClient,
 		nodeName:     nodeName,
-		//addressSetFactory: addressSetFactory,
 	}
 }
 
@@ -385,7 +385,8 @@ func (mc *OvnMHController) NewOvnController(netconf *cnitypes.NetConf,
 		oc.wg = &sync.WaitGroup{}
 		_, loaded := mc.nonDefaultOvnControllers.LoadOrStore(netconf.Name, oc)
 		if loaded {
-			return nil, fmt.Errorf("non default Network attachment definition %s already exists", netconf.Name)
+			klog.Infof("Non default Network attachment definition %s already exists", netconf.Name)
+			return nil, nil
 		}
 	}
 	return oc, nil
@@ -1337,7 +1338,6 @@ func (oc *Controller) removeServiceEndpoints(lb, vip string) {
 }
 
 func (mc *OvnMHController) addNetworkAttachDefinition(netattachdef *nettypes.NetworkAttachmentDefinition) {
-
 	netconf := &cnitypes.NetConf{}
 
 	// looking for network attachment definition that use OVN K8S CNI only
@@ -1358,7 +1358,12 @@ func (mc *OvnMHController) addNetworkAttachDefinition(netattachdef *nettypes.Net
 
 	if !netconf.NotDefault {
 		if mc.ovnController != nil {
-			klog.Errorf("Default network net_attach_def can only be added when master is first initialized")
+			klog.Errorf("Default net_attach_def can only be added when master is first initialized, delete %s/%s",
+				netattachdef.Namespace, netattachdef.Name)
+			err = mc.kube.DeleteNetAttachDef(netattachdef.Namespace, netattachdef.Name)
+			if err != nil {
+				klog.Errorf("Error deleting default net_attach_def: %s/%s: %v", netattachdef.Namespace, netattachdef.Name, err)
+			}
 			return
 		}
 		// overide default network name
@@ -1371,7 +1376,7 @@ func (mc *OvnMHController) addNetworkAttachDefinition(netattachdef *nettypes.Net
 		return
 	}
 
-	if !netconf.NotDefault {
+	if oc == nil || !netconf.NotDefault {
 		return
 	}
 
@@ -1421,6 +1426,33 @@ func (mc *OvnMHController) deleteNetworkAttachDefinition(netattachdef *nettypes.
 	}
 
 	oc := v.(*Controller)
+	pods, err := mc.kube.GetAllPods("")
+	if err == nil {
+		for _, pod := range pods.Items {
+			allNetworks, err := util.GetK8sPodAllNetworks(&pod)
+			if err != nil {
+				continue
+			}
+			on, _ := oc.isNetworkOnPod(&pod, *allNetworks)
+			if !on {
+				continue
+			}
+			klog.Errorf("net-attach-def %s/%s is still used by pod %s/%s, recreate it", netattachdef.Namespace,
+				netattachdef.Name, pod.Namespace, pod.Name)
+			/* check whether the object somehow still exists */
+			_, err = mc.kube.GetNetAttachDef(netattachdef.Namespace, netattachdef.Name)
+			if err != nil {
+				/* recover deleted object */
+				recovered := netattachdef.DeepCopy()
+				recovered.ObjectMeta.ResourceVersion = "" // ResourceVersion field needs to be cleared before recreating the object
+				_, err = mc.kube.CreateNetAttachDef(netattachdef.Namespace, recovered)
+				if err != nil {
+					klog.Errorf("Failed to recreate net-attach-def %s/%s: %v", netattachdef.Namespace, netattachdef.Name, err)
+				}
+				return
+			}
+		}
+	}
 	oc.wg.Wait()
 	close(oc.stopChan)
 	oc.deleteMaster()

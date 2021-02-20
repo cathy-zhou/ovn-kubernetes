@@ -1237,8 +1237,10 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 			_, err = config.InitConfig(ctx, fexec, nil)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			config.Kubernetes.HostNetworkNamespace = ""
-			nodeAnnotator := kube.NewNodeAnnotator(&kube.Kube{kubeFakeClient, egressIPFakeClient, egressFirewallFakeClient}, &testNode)
+			nodeAnnotator := kube.NewNodeAnnotator(&kube.Kube{kubeFakeClient, egressIPFakeClient, egressFirewallFakeClient, networkAttchDefClient}, &testNode)
+
 			ifaceID := node1.PhysicalBridgeName + "_" + node1.Name
+
 			vlanID := uint(1024)
 			err = util.SetL3GatewayConfig(nodeAnnotator, &util.L3GatewayConfig{
 				Mode:           config.GatewayModeShared,

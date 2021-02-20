@@ -7,6 +7,7 @@ import (
 
 	"github.com/urfave/cli/v2"
 
+	networkattachmentdefinitionfake "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/fake"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	egressfirewallfake "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1/apis/clientset/versioned/fake"
 	egressipfake "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressip/v1/apis/clientset/versioned/fake"
@@ -204,17 +205,19 @@ var _ = ginkgo.Describe("OVN Namespace Operations", func() {
 				egressFirewallFakeClient := &egressfirewallfake.Clientset{}
 				crdFakeClient := &apiextensionsfake.Clientset{}
 				egressIPFakeClient := &egressipfake.Clientset{}
+				netattachdefFakeClient := &networkattachmentdefinitionfake.Clientset{}
 				fakeClient := &util.OVNClientset{
-					KubeClient:           kubeFakeClient,
-					EgressIPClient:       egressIPFakeClient,
-					EgressFirewallClient: egressFirewallFakeClient,
-					APIExtensionsClient:  crdFakeClient,
+					KubeClient:            kubeFakeClient,
+					EgressIPClient:        egressIPFakeClient,
+					EgressFirewallClient:  egressFirewallFakeClient,
+					APIExtensionsClient:   crdFakeClient,
+					NetworkAttchDefClient: netattachdefFakeClient,
 				}
 
 				_, err := fakeClient.KubeClient.CoreV1().Nodes().Create(context.TODO(), &testNode, metav1.CreateOptions{})
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-				nodeAnnotator := kube.NewNodeAnnotator(&kube.Kube{fakeClient.KubeClient, fakeClient.EgressIPClient, fakeClient.EgressFirewallClient}, &testNode)
+				nodeAnnotator := kube.NewNodeAnnotator(&kube.Kube{fakeClient.KubeClient, fakeClient.EgressIPClient, fakeClient.EgressFirewallClient, fakeClient.NetworkAttchDefClient}, &testNode)
 
 				ifaceID := node1.PhysicalBridgeName + "_" + node1.Name
 				vlanID := uint(1024)
