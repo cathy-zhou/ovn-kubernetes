@@ -26,13 +26,13 @@ import (
 	"github.com/containernetworking/plugins/pkg/testutils"
 	"github.com/vishvananda/netlink"
 
-	//networkattachmentdefinitionfake "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/fake"
+	networkattachmentdefinitionfake "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/fake"
 	egressfirewallfake "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1/apis/clientset/versioned/fake"
 	egressipfake "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressip/v1/apis/clientset/versioned/fake"
 	apiextensionsfake "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/fake"
 
 	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
+        . "github.com/onsi/gomega"
 )
 
 func setupNodeAccessBridgeTest(fexec *ovntest.FakeExec, nodeName, brLocalnetMAC, mtu string) {
@@ -160,12 +160,13 @@ func shareGatewayInterfaceTest(app *cli.App, testNS ns.NetNS,
 		egressFirewallFakeClient := &egressfirewallfake.Clientset{}
 		crdFakeClient := &apiextensionsfake.Clientset{}
 		egressIPFakeClient := &egressipfake.Clientset{}
-		//networkAttchDefClient := &networkattachmentdefinitionfake.Clientset{}
+		networkAttchDefClient := &networkattachmentdefinitionfake.Clientset{}
 		fakeClient := &util.OVNClientset{
 			KubeClient:           kubeFakeClient,
+			EgressIPClient:       egressIPFakeClient,
 			EgressFirewallClient: egressFirewallFakeClient,
 			APIExtensionsClient:  crdFakeClient,
-			//NetworkAttchDefClient: networkAttchDefClient,
+			NetworkAttchDefClient: networkAttchDefClient,
 		}
 
 		stop := make(chan struct{})
@@ -177,7 +178,7 @@ func shareGatewayInterfaceTest(app *cli.App, testNS ns.NetNS,
 			wf.Shutdown()
 		}()
 
-		k := &kube.Kube{fakeClient.KubeClient, egressIPFakeClient, egressFirewallFakeClient}
+		k := &kube.Kube{KClient: fakeClient.KubeClient}
 
 		iptV4, iptV6 := util.SetFakeIPTablesHelpers()
 

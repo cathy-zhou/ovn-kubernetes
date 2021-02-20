@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"k8s.io/klog/v2"
 
+	nettypes "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
+	networkattchmentdefclientset "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned"
 	egressfirewall "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1"
 	egressfirewallclientset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1/apis/clientset/versioned"
 	egressipv1 "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressip/v1"
@@ -33,12 +35,16 @@ type Interface interface {
 	GetEgressIPs() (*egressipv1.EgressIPList, error)
 	GetNamespaces(labelSelector metav1.LabelSelector) (*kapi.NamespaceList, error)
 	GetPods(namespace string, labelSelector metav1.LabelSelector) (*kapi.PodList, error)
+	GetAllPods(namespace string) (*kapi.PodList, error)
 	GetNode(name string) (*kapi.Node, error)
 	GetPod(namespace, name string) (*kapi.Pod, error)
 	GetEndpoint(namespace, name string) (*kapi.Endpoints, error)
 	CreateEndpoint(namespace string, ep *kapi.Endpoints) (*kapi.Endpoints, error)
 	Events() kv1core.EventInterface
 	UpdatePod(pod *kapi.Pod) error
+	GetNetAttachDef(namespace, name string) (*nettypes.NetworkAttachmentDefinition, error)
+	CreateNetAttachDef(namespace string, netattchdef *nettypes.NetworkAttachmentDefinition) (*nettypes.NetworkAttachmentDefinition, error)
+	DeleteNetAttachDef(namespace, name string) error
 }
 
 // Kube is the structure object upon which the Interface is implemented
@@ -46,6 +52,7 @@ type Kube struct {
 	KClient              kubernetes.Interface
 	EIPClient            egressipclientset.Interface
 	EgressFirewallClient egressfirewallclientset.Interface
+	NetAttachDefClient   networkattchmentdefclientset.Interface
 }
 
 // SetAnnotationsOnPod takes the pod object and map of key/value string pairs to set as annotations
@@ -188,6 +195,11 @@ func (k *Kube) GetPods(namespace string, labelSelector metav1.LabelSelector) (*k
 	})
 }
 
+// GetAllPods returns the list of all Pod objects in a namespace
+func (k *Kube) GetAllPods(namespace string) (*kapi.PodList, error) {
+	return k.KClient.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{})
+}
+
 // GetPod obtains the pod from kubernetes apiserver, given the name and namespace
 func (k *Kube) GetPod(namespace, name string) (*kapi.Pod, error) {
 	return k.KClient.CoreV1().Pods(namespace).Get(context.TODO(), name, metav1.GetOptions{})
@@ -221,6 +233,21 @@ func (k *Kube) GetEndpoint(namespace, name string) (*kapi.Endpoints, error) {
 // CreateEndpoint creates the Endpoints resource
 func (k *Kube) CreateEndpoint(namespace string, ep *kapi.Endpoints) (*kapi.Endpoints, error) {
 	return k.KClient.CoreV1().Endpoints(namespace).Create(context.TODO(), ep, metav1.CreateOptions{})
+}
+
+// GetNetAttachDef returns the NetworkAttachmentDefinition resource
+func (k *Kube) GetNetAttachDef(namespace, name string) (*nettypes.NetworkAttachmentDefinition, error) {
+	return k.NetAttachDefClient.K8sCniCncfIoV1().NetworkAttachmentDefinitions(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+}
+
+// CreateNetAttachDef creates the NetworkAttachmentDefinition resource
+func (k *Kube) CreateNetAttachDef(namespace string, netattchdef *nettypes.NetworkAttachmentDefinition) (*nettypes.NetworkAttachmentDefinition, error) {
+	return k.NetAttachDefClient.K8sCniCncfIoV1().NetworkAttachmentDefinitions(namespace).Create(context.TODO(), netattchdef, metav1.CreateOptions{})
+}
+
+// DeleteNetAttachDef creates the NetworkAttachmentDefinition resource
+func (k *Kube) DeleteNetAttachDef(namespace, name string) error {
+	return k.NetAttachDefClient.K8sCniCncfIoV1().NetworkAttachmentDefinitions(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{})
 }
 
 // Events returns events to use when creating an EventSinkImpl
