@@ -975,6 +975,20 @@ func (oc *Controller) WatchNodes() {
 				}
 			}
 
+			if nodeChassisChanged(oldNode, node) {
+				mismatch, err := oc.checkNodeChassisMismatch(node)
+				if err != nil {
+					klog.Errorf("Failed to check if there is any stale chassis for node %s in SBDB: %v", node.Name, err)
+				} else if mismatch {
+					klog.V(5).Infof("Node %s is updated with different chassis ID, delete its stale chassis in SBDB", node.Name)
+					if err = oc.deleteNodeChassis(node.Name); err != nil {
+						oc.recorder.Eventf(node, kapi.EventTypeWarning, "ErrorMismatchChassis",
+							"Node %s is updated with different chassis ID. Its stale chassis entry is still in the SBDB",
+							node.Name)
+					}
+				}
+			}
+
 			oc.clearInitialNodeNetworkUnavailableCondition(oldNode, node)
 
 			_, failed = gatewaysFailed.Load(node.Name)
@@ -1133,6 +1147,12 @@ func nodeSubnetChanged(oldNode, node *kapi.Node) bool {
 	oldSubnets, _ := util.ParseNodeHostSubnetAnnotation(oldNode)
 	newSubnets, _ := util.ParseNodeHostSubnetAnnotation(node)
 	return !reflect.DeepEqual(oldSubnets, newSubnets)
+}
+
+func nodeChassisChanged(oldNode, node *kapi.Node) bool {
+	oldChassis, _ := util.ParseNodeChassisIDAnnotation(oldNode)
+	newChassis, _ := util.ParseNodeChassisIDAnnotation(node)
+	return oldChassis != newChassis
 }
 
 // noHostSubnet() compares the no-hostsubenet-nodes flag with node labels to see if the node is manageing its
