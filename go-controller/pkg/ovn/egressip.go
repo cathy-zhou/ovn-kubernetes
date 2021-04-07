@@ -325,6 +325,8 @@ func (oc *Controller) assignEgressIPs(eIP *egressipv1.EgressIP) error {
 			)
 			return fmt.Errorf("egress IP: %v is the IP address of node: %s", eIPC, node.name)
 		}
+		nodeIndex := -1
+	out:
 		for i := 0; i < len(assignableNodes); i++ {
 			klog.V(5).Infof("Attempting assignment on egress node: %+v", assignableNodes[i])
 			if _, exists := existingAllocations[eIPC.String()]; exists {
@@ -337,14 +339,26 @@ func (oc *Controller) assignEgressIPs(eIP *egressipv1.EgressIP) error {
 			}
 			if (assignableNodes[i].v6Subnet != nil && assignableNodes[i].v6Subnet.Contains(eIPC)) ||
 				(assignableNodes[i].v4Subnet != nil && assignableNodes[i].v4Subnet.Contains(eIPC)) {
-				assignableNodes[i].tainted, oc.eIPC.allocator[assignableNodes[i].name].allocations[eIPC.String()] = true, true
-				assignments = append(assignments, egressipv1.EgressIPStatusItem{
-					EgressIP: eIPC.String(),
-					Node:     assignableNodes[i].name,
-				})
-				klog.V(5).Infof("Successful assignment of egress IP: %s on node: %+v", egressIP, assignableNodes[i])
-				break
+				// This is potentially a matching node, try to see if there is a more specific matching node (any node
+				// that has matching egress_ip annotation)
+				if nodeIndex == -1 {
+					nodeIndex = i
+				}
+				for _, assignedNodeEIP := range assignableNodes[i].egressIPs {
+					if assignedNodeEIP.String() == egressIP {
+						nodeIndex = i
+						break out
+					}
+				}
 			}
+		}
+		if nodeIndex != -1 {
+			assignableNodes[nodeIndex].tainted, oc.eIPC.allocator[assignableNodes[nodeIndex].name].allocations[eIPC.String()] = true, true
+			assignments = append(assignments, egressipv1.EgressIPStatusItem{
+				EgressIP: eIPC.String(),
+				Node:     assignableNodes[nodeIndex].name,
+			})
+			klog.V(5).Infof("Successful assignment of egress IP: %s on node: %+v", egressIP, assignableNodes[nodeIndex])
 		}
 	}
 	if len(assignments) == 0 {
@@ -396,10 +410,11 @@ func (oc *Controller) getSortedEgressData() ([]egressNode, map[string]bool) {
 	return assignableNodes, allAllocations
 }
 
-func (oc *Controller) setNodeEgressAssignable(nodeName string, isAssignable bool) {
+func (oc *Controller) setNodeEgressAssignable(nodeName string, isAssignable bool, assignedEgressIPs []net.IP) {
 	oc.eIPC.allocatorMutex.Lock()
 	defer oc.eIPC.allocatorMutex.Unlock()
 	if eNode, exists := oc.eIPC.allocator[nodeName]; exists {
+		eNode.egressIPs = assignedEgressIPs
 		eNode.isEgressAssignable = isAssignable
 	}
 }
@@ -452,6 +467,36 @@ func (oc *Controller) addEgressNode(egressNode *kapi.Node) error {
 		}
 		if len(newEIP.Spec.EgressIPs) == len(newEIP.Status.Items) {
 			delete(oc.eIPC.assignmentRetry, eIP.Name)
+		}
+	}
+	return nil
+}
+
+func (oc *Controller) deleteEgressNodeForEIPs(egressNode *kapi.Node, eips []net.IP) error {
+	klog.V(5).Infof("Assigned Egress IPs %v are deleted from egress node: %s", eips, egressNode.Name)
+	egressIPs, err := oc.kube.GetEgressIPs()
+	if err != nil {
+		return fmt.Errorf("unable to list egressIPs, err: %v", err)
+	}
+	for _, eIP := range egressIPs.Items {
+		needsReassignment := false
+	out:
+		for _, status := range eIP.Status.Items {
+			if status.Node == egressNode.Name {
+				for _, egressIP := range eIP.Spec.EgressIPs {
+					for _, ip := range eips {
+						if egressIP == ip.String() {
+							needsReassignment = true
+							break out
+						}
+					}
+				}
+			}
+		}
+		if needsReassignment {
+			if _, err := oc.reassignEgressIP(&eIP); err != nil {
+				klog.Errorf("EgressIP: %s re-assignmnent error: %v", eIP.Name, err)
+			}
 		}
 	}
 	return nil
@@ -584,6 +629,7 @@ type egressNode struct {
 	isEgressAssignable bool
 	tainted            bool
 	name               string
+	egressIPs          []net.IP
 }
 
 type egressIPController struct {
