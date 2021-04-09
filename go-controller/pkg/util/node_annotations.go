@@ -57,6 +57,9 @@ const (
 
 	// OvnNodeEgressLabel is a user assigned node label indicating to ovn-kubernetes that the node is to be used for egress IP assignment
 	ovnNodeEgressLabel = "k8s.ovn.org/egress-assignable"
+
+	// ovnNodeEgressIPs is a user assigned node annotation indicating egress IPs that are expected on the node
+	ovnNodeEgressIPs = "k8s.ovn.org/egress-ips"
 )
 
 type L3GatewayConfig struct {
@@ -80,6 +83,10 @@ type l3GatewayConfigJSON struct {
 	NextHop        string             `json:"next-hop,omitempty"`
 	NodePortEnable string             `json:"node-port-enable,omitempty"`
 	VLANID         string             `json:"vlan-id,omitempty"`
+}
+
+type assignedNodeEgressIPJSON struct {
+	EgressIPs []string `json:"egress_ips"`
 }
 
 func (cfg *L3GatewayConfig) MarshalJSON() ([]byte, error) {
@@ -284,4 +291,26 @@ func ParseNodePrimaryIfAddr(node *kapi.Node) (string, string, error) {
 // GetNodeEgressLabel returns label annotation needed for marking nodes as egress assignable
 func GetNodeEgressLabel() string {
 	return ovnNodeEgressLabel
+}
+
+// ParseNodeAssignedEgressIPs returns the parsed ovnNodeEgressIPs annotation
+func ParseNodeAssignedEgressIPs(node *kapi.Node) ([]net.IP, error) {
+	var eips assignedNodeEgressIPJSON
+
+	annotation, ok := node.Annotations[ovnNodeEgressIPs]
+	if !ok {
+		return []net.IP{}, nil
+	}
+	if err := json.Unmarshal([]byte(annotation), &eips); err != nil {
+		return []net.IP{}, err
+	}
+	ips := []net.IP{}
+	for _, ipstr := range eips.EgressIPs {
+		ip := net.ParseIP(ipstr)
+		if ip == nil {
+			return []net.IP{}, fmt.Errorf("invalid IP %s", ipstr)
+		}
+		ips = append(ips, ip)
+	}
+	return ips, nil
 }

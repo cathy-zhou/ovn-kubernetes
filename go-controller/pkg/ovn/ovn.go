@@ -737,6 +737,23 @@ func (oc *Controller) WatchEgressFirewall() *factory.Handler {
 	}, oc.syncEgressFirewall)
 }
 
+func comareEgressIPs(oldEIPs []net.IP, newEIPs []net.IP) []net.IP {
+	deletedEIPs := []net.IP{}
+	for _, oldEip := range oldEIPs {
+		found := false
+		for _, newEip := range newEIPs {
+			if oldEip.Equal(newEip) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			deletedEIPs = append(deletedEIPs, oldEip)
+		}
+	}
+	return deletedEIPs
+}
+
 // WatchEgressNodes starts the watching of egress assignable nodes and calls
 // back the appropriate handler logic.
 func (oc *Controller) WatchEgressNodes() {
@@ -749,7 +766,12 @@ func (oc *Controller) WatchEgressNodes() {
 			}
 			nodeLabels := node.GetLabels()
 			if _, hasEgressLabel := nodeLabels[nodeEgressLabel]; hasEgressLabel {
-				oc.setNodeEgressAssignable(node.Name, true)
+				eips, err := util.ParseNodeAssignedEgressIPs(node)
+				if err != nil {
+					klog.Errorf("Invalid egress IP annotation on node %s: %v", node.Name, err)
+					return
+				}
+				oc.setNodeEgressAssignable(node.Name, true, eips)
 				if oc.isEgressNodeReady(node) {
 					oc.setNodeEgressReady(node.Name, true)
 					if oc.isEgressNodeReachable(node) {
@@ -776,7 +798,7 @@ func (oc *Controller) WatchEgressNodes() {
 			}
 			if oldHadEgressLabel && !newHasEgressLabel {
 				klog.Infof("Node: %s has been un-labelled, deleting it from egress assignment", newNode.Name)
-				oc.setNodeEgressAssignable(oldNode.Name, false)
+				oc.setNodeEgressAssignable(oldNode.Name, false, []net.IP{})
 				if err := oc.deleteEgressNode(oldNode); err != nil {
 					klog.Error(err)
 				}
@@ -789,7 +811,46 @@ func (oc *Controller) WatchEgressNodes() {
 			oc.setNodeEgressReachable(newNode.Name, isNewReachable)
 			if !oldHadEgressLabel && newHasEgressLabel {
 				klog.Infof("Node: %s has been labelled, adding it for egress assignment", newNode.Name)
-				oc.setNodeEgressAssignable(newNode.Name, true)
+				newEIPs, err := util.ParseNodeAssignedEgressIPs(newNode)
+				if err != nil {
+					klog.Errorf("Invalid egress IP annotation on node %s: %v", newNode.Name, err)
+					return
+				}
+				oc.setNodeEgressAssignable(newNode.Name, true, newEIPs)
+				if isNewReady && isNewReachable {
+					if err := oc.addEgressNode(newNode); err != nil {
+						klog.Error(err)
+					}
+				} else {
+					klog.Warningf("Node: %s has been labelled, but node is not ready and reachable, cannot use it for egress assignment", newNode.Name)
+				}
+				return
+			}
+			if oldHadEgressLabel && newHasEgressLabel {
+				klog.Infof("Egress IP annotation on Node %s has been changed, may need egress reassignment", newNode.Name)
+				newEIPs, err := util.ParseNodeAssignedEgressIPs(newNode)
+				if err != nil {
+					klog.Errorf("Invalid egress IP annotation on node %s: %v", newNode.Name, err)
+					return
+				}
+				oc.setNodeEgressAssignable(newNode.Name, true, newEIPs)
+				if isOldReady && !isNewReady {
+					klog.Warningf("Node: %s is not ready, deleting it from egress assignment", newNode.Name)
+					if err := oc.deleteEgressNode(oldNode); err != nil {
+						klog.Error(err)
+					}
+					return
+				}
+				// If egress_ips annotation changed, then already assigned egress IP may needed to reassign to different
+				// node if the egress ip is deleted from the annotation
+				oldEIPs, _ := util.ParseNodeAssignedEgressIPs(oldNode)
+				deletedEIPs := comareEgressIPs(oldEIPs, newEIPs)
+				if isOldReady && isNewReachable && len(deletedEIPs) != 0 {
+					klog.Warningf("Assigned egress IPs on Node %s has changed, reassign egress IP if needed", oldNode.Name)
+					if err := oc.deleteEgressNodeForEIPs(oldNode, deletedEIPs); err != nil {
+						klog.Error(err)
+					}
+				}
 				if isNewReady && isNewReachable {
 					if err := oc.addEgressNode(newNode); err != nil {
 						klog.Error(err)
