@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	corev1listers "k8s.io/client-go/listers/core/v1"
 )
@@ -61,9 +60,9 @@ func GetPodAnnotations(ctx context.Context, podLister corev1listers.PodLister, n
 }
 
 // PodAnnotation2PodInfo creates PodInterfaceInfo from Pod annotations and additional attributes
-func PodAnnotation2PodInfo(podAnnotation map[string]string, checkExtIDs bool, isSmartNic bool) (
+func PodAnnotation2PodInfo(podAnnotation map[string]string, checkExtIDs bool, isSmartNic bool, mtu int, netName string) (
 	*PodInterfaceInfo, error) {
-	podAnnotSt, err := util.UnmarshalPodAnnotation(podAnnotation)
+	podAnnotSt, err := util.UnmarshalPodAnnotation(podAnnotation, netName)
 	if err != nil {
 		return nil, err
 	}
@@ -73,11 +72,12 @@ func PodAnnotation2PodInfo(podAnnotation map[string]string, checkExtIDs bool, is
 	}
 	podInterfaceInfo := &PodInterfaceInfo{
 		PodAnnotation: *podAnnotSt,
-		MTU:           config.Default.MTU,
+		MTU:           mtu,
 		Ingress:       ingress,
 		Egress:        egress,
 		CheckExtIDs:   checkExtIDs,
 		IsSmartNic:    isSmartNic,
+		NetworkName:   netName,
 	}
 	return podInterfaceInfo, nil
 }

@@ -12,7 +12,9 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 )
 
@@ -41,7 +43,8 @@ func (n *OvnNode) watchSmartNicPods(isOvnUpEnabled bool) {
 					retryPods.Store(pod.UID, true)
 					return
 				}
-				podInterfaceInfo, err := cni.PodAnnotation2PodInfo(pod.Annotations, isOvnUpEnabled, true)
+				podInterfaceInfo, err := cni.PodAnnotation2PodInfo(pod.Annotations, isOvnUpEnabled, true,
+					config.Default.MTU, types.DefaultNetworkName)
 				if err != nil {
 					retryPods.Store(pod.UID, true)
 					return
@@ -77,7 +80,8 @@ func (n *OvnNode) watchSmartNicPods(isOvnUpEnabled bool) {
 					klog.Infof("Failed to get rep name, %s. retrying", err)
 					return
 				}
-				podInterfaceInfo, err := cni.PodAnnotation2PodInfo(pod.Annotations, isOvnUpEnabled, true)
+				podInterfaceInfo, err := cni.PodAnnotation2PodInfo(pod.Annotations, isOvnUpEnabled, true,
+					config.Default.MTU, types.DefaultNetworkName)
 				if err != nil {
 					return
 				}
