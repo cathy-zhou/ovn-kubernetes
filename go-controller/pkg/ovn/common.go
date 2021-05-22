@@ -14,6 +14,7 @@ func hashedPortGroup(s string) string {
 	return util.HashForOVN(s)
 }
 
+// hashName is portGroupName without network prefix
 func createPortGroup(ovnNBClient goovn.Client, name string, hashName string, netName string) (string, error) {
 	klog.V(5).Infof("createPortGroup with %s for network %s", name, netName)
 	hashName = util.GetNetworkPrefix(netName) + hashName
@@ -39,6 +40,7 @@ func createPortGroup(ovnNBClient goovn.Client, name string, hashName string, net
 	}
 }
 
+// hashName is the portGroupName without network Prefix
 func deletePortGroup(ovnNBClient goovn.Client, hashName, netName string) error {
 	klog.V(5).Infof("deletePortGroup %s for network %s", hashName, netName)
 	hashName = util.GetNetworkPrefix(netName) + hashName

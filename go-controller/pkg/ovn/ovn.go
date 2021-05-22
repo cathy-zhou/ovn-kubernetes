@@ -119,9 +119,9 @@ type namespaceInfo struct {
 
 	// Per-namespace port group default deny UUIDs
 	portGroupIngressDenyUUID string // Port group UUID for ingress deny rule
-	portGroupIngressDenyName string // Port group Name for ingress deny rule
+	portGroupIngressDenyName string // Port group Name for ingress deny rule, without network prefix
 	portGroupEgressDenyUUID  string // Port group UUID for egress deny rule
-	portGroupEgressDenyName  string // Port group Name for egress deny rule
+	portGroupEgressDenyName  string // Port group Name for egress deny rule, without network prefix
 }
 
 // multihome controller

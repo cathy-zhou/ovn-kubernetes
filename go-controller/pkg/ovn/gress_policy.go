@@ -228,6 +228,7 @@ func (gp *gressPolicy) getMatchFromIPBlock(lportMatch, l4Match string) []string 
 }
 
 // addNamespaceAddressSet adds a new namespace address set to the gress policy
+// portGroupName is portGroupName without network prefix
 func (gp *gressPolicy) addNamespaceAddressSet(name, portGroupName string) {
 	v4HashName, v6HashName := addressset.MakeAddressSetHashNames(name)
 	v4HashName = "$" + v4HashName
@@ -247,6 +248,7 @@ func (gp *gressPolicy) addNamespaceAddressSet(name, portGroupName string) {
 }
 
 // delNamespaceAddressSet removes a namespace address set from the gress policy
+// portGroupName is portGroupName without network prefix
 func (gp *gressPolicy) delNamespaceAddressSet(name, portGroupName string) {
 	v4HashName, v6HashName := addressset.MakeAddressSetHashNames(name)
 	v4HashName = "$" + v4HashName
@@ -268,10 +270,12 @@ func (gp *gressPolicy) delNamespaceAddressSet(name, portGroupName string) {
 // localPodAddACL adds an ACL that implements the gress policy's rules to the
 // given Port Group (which should contain all pod logical switch ports selected
 // by the parent NetworkPolicy)
+// portGroupName is portGroupName without network prefix
 func (gp *gressPolicy) localPodAddACL(portGroupName, portGroupUUID string, aclLogging string) {
 	l3Match := gp.getL3MatchFromAddressSet()
 	var lportMatch string
 	var cidrMatches []string
+	portGroupName = util.GetNetworkPrefix(gp.netName) + portGroupName
 	if gp.policyType == knet.PolicyTypeIngress {
 		lportMatch = fmt.Sprintf("outport == @%s", portGroupName)
 	} else {
@@ -440,8 +444,10 @@ func constructIPBlockStringsForACL(direction string, ipBlocks []*knet.IPBlock, l
 }
 
 // localPodUpdateACL updates an existing ACL that implements the gress policy's rules
+// portGroupName is portGroupName without network prefix
 func (gp *gressPolicy) localPodUpdateACL(oldl3Match, newl3Match, portGroupName string) {
 	var lportMatch string
+	portGroupName = util.GetNetworkPrefix(gp.netName) + portGroupName
 	if gp.policyType == knet.PolicyTypeIngress {
 		lportMatch = fmt.Sprintf("outport == @%s", portGroupName)
 	} else {

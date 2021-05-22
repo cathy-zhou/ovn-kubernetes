@@ -191,7 +191,7 @@ func parseRoutingExternalGWAnnotation(annotation string) ([]net.IP, error) {
 
 // AddNamespace creates corresponding addressset in ovn db
 func (oc *Controller) AddNamespace(ns *kapi.Namespace) {
-	klog.V(5).Infof("Adding namespace: %s", ns.Name)
+	klog.V(5).Infof("Adding namespace: %s for network %s", ns.Name, oc.netconf.Name)
 	nsInfo := oc.createNamespaceLocked(ns.Name)
 	defer nsInfo.Unlock()
 
@@ -230,7 +230,7 @@ func (oc *Controller) AddNamespace(ns *kapi.Namespace) {
 }
 
 func (oc *Controller) updateNamespace(old, newer *kapi.Namespace) {
-	klog.V(5).Infof("Updating namespace: %s", old.Name)
+	klog.V(5).Infof("Updating namespace: %s for network %s", old.Name, oc.netconf.Name)
 
 	nsInfo := oc.getNamespaceLocked(old.Name)
 	if nsInfo == nil {
@@ -312,7 +312,7 @@ func (oc *Controller) updateNamespace(old, newer *kapi.Namespace) {
 }
 
 func (oc *Controller) deleteNamespace(ns *kapi.Namespace) {
-	klog.V(5).Infof("Deleting namespace: %s", ns.Name)
+	klog.V(5).Infof("Deleting namespace: %s for network %s", ns.Name, oc.netconf.Name)
 
 	nsInfo := oc.deleteNamespaceLocked(ns.Name)
 	if nsInfo == nil {
@@ -454,7 +454,7 @@ func (oc *Controller) createNamespaceAddrSetAllPods(ns string) (addressset.Addre
 	var ips []net.IP
 	// special handling of host network namespace
 	if config.Kubernetes.HostNetworkNamespace != "" &&
-		ns == config.Kubernetes.HostNetworkNamespace {
+		ns == config.Kubernetes.HostNetworkNamespace && !oc.netconf.NotDefault {
 		// add the mp0 interface addresses to this namespace.
 		existingNodes, err := oc.mc.watchFactory.GetNodes()
 		if err != nil {
