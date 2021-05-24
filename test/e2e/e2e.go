@@ -11,10 +11,12 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/ginkgo/extensions/table"
+	"github.com/onsi/gomega"
 	"github.com/pkg/errors"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -22,9 +24,11 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework"
 	utilnet "k8s.io/utils/net"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	testutils "k8s.io/kubernetes/test/utils"
 )
 
 const (
@@ -35,6 +39,8 @@ const (
 	ciNetworkName        = "kind"
 	agnhostImage         = "k8s.gcr.io/e2e-test-images/agnhost:2.26"
 )
+
+type podCondition = func(pod *v1.Pod) (bool, error)
 
 func checkContinuousConnectivity(f *framework.Framework, nodeName, podName, host string, port, timeout int, podChan chan *v1.Pod, errChan chan error) {
 	contName := fmt.Sprintf("%s-container", podName)
@@ -440,6 +446,46 @@ var _ = ginkgo.Describe("e2e control plane", func() {
 		framework.Logf("Deleted ovnkube-master %q", podName)
 
 		framework.ExpectNoError(<-errChan)
+	})
+	ginkgo.It("should provide connection to external host by DNS name from a pod", func() {
+		ginkgo.By("Running container which tries to connect to www.google.com. in a loop")
+
+		podChan, errChan := make(chan *v1.Pod), make(chan error)
+		go checkContinuousConnectivity(f, "", "connectivity-test-continuous", "www.google.com.", 443, 30, podChan, errChan)
+
+		testPod := <-podChan
+		framework.Logf("Test pod running on %q", testPod.Spec.NodeName)
+
+		time.Sleep(10 * time.Second)
+
+		framework.ExpectNoError(<-errChan)
+	})
+})
+
+// Test pod connectivity to other host IP addresses
+var _ = ginkgo.Describe("test e2e pod connectivity to host addresses", func() {
+	const (
+		ovnWorkerNode    string = "ovn-worker"
+		targetIP         string = "123.123.123.123"
+		svcname          string = "node-e2e-to-host"
+	)
+
+	f := framework.NewDefaultFramework(svcname)
+
+	ginkgo.AfterEach(func() {
+		_, _ = runCommand("docker", "exec", ovnWorkerNode, "ip", "a", "del",
+			fmt.Sprintf("%s/32", targetIP), "dev", "breth0")
+	})
+
+	ginkgo.It("Should validate connectivity from a pod to a non-node host address on same node", func() {
+		// Add another IP address to the worker
+		_, err := runCommand("docker", "exec", ovnWorkerNode, "ip", "a", "add",
+			fmt.Sprintf("%s/32", targetIP), "dev", "breth0")
+		framework.ExpectNoError(err, "failed to add IP to %s", ovnWorkerNode)
+
+		// Spin up another pod that attempts to reach the previously started pod on separate nodes
+		framework.ExpectNoError(
+			checkConnectivityPingToHost(f, ovnWorkerNode, "e2e-src-ping-pod", targetIP, ipv4PingCommand, 30, false))
 	})
 })
 
@@ -1351,6 +1397,91 @@ spec:
 			framework.Failf("Failed to curl the remote host %s from container %s on node %s: %v", exFWPermitTcpWwwDest, ovnContainer, serverNodeInfo.name, err)
 		}
 	})
+	ginkgo.It("Should validate the egress firewall DNS does not deadlock when adding many dnsNames", func() {
+		frameworkNsFlag := fmt.Sprintf("--namespace=%s", f.Namespace.Name)
+		var egressFirewallConfig = fmt.Sprintf(`kind: EgressFirewall
+apiVersion: k8s.ovn.org/v1
+metadata:
+  name: default
+  namespace: %s
+spec:
+  egress:
+  - type: Allow
+    to:
+      cidrSelector: 8.8.8.8/32
+  - type: Allow
+    to:
+      dnsName: www.test1.com
+  - type: Allow
+    to:
+      dnsName: www.test2.com
+  - type: Allow
+    to:
+      dnsName: www.test3.com
+  - type: Allow
+    to:
+      dnsName: www.test4.com
+  - type: Allow
+    to:
+      dnsName: www.test5.com
+  - type: Allow
+    to:
+      dnsName: www.test6.com
+  - type: Allow
+    to:
+      dnsName: www.test7.com
+  - type: Allow
+    to:
+      dnsName: www.test8.com
+  - type: Allow
+    to:
+      dnsName: www.test9.com
+  - type: Allow
+    to:
+      dnsName: www.test10.com
+  - type: Allow
+    to:
+      dnsName: www.test11.com
+  - type: Allow
+    to:
+      dnsName: www.test12.com
+  - type: Allow
+    to:
+      cidrSelector: 1.1.1.0/24
+    ports:
+      - protocol: TCP
+        port: 80
+  - type: Deny
+    to:
+      cidrSelector: 0.0.0.0/0
+`, f.Namespace.Name)
+		// write the config to a file for application and defer the removal
+		if err := ioutil.WriteFile(egressFirewallYamlFile, []byte(egressFirewallConfig), 0644); err != nil {
+			framework.Failf("Unable to write CRD config to disk: %v", err)
+		}
+		defer func() {
+			if err := os.Remove(egressFirewallYamlFile); err != nil {
+				framework.Logf("Unable to remove the CRD config from disk: %v", err)
+			}
+		}()
+		// create the CRD config parameters
+		applyArgs := []string{
+			"apply",
+			frameworkNsFlag,
+			"-f",
+			egressFirewallYamlFile,
+		}
+		framework.Logf("Applying EgressFirewall configuration: %s ", applyArgs)
+		// apply the egress firewall configuration
+		framework.RunKubectlOrDie(f.Namespace.Name, applyArgs...)
+		gomega.Eventually(func() bool {
+			output, err := framework.RunKubectl(f.Namespace.Name, "get", "egressfirewall", "default")
+			if err != nil {
+				framework.Failf("could not get the egressfirewall default in namespace: %s", f.Namespace.Name)
+			}
+			return strings.Contains(output, "EgressFirewall Rules applied")
+		}, 30*time.Second).Should(gomega.BeTrue())
+	})
 })
 
 // Validate pods can reach a network running in a container's looback address via
@@ -2148,7 +2279,7 @@ var _ = ginkgo.Describe("e2e delete databases", func() {
 		northDBFileName           string        = "ovnnb_db.db"
 		southDBFileName           string        = "ovnsb_db.db"
 		dirDB                     string        = "/etc/ovn/"
-		waitingPeriod             time.Duration = 90 * time.Second // polling timeout
+		waitingPeriod             time.Duration = 180 * time.Second // polling timeout
 		ovnWorkerNode             string        = "ovn-worker"
 		ovnWorkerNode2            string        = "ovn-worker2"
 		haModeMinDb               int           = 0
@@ -2275,6 +2406,41 @@ var _ = ginkgo.Describe("e2e delete databases", func() {
 		errChan <- nil
 	}
 
+	// WaitForPodConditionAllowNotFoundError is a wrapper for WaitForPodCondition that allows at most 6 times for the pod not to be found.
+	WaitForPodConditionAllowNotFoundErrors := func(f *framework.Framework, ns, podName, desc string, timeout time.Duration, condition podCondition) error {
+		max_tries := 6               // 6 tries to waiting for the pod to restart
+		cooldown := 10 * time.Second // 10 sec to cooldown between each try
+		for i := 0; i < max_tries; i++ {
+			err := e2epod.WaitForPodCondition(f.ClientSet, ns, podName, desc, 5*time.Minute, condition)
+			if apierrors.IsNotFound(err) {
+				// pod not found,try again after cooldown
+				time.Sleep(cooldown)
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			return nil
+		}
+		return fmt.Errorf("Gave up after waiting %v for pod %q to be %q: pod is not found", timeout, podName, desc)
+	}
+
+	// waitForPodToFinishFullRestart waits for a the pod to finish it's reset cycle and returns.
+	waitForPodToFinishFullRestart := func(f *framework.Framework, pod *v1.Pod) {
+		err := e2epod.WaitForPodCondition(f.ClientSet, pod.Namespace, pod.Name, "not ready", 5*time.Minute, testutils.PodNotReady)
+		if err != nil {
+			framework.Failf("pod %v is not arrived to not-ready state: %v", pod.Name, err)
+		}
+		// during this stage on the restarting process we can encounter "pod not found" errors.
+		// this type of errors is valid because the pod is during restart so it will have a period that it will not be available.
+		// so we will use "WaitForPodConditionAllowNotFoundErrors" in order to handle properly those errors.
+		err = WaitForPodConditionAllowNotFoundErrors(f, pod.Namespace, pod.Name, "running and ready", 5*time.Minute, testutils.PodRunningReady)
+		if err != nil {
+			framework.Failf("pod %v is not arrived to running and ready state: %v", pod.Name, err)
+		}
+		return
+	}
+
 	table.DescribeTable("recovering from deleting db files while maintain connectivity",
 		func(db_pod_num int, DBFileNamesToDelete []string) {
 			if db_pod_num < haModeMinDb || db_pod_num > haModeMaxDb {
@@ -2317,4 +2483,41 @@ var _ = ginkgo.Describe("e2e delete databases", func() {
 		//table.Entry("when delete north db on ovnkube-db-2", 2, []string{northDBFileName}),
 		//table.Entry("when delete south db on ovnkube-db-2", 2, []string{southDBFileName}),
 	)
+
+	ginkgo.It("Should validate connectivity before and after deleting all the db-pods at once", func() {
+		dbPods, err := e2epod.GetPods(f.ClientSet, ovnNs, map[string]string{"name": databasePodPrefix})
+		if err != nil {
+			framework.Failf("Error: Failed to get pods, err: %v", err)
+		}
+		if len(dbPods) == 0 {
+			framework.Failf("Error: db pods not found")
+		}
+
+		framework.Logf("test simple connectivity from new pod to API server,before deleting db pods")
+		singlePodConnectivityTest(f, "before-delete-db-pods")
+
+		framework.Logf("deleting all the db pods")
+		for _, dbPod := range dbPods {
+			dbPodName := dbPod.Name
+			framework.Logf("deleting db pod: %v", dbPodName)
+			//delete the db-pod in order to emulate the pod restart
+			dbPod.Status.Message = "check"
+			deletePod(f, ovnNs, dbPodName)
+		}
+
+		framework.Logf("wait for all the pods to finish full restart")
+		var wg sync.WaitGroup
+		for _, pod := range dbPods {
+			wg.Add(1)
+			go func(pod v1.Pod) {
+				defer wg.Done()
+				waitForPodToFinishFullRestart(f, &pod)
+			}(pod)
+		}
+		wg.Wait()
+		framework.Logf("all the pods finish full restart")
+
+		framework.Logf("test simple connectivity from new pod to API server,after recovery")
+		singlePodConnectivityTest(f, "after-delete-db-pods")
+	})
 })

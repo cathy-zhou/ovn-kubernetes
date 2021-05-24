@@ -3,6 +3,7 @@
 package mocks
 
 import (
+	nettypes "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	egressfirewallv1 "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1"
 	egressipv1 "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressip/v1"
 	corev1 "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -219,6 +220,29 @@ func (_m *KubeInterface) GetNodes() (*v1.NodeList, error) {
 	return r0, r1
 }
 
+// GetPod provides a mock function with given fields: namespace, name
+func (_m *KubeInterface) GetPod(namespace, name string) (*v1.Pod, error) {
+	ret := _m.Called(namespace, name)
+
+	var r0 *v1.Pod
+	if rf, ok := ret.Get(0).(func(string, string) *v1.Pod); ok {
+		r0 = rf(namespace, name)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*v1.Pod)
+		}
+	}
+
+	var r1 error
+	if rf, ok := ret.Get(1).(func(string, string) error); ok {
+		r1 = rf(namespace, name)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // GetPods provides a mock function with given fields: namespace, labelSelector
 func (_m *KubeInterface) GetPods(namespace string, labelSelector metav1.LabelSelector) (*v1.PodList, error) {
 	ret := _m.Called(namespace, labelSelector)
@@ -235,6 +259,29 @@ func (_m *KubeInterface) GetPods(namespace string, labelSelector metav1.LabelSel
 	var r1 error
 	if rf, ok := ret.Get(1).(func(string, metav1.LabelSelector) error); ok {
 		r1 = rf(namespace, labelSelector)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// GetAllPods provides a mock function with given fields: namespace
+func (_m *KubeInterface) GetAllPods(namespace string) (*v1.PodList, error) {
+	ret := _m.Called(namespace)
+
+	var r0 *v1.PodList
+	if rf, ok := ret.Get(0).(func(string) *v1.PodList); ok {
+		r0 = rf(namespace)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*v1.PodList)
+		}
+	}
+
+	var r1 error
+	if rf, ok := ret.Get(1).(func(string) error); ok {
+		r1 = rf(namespace)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -312,6 +359,34 @@ func (_m *KubeInterface) UpdateEgressIP(eIP *egressipv1.EgressIP) error {
 	return r0
 }
 
+// UpdateNode provides a mock function with given fields: node
+func (_m *KubeInterface) UpdateNode(node *v1.Node) error {
+	ret := _m.Called(node)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(*v1.Node) error); ok {
+		r0 = rf(node)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// UpdatePod provides a mock function with given fields: pod
+func (_m *KubeInterface) UpdatePod(pod *v1.Pod) error {
+	ret := _m.Called(pod)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(*v1.Pod) error); ok {
+		r0 = rf(pod)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 // UpdateNodeStatus provides a mock function with given fields: node
 func (_m *KubeInterface) UpdateNodeStatus(node *v1.Node) error {
 	ret := _m.Called(node)
@@ -321,6 +396,68 @@ func (_m *KubeInterface) UpdateNodeStatus(node *v1.Node) error {
 		r0 = rf(node)
 	} else {
 		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// GetNetAttachDef provides a mock function with given fields: namespace, name
+func (_m *KubeInterface) GetNetAttachDef(namespace, name string) (*nettypes.NetworkAttachmentDefinition, error) {
+	ret := _m.Called(namespace, name)
+
+	var r0 *nettypes.NetworkAttachmentDefinition
+	if rf, ok := ret.Get(0).(func(string, string) *nettypes.NetworkAttachmentDefinition); ok {
+		r0 = rf(namespace, name)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*nettypes.NetworkAttachmentDefinition)
+		}
+	}
+
+	var r1 error
+	if rf, ok := ret.Get(1).(func(string, string) error); ok {
+		r1 = rf(namespace, name)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// CreateNetAttachDef provides a mock function with given fields: namespace, netattchdef
+func (_m *KubeInterface) CreateNetAttachDef(namespace string, netattchdef *nettypes.NetworkAttachmentDefinition) (*nettypes.NetworkAttachmentDefinition, error) {
+	ret := _m.Called(namespace, netattchdef)
+
+	var r0 *nettypes.NetworkAttachmentDefinition
+	if rf, ok := ret.Get(0).(func(string, *nettypes.NetworkAttachmentDefinition) *nettypes.NetworkAttachmentDefinition); ok {
+		r0 = rf(namespace, netattchdef)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*nettypes.NetworkAttachmentDefinition)
+		}
+	}
+
+	var r1 error
+	if rf, ok := ret.Get(1).(func(string, *nettypes.NetworkAttachmentDefinition) error); ok {
+		r1 = rf(namespace, netattchdef)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// CreateNetAttachDef provides a mock function with given fields: namespace, name
+func (_m *KubeInterface) DeleteNetAttachDef(namespace, name string) error {
+	ret := _m.Called(namespace, name)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, string) error); ok {
+		r0 = rf(namespace, name)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Error(1)
+		}
 	}
 
 	return r0

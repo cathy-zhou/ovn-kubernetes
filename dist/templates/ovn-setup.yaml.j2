@@ -88,6 +88,16 @@ rules:
   resources:
   - customresourcedefinitions
   verbs: ["list", "get", "watch"]
+- apiGroups:
+  - k8s.cni.cncf.io
+  resources:
+  - network-attachment-definitions
+  verbs: ["list", "get", "watch"]
+- apiGroups:
+  - k8s.cni.cncf.io
+  resources:
+  - multi-networkpolicies
+  verbs: ["list", "get", "watch"]
 
 
 ---
@@ -116,3 +126,18 @@ data:
   svc_cidr:      "{{ svc_cidr }}"
   k8s_apiserver: "{{ k8s_apiserver }}"
   mtu:           "{{ mtu_value }}"
+  host_network_namespace: "{{ host_network_namespace }}"
+
+
+---
+# ovn-host-network-namespace.yaml
+#
+# Create the namespace for classifying host network traffic.
+#
+# This provisioning is done as part of installation after the cluster is
+# up and before the ovn daemonsets are created.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: "{{ host_network_namespace }}"
