@@ -141,7 +141,7 @@ var _ = ginkgo.Describe("OVN Namespace Operations", func() {
 			config.Gateway.NodeportEnable = true
 			var err error
 			config.Default.RawClusterSubnets = clusterCIDR
-			config.Default.ClusterSubnets, err = config.ParseClusterSubnetEntries(clusterCIDR)
+			config.Default.ClusterSubnets, err = config.ParseClusterSubnetEntries(clusterCIDR, true)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			node1 := tNode{

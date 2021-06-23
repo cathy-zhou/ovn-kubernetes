@@ -347,7 +347,7 @@ func (mc *OvnMHController) NewOvnController(nadInfo *util.NetAttachDefInfo,
 		return nil, fmt.Errorf("netcidr: %s is not specified for network %s", nadInfo.NetCidr, nadInfo.NetName)
 	}
 
-	clusterIPNet, err := config.ParseClusterSubnetEntries(nadInfo.NetCidr)
+	clusterIPNet, err := config.ParseClusterSubnetEntries(nadInfo.NetCidr, nadInfo.TopoType != ovntypes.LocalnetAttachDefTopoType)
 	if err != nil {
 		return nil, fmt.Errorf("cluster subnet %s for network %s is invalid: %v", nadInfo.NetCidr, nadInfo.NetName, err)
 	}
@@ -356,13 +356,19 @@ func (mc *OvnMHController) NewOvnController(nadInfo *util.NetAttachDefInfo,
 	if nadInfo.IsSecondary {
 		stopChan = make(chan struct{})
 	}
+	var lsManager *lsm.LogicalSwitchManager
+	if nadInfo.TopoType != ovntypes.LocalnetAttachDefTopoType {
+		lsManager = lsm.NewLogicalSwitchManager()
+	} else {
+		lsManager = lsm.NewLocalnetSwitchManager()
+	}
 	oc := &Controller{
 		mc:                    mc,
 		stopChan:              stopChan,
 		nadInfo:               nadInfo,
 		clusterSubnets:        clusterIPNet,
 		masterSubnetAllocator: subnetallocator.NewSubnetAllocator(),
-		lsManager:             lsm.NewLogicalSwitchManager(),
+		lsManager:             lsManager,
 		logicalPortCache:      newPortCache(stopChan),
 		namespaces:            make(map[string]*namespaceInfo),
 		namespacesMutex:       sync.Mutex{},
@@ -948,7 +954,8 @@ func (mc *OvnMHController) initOvnController(netattachdef *nettypes.NetworkAttac
 	v, ok := mc.nonDefaultOvnControllers.Load(nadInfo.NetName)
 	if ok {
 		oc := v.(*Controller)
-		if oc.nadInfo.NetCidr != nadInfo.NetCidr || oc.nadInfo.MTU != nadInfo.MTU {
+		if oc.nadInfo.NetCidr != nadInfo.NetCidr || oc.nadInfo.MTU != nadInfo.MTU || oc.nadInfo.TopoType != nadInfo.TopoType ||
+			oc.nadInfo.VlanId != nadInfo.VlanId {
 			return nil, fmt.Errorf("network attachment definition %s/%s does not share the same CNI config of name %s",
 				netattachdef.Namespace, netattachdef.Name, nadInfo.NetName)
 		} else {
@@ -1068,20 +1075,22 @@ func (mc *OvnMHController) deleteNetworkAttachDefinition(netattachdef *nettypes.
 
 	oc.deleteMaster()
 
-	existingNodes, err := oc.mc.kube.GetNodes()
-	if err != nil {
-		klog.Errorf("Error in initializing/fetching subnets: %v", err)
-		return
-	}
-
-	// remove hostsubnet annoation for this network
-	for _, node := range existingNodes.Items {
-		err := oc.deleteNodeLogicalNetwork(node.Name)
+	if oc.nadInfo.TopoType != ovntypes.LocalnetAttachDefTopoType {
+		existingNodes, err := oc.mc.kube.GetNodes()
 		if err != nil {
-			klog.Error("Failed to delete node %s for network %s: %v", node.Name, oc.nadInfo.NetName, err)
+			klog.Errorf("Error in initializing/fetching subnets: %v", err)
+			return
 		}
-		_ = oc.updateNodeAnnotationWithRetry(node.Name, []*net.IPNet{})
-		oc.lsManager.DeleteNode(nadInfo.Prefix + node.Name)
+
+		// remove hostsubnet annoation for this network
+		for _, node := range existingNodes.Items {
+			err := oc.deleteNodeLogicalNetwork(node.Name)
+			if err != nil {
+				klog.Error("Failed to delete node %s for network %s: %v", node.Name, oc.nadInfo.NetName, err)
+			}
+			_ = oc.updateNodeAnnotationWithRetry(node.Name, []*net.IPNet{})
+			oc.lsManager.DeleteNode(nadInfo.Prefix + node.Name)
+		}
 	}
 
 	mc.nonDefaultOvnControllers.Delete(nadInfo.NetName)
@@ -1144,10 +1153,15 @@ func (mc *OvnMHController) syncNetworkAttachDefinition(netattachdefs []interface
 
 		nodeName := strings.TrimPrefix(nodeSwitch.Name, netPrefix)
 		oc := &Controller{mc: mc, nadInfo: &util.NetAttachDefInfo{NetNameInfo: util.NetNameInfo{NetName: netName, Prefix: netPrefix, IsSecondary: true}}}
-		if err := oc.deleteNodeLogicalNetwork(nodeName); err != nil {
-			klog.Errorf("Error deleting node %s logical network: %v", nodeName, err)
+		if nodeName == ovntypes.OVNLocalnetSwitch {
+			oc.nadInfo.TopoType = ovntypes.LocalnetAttachDefTopoType
+			oc.deleteMaster()
+		} else {
+			if err := oc.deleteNodeLogicalNetwork(nodeName); err != nil {
+				klog.Errorf("Error deleting node %s logical network: %v", nodeName, err)
+			}
+			_ = oc.updateNodeAnnotationWithRetry(nodeName, []*net.IPNet{})
 		}
-		_ = oc.updateNodeAnnotationWithRetry(nodeName, []*net.IPNet{})
 	}
 	p2 := func(item *nbdb.LogicalRouter) bool {
 		return item.ExternalIDs["k8s-cluster-router"] == "yes"
