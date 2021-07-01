@@ -23,8 +23,8 @@ const serverSocketPath string = serverRunDir + "/" + serverSocketName
 // PodInterfaceInfo consists of interface info result from cni server if cni client configure's interface
 type PodInterfaceInfo struct {
 	util.PodAnnotation
+	util.NetNameInfo
 
-	MTU         int   `json:"mtu"`
 	Ingress     int64 `json:"ingress"`
 	Egress      int64 `json:"egress"`
 	CheckExtIDs bool  `json:"check-external-ids"`

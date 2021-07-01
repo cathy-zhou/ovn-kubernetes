@@ -4,10 +4,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strconv"
 
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
+
+	netattachdefapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
+	netattachdefutils "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/utils"
 	"k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 	utilnet "k8s.io/utils/net"
+)
+
+const (
+	defaultMultusNamespace = "kube-system"
+	defaultNetAnnot        = "v1.multus-cni.io/default-network"
 )
 
 // This handles the "k8s.ovn.org/pod-networks" annotation on Pods, used to pass
@@ -42,8 +52,6 @@ import (
 const (
 	// OvnPodAnnotationName is the constant string representing the POD annotation key
 	OvnPodAnnotationName = "k8s.ovn.org/pod-networks"
-	// OvnPodDefaultNetwork is the constant string representing the first OVN interface to the Pod
-	OvnPodDefaultNetwork = "default"
 )
 
 // PodAnnotation describes the assigned network details for a single pod network. (The
@@ -58,6 +66,8 @@ type PodAnnotation struct {
 	Gateways []net.IP
 	// Routes are additional routes to add to the pod's network namespace
 	Routes []PodRoute
+	// MTU to be used on the pod network
+	MTU int
 }
 
 // PodRoute describes any routes to be added to the pod's network namespace
@@ -74,6 +84,7 @@ type podAnnotation struct {
 	MAC      string     `json:"mac_address"`
 	Gateways []string   `json:"gateway_ips,omitempty"`
 	Routes   []podRoute `json:"routes,omitempty"`
+	MTU      string     `json:"mtu,omitempty"`
 
 	IP      string `json:"ip_address,omitempty"`
 	Gateway string `json:"gateway_ip,omitempty"`
@@ -87,9 +98,23 @@ type podRoute struct {
 
 // MarshalPodAnnotation returns a JSON-formatted annotation describing the pod's
 // network details
-func MarshalPodAnnotation(podInfo *PodAnnotation) (map[string]string, error) {
+func MarshalPodAnnotation(pannotations *map[string]string, podInfo *PodAnnotation, netName string) error {
+	annotations := *pannotations
+	if annotations == nil {
+		annotations = make(map[string]string)
+		*pannotations = annotations
+	}
+	podNetworks := make(map[string]podAnnotation)
+	ovnAnnotation, ok := annotations[OvnPodAnnotationName]
+	if ok {
+		if err := json.Unmarshal([]byte(ovnAnnotation), &podNetworks); err != nil {
+			return fmt.Errorf("failed to unmarshal ovn pod annotation %q: %v",
+				ovnAnnotation, err)
+		}
+	}
 	pa := podAnnotation{
 		MAC: podInfo.MAC.String(),
+		MTU: fmt.Sprintf("%d", podInfo.MTU),
 	}
 
 	if len(podInfo.IPs) == 1 {
@@ -97,7 +122,7 @@ func MarshalPodAnnotation(podInfo *PodAnnotation) (map[string]string, error) {
 		if len(podInfo.Gateways) == 1 {
 			pa.Gateway = podInfo.Gateways[0].String()
 		} else if len(podInfo.Gateways) > 1 {
-			return nil, fmt.Errorf("bad podNetwork data: single-stack network can only have a single gateway")
+			return fmt.Errorf("bad podNetwork data: single-stack network can only have a single gateway")
 		}
 	}
 	for _, ip := range podInfo.IPs {
@@ -109,7 +134,7 @@ func MarshalPodAnnotation(podInfo *PodAnnotation) (map[string]string, error) {
 
 	for _, r := range podInfo.Routes {
 		if r.Dest.IP.IsUnspecified() {
-			return nil, fmt.Errorf("bad podNetwork data: default route %v should be specified as gateway", r)
+			return fmt.Errorf("bad podNetwork data: default route %v should be specified as gateway", r)
 		}
 		var nh string
 		if r.NextHop != nil {
@@ -120,22 +145,17 @@ func MarshalPodAnnotation(podInfo *PodAnnotation) (map[string]string, error) {
 			NextHop: nh,
 		})
 	}
-
-	podNetworks := map[string]podAnnotation{
-		OvnPodDefaultNetwork: pa,
-	}
+	podNetworks[netName] = pa
 	bytes, err := json.Marshal(podNetworks)
 	if err != nil {
-		klog.Errorf("Failed marshaling podNetworks map %v", podNetworks)
-		return nil, err
+		return fmt.Errorf("failed marshaling pod annotation map %v: %v", podNetworks, err)
 	}
-	return map[string]string{
-		OvnPodAnnotationName: string(bytes),
-	}, nil
+	annotations[OvnPodAnnotationName] = string(bytes)
+	return nil
 }
 
-// UnmarshalPodAnnotation returns the default network info from pod.Annotations
-func UnmarshalPodAnnotation(annotations map[string]string) (*PodAnnotation, error) {
+// UnmarshalPodAnnotation returns the specified network info from pod.Annotations
+func UnmarshalPodAnnotation(annotations map[string]string, netName string) (*PodAnnotation, error) {
 	ovnAnnotation, ok := annotations[OvnPodAnnotationName]
 	if !ok {
 		return nil, newAnnotationNotSetError("could not find OVN pod annotation in %v", annotations)
@@ -146,7 +166,11 @@ func UnmarshalPodAnnotation(annotations map[string]string) (*PodAnnotation, erro
 		return nil, fmt.Errorf("failed to unmarshal ovn pod annotation %q: %v",
 			ovnAnnotation, err)
 	}
-	tempA := podNetworks[OvnPodDefaultNetwork]
+	tempA, ok := podNetworks[netName]
+	if !ok {
+		return nil, fmt.Errorf("no ovn pod annotation for network %s: %q",
+			netName, ovnAnnotation)
+	}
 	a := &tempA
 
 	podAnnotation := &PodAnnotation{}
@@ -155,6 +179,15 @@ func UnmarshalPodAnnotation(annotations map[string]string) (*PodAnnotation, erro
 	podAnnotation.MAC, err = net.ParseMAC(a.MAC)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse pod MAC %q: %v", a.MAC, err)
+	}
+
+	if len(a.MTU) == 0 {
+		podAnnotation.MTU = config.Default.MTU
+	} else {
+		podAnnotation.MTU, err = strconv.Atoi(a.MTU)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse pod network MTU %q: %v", a.MTU, err)
+		}
 	}
 
 	if len(a.IPs) == 0 {
@@ -212,11 +245,12 @@ func UnmarshalPodAnnotation(annotations map[string]string) (*PodAnnotation, erro
 	return podAnnotation, nil
 }
 
-// GetAllPodIPs returns the pod's IP addresses, first from the OVN annotation
-// and then falling back to the Pod Status IPs. This function is intended to
-// also return IPs for HostNetwork and other non-OVN-IPAM-ed pods.
-func GetAllPodIPs(pod *v1.Pod) ([]net.IP, error) {
-	annotation, err := UnmarshalPodAnnotation(pod.Annotations)
+// GetAllPodIPs returns the pod's network IP addresses for specified network,
+// first from the OVN annotation and then falling back to the Pod Status IPs.
+// This function is intended to also return IPs for HostNetwork and other
+// non-OVN-IPAM-ed pods.
+func GetAllPodIPs(pod *v1.Pod, netNameInfo NetNameInfo) ([]net.IP, error) {
+	annotation, _ := UnmarshalPodAnnotation(pod.Annotations, netNameInfo.NetName)
 	if annotation != nil {
 		// Use the OVN annotation if valid
 		ips := make([]net.IP, 0, len(annotation.IPs))
@@ -226,10 +260,15 @@ func GetAllPodIPs(pod *v1.Pod) ([]net.IP, error) {
 		return ips, nil
 	}
 
+	if netNameInfo.NotDefault {
+		return []net.IP{}, fmt.Errorf("no pod annotation of pod %s/%s for network %s",
+			pod.Namespace, pod.Name, netNameInfo.NetName)
+	}
+
 	// return error if there are no IPs in pod status
 	if len(pod.Status.PodIPs) == 0 {
 		if pod.Status.PodIP == "" {
-			return nil, fmt.Errorf("no pod IPs found on pod %s: %v", pod.Name, err)
+			return nil, fmt.Errorf("no pod IPs found on pod %s/%s", pod.Namespace, pod.Name)
 		}
 		// Kubelets < 1.16 only set podIP
 		return []net.IP{net.ParseIP(pod.Status.PodIP)}, nil
@@ -246,4 +285,40 @@ func GetAllPodIPs(pod *v1.Pod) ([]net.IP, error) {
 		ips = append(ips, ip)
 	}
 	return ips, nil
+}
+
+// GetK8sPodDefaultNetwork get pod default network from annotations
+func GetK8sPodDefaultNetwork(pod *v1.Pod) (*netattachdefapi.NetworkSelectionElement, error) {
+	var netAnnot string
+
+	netAnnot, ok := pod.Annotations[defaultNetAnnot]
+	if !ok {
+		return nil, nil
+	}
+
+	networks, err := netattachdefutils.ParseNetworkAnnotation(netAnnot, defaultMultusNamespace)
+	if err != nil {
+		return nil, fmt.Errorf("GetK8sPodDefaultNetwork: failed to parse CRD object: %v", err)
+	}
+	if len(networks) > 1 {
+		return nil, fmt.Errorf("GetK8sPodDefaultNetwork: more than one default network is specified: %s", netAnnot)
+	}
+
+	if len(networks) == 1 {
+		return networks[0], nil
+	}
+
+	return nil, nil
+}
+
+// GetK8sPodAllNetworks get pod's all network NetworkSelectionElement from k8s.v1.cni.cncf.io/networks annotation
+func GetK8sPodAllNetworks(pod *v1.Pod) (*[]*netattachdefapi.NetworkSelectionElement, error) {
+	networks, err := netattachdefutils.ParsePodNetworkAnnotation(pod)
+	if err != nil {
+		if _, ok := err.(*netattachdefapi.NoK8sNetworkError); !ok {
+			return nil, fmt.Errorf("failed to get all NetworkSelectionElements for pod %s/%s: %v", pod.Namespace, pod.Name, err)
+		}
+		networks = []*netattachdefapi.NetworkSelectionElement{}
+	}
+	return &networks, nil
 }
