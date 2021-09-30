@@ -431,7 +431,7 @@ var _ = ginkgo.Describe("Master Operations", func() {
 			updatedNode, err := fakeClient.KubeClient.CoreV1().Nodes().Get(context.TODO(), nodeName, metav1.GetOptions{})
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-			subnetsFromAnnotation, err := util.ParseNodeHostSubnetAnnotation(updatedNode)
+			subnetsFromAnnotation, err := util.ParseNodeHostSubnetAnnotation(updatedNode, types.DefaultNetworkName)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(subnetsFromAnnotation[0].String()).To(gomega.Equal(nodeSubnet))
 
@@ -536,7 +536,7 @@ var _ = ginkgo.Describe("Master Operations", func() {
 			updatedNode, err := fakeClient.KubeClient.CoreV1().Nodes().Get(context.TODO(), nodeName, metav1.GetOptions{})
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-			subnetsFromAnnotation, err := util.ParseNodeHostSubnetAnnotation(updatedNode)
+			subnetsFromAnnotation, err := util.ParseNodeHostSubnetAnnotation(updatedNode, types.DefaultNetworkName)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(subnetsFromAnnotation[0].String()).To(gomega.Equal(nodeSubnet))
 
@@ -639,7 +639,7 @@ var _ = ginkgo.Describe("Master Operations", func() {
 			updatedNode, err := fakeClient.KubeClient.CoreV1().Nodes().Get(context.TODO(), nodeName, metav1.GetOptions{})
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-			subnetsFromAnnotation, err := util.ParseNodeHostSubnetAnnotation(updatedNode)
+			subnetsFromAnnotation, err := util.ParseNodeHostSubnetAnnotation(updatedNode, types.DefaultNetworkName)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(subnetsFromAnnotation[0].String()).To(gomega.Equal(nodeSubnet))
 
