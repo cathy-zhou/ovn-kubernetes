@@ -38,8 +38,9 @@ var _ = Describe("ACL Logging for NetworkPolicy", func() {
 	fr := wrappedTestFramework(namespacePrefix)
 
 	var (
-		nsName string
-		pods   []v1.Pod
+		nsName          string
+		pods            []v1.Pod
+		sharedPortGroup string
 	)
 
 	BeforeEach(func() {
@@ -50,8 +51,9 @@ var _ = Describe("ACL Logging for NetworkPolicy", func() {
 		Expect(setNamespaceACLLogSeverity(fr, namespace, initialDenyACLSeverity, initialAllowACLSeverity)).To(Succeed())
 
 		By("creating a \"default deny\" network policy")
-		_, err = makeDenyAllPolicy(fr, nsName, denyAllPolicyName)
+		policy, err := makeDenyAllPolicy(fr, nsName, denyAllPolicyName)
 		Expect(err).NotTo(HaveOccurred())
+		sharedPortGroup = getSharedPortGroupName(policy)
 
 		By("creating pods")
 		cmd := []string{"/bin/bash", "-c", "/agnhost netexec --http-port 8000"}
@@ -84,6 +86,9 @@ var _ = Describe("ACL Logging for NetworkPolicy", func() {
 		clientPodScheduledPodName := pods[pokerPodIndex].Spec.NodeName
 		// Retry here in the case where OVN acls have not been programmed yet
 		composedPolicyNameRegex := fmt.Sprintf("%s_%s", nsName, denyAllPolicyName)
+		if sharedPortGroup != "" {
+			composedPolicyNameRegex = fmt.Sprintf("%s_%s", sharedPortGroup, "DefaultDeny")
+		}
 		Eventually(func() (bool, error) {
 			return assertAclLogs(
 				clientPodScheduledPodName,
@@ -124,6 +129,9 @@ var _ = Describe("ACL Logging for NetworkPolicy", func() {
 		It("the ACL logs are updated accordingly", func() {
 			clientPodScheduledPodName := pods[pokerPodIndex].Spec.NodeName
 			composedPolicyNameRegex := fmt.Sprintf("%s_%s", nsName, denyAllPolicyName)
+			if sharedPortGroup != "" {
+				composedPolicyNameRegex = fmt.Sprintf("%s_%s", sharedPortGroup, "DefaultDeny")
+			}
 			Eventually(func() (bool, error) {
 				return assertAclLogs(
 					clientPodScheduledPodName,
@@ -456,4 +464,14 @@ func setNamespaceACLLogSeverity(fr *framework.Framework, namespaceToUpdate *v1.N
 
 	_, err := fr.ClientSet.CoreV1().Namespaces().Update(context.TODO(), namespaceToUpdate, metav1.UpdateOptions{})
 	return err
+}
+
+// now we only support portGroup sharing if the policy's local pod selector is empty.
+func getSharedPortGroupName(policy *knet.NetworkPolicy) string {
+	sel := &policy.Spec.PodSelector
+	if len(sel.MatchLabels) == 0 && len(sel.MatchExpressions) == 0 {
+		// now we only support empty podSelector policy to share the portGroup
+		return policy.Namespace + "_" + "Share_PortGrp"
+	}
+	return ""
 }
