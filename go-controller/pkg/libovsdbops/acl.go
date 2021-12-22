@@ -159,9 +159,9 @@ func UpdateACLsDirection(nbClient libovsdbclient.Client, acls ...*nbdb.ACL) erro
 	return err
 }
 
-// DeleteACLs deletes the provided ACLs
-func DeleteACLs(nbClient libovsdbclient.Client, acls ...*nbdb.ACL) error {
+func DeleteACLsOps(nbClient libovsdbclient.Client, ops []libovsdb.Operation, acls ...*nbdb.ACL) ([]libovsdb.Operation, error) {
 	opModels := make([]operationModel, 0, len(acls))
+
 	for i := range acls {
 		// can't use i in the predicate, for loop replaces it in-memory
 		acl := acls[i]
@@ -173,7 +173,17 @@ func DeleteACLs(nbClient libovsdbclient.Client, acls ...*nbdb.ACL) error {
 		}
 		opModels = append(opModels, opModel)
 	}
-
 	modelClient := newModelClient(nbClient)
-	return modelClient.Delete(opModels...)
+	return modelClient.DeleteOps(ops, opModels...)
+}
+
+// DeleteACLs deletes the provided ACLs
+func DeleteACLs(nbClient libovsdbclient.Client, acls ...*nbdb.ACL) error {
+	ops, err := DeleteACLsOps(nbClient, nil, acls...)
+	if err != nil {
+		return err
+	}
+
+	_, err = TransactAndCheck(nbClient, ops)
+	return err
 }

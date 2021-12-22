@@ -228,7 +228,8 @@ func hasResourceAnUpdateFunc(objType reflect.Type) bool {
 		factory.NodeType,
 		factory.PeerPodSelectorType,
 		factory.PeerPodForNamespaceAndPodSelectorType,
-		factory.LocalPodSelectorType:
+		factory.LocalPodSelectorType,
+		factory.SharedPgLocalPodSelectorType:
 		return true
 	}
 	return false
@@ -288,7 +289,8 @@ func areResourcesEqual(objType reflect.Type, obj1, obj2 interface{}) (bool, erro
 	case factory.PodType,
 		factory.PeerPodSelectorType,
 		factory.PeerPodForNamespaceAndPodSelectorType,
-		factory.LocalPodSelectorType:
+		factory.LocalPodSelectorType,
+		factory.SharedPgLocalPodSelectorType:
 		// For these types, there was no old vs new obj comparison in the original update code,
 		// so pretend they're always different so that the update code gets executed
 		return false, nil
@@ -343,7 +345,8 @@ func getResourceKey(objType reflect.Type, obj interface{}) (string, error) {
 	case factory.PodType,
 		factory.PeerPodSelectorType,
 		factory.PeerPodForNamespaceAndPodSelectorType,
-		factory.LocalPodSelectorType:
+		factory.LocalPodSelectorType,
+		factory.SharedPgLocalPodSelectorType:
 		pod, ok := obj.(*kapi.Pod)
 		if !ok {
 			return "", fmt.Errorf("could not cast %T object to *kapi.Pod", obj)
@@ -421,7 +424,8 @@ func (oc *Controller) getResourceFromInformerCache(objType reflect.Type, key str
 	case factory.PodType,
 		factory.PeerPodSelectorType,
 		factory.PeerPodForNamespaceAndPodSelectorType,
-		factory.LocalPodSelectorType:
+		factory.LocalPodSelectorType,
+		factory.SharedPgLocalPodSelectorType:
 		namespace, name := splitNamespacedName(key)
 		obj, err = oc.watchFactory.GetPod(namespace, name)
 
@@ -638,6 +642,8 @@ func (oc *Controller) addResource(objectsToRetry *retryObjs, obj interface{}, fr
 			extraParameters.portGroupIngressDenyName,
 			extraParameters.portGroupEgressDenyName,
 			obj)
+	case factory.SharedPgLocalPodSelectorType:
+		return oc.handleSharedPortGroupLocalPodSelectorAddFunc(objectsToRetry.extraParameters.(*sharedPortGroupInfo), obj)
 	case factory.EgressFirewallType:
 		var err error
 		egressFirewall := obj.(*egressfirewall.EgressFirewall).DeepCopy()
@@ -711,6 +717,9 @@ func (oc *Controller) updateResource(objectsToRetry *retryObjs, oldObj, newObj i
 			extraParameters.portGroupIngressDenyName,
 			extraParameters.portGroupEgressDenyName,
 			newObj)
+
+	case factory.SharedPgLocalPodSelectorType:
+		return oc.handleSharedPortGroupLocalPodSelectorAddFunc(objectsToRetry.extraParameters.(*sharedPortGroupInfo), newObj)
 	}
 
 	return fmt.Errorf("no update function for object type %v", objectsToRetry.oType)
@@ -810,6 +819,9 @@ func (oc *Controller) deleteResource(objectsToRetry *retryObjs, obj, cachedObj i
 			extraParameters.portGroupIngressDenyName,
 			extraParameters.portGroupEgressDenyName,
 			obj)
+
+	case factory.SharedPgLocalPodSelectorType:
+		return oc.handleSharedPortGroupLocalPodSelectorDelFunc(objectsToRetry.extraParameters.(*sharedPortGroupInfo), obj)
 
 	case factory.EgressFirewallType:
 		egressFirewall := obj.(*egressfirewall.EgressFirewall)
@@ -982,7 +994,8 @@ func (oc *Controller) getSyncResourcesFunc(r *retryObjs) (func([]interface{}) er
 			return nil
 		}
 
-	case factory.LocalPodSelectorType:
+	case factory.LocalPodSelectorType,
+		factory.SharedPgLocalPodSelectorType:
 		syncFunc = r.syncFunc
 
 	case factory.EgressFirewallType:
@@ -1002,7 +1015,8 @@ func (oc *Controller) isObjectInTerminalState(objType reflect.Type, obj interfac
 	case factory.PodType,
 		factory.PeerPodSelectorType,
 		factory.PeerPodForNamespaceAndPodSelectorType,
-		factory.LocalPodSelectorType:
+		factory.LocalPodSelectorType,
+		factory.SharedPgLocalPodSelectorType:
 		pod := obj.(*kapi.Pod)
 		return util.PodCompleted(pod)
 
