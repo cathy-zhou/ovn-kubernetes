@@ -388,6 +388,7 @@ func (oc *Controller) ensureNamespaceLocked(ns string, readOnly bool, namespace 
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create address set for namespace: %s, error: %v", ns, err)
 		}
+
 		oc.namespaces[ns] = nsInfo
 	} else {
 		nsInfoExisted = true
@@ -530,7 +531,7 @@ func (oc *Controller) createNamespaceAddrSetAllPods(ns string) (addressset.Addre
 	// Get all the pods in the namespace and append their IP to the address_set
 	existingPods, err := oc.watchFactory.GetPods(ns)
 	if err != nil {
-		klog.Errorf("Failed to get all the pods (%v)", err)
+		klog.Errorf("Failed to get all the pods of namespace %s: (%v)", ns, err)
 	} else {
 		ips = make([]net.IP, 0, len(existingPods))
 		for _, pod := range existingPods {

@@ -66,6 +66,19 @@ type ACLLoggingLevels struct {
 	Deny  string `json:"deny,omitempty"`
 }
 
+type sharedPortGroupInfo struct {
+	localPodSel      string
+	pgName           string
+	sharedPolicyCnt  int // number of policies sharing the Per-namespace shared ingress port group
+	lspIngressRefCnt int
+	lspEgressRefCnt  int
+	ingressDenyAcl   *nbdb.ACL
+	ingressAllowACL  *nbdb.ACL
+	egressDenyAcl    *nbdb.ACL
+	egressAllowACL   *nbdb.ACL
+	podHandler       *factory.Handler
+}
+
 // namespaceInfo contains information related to a Namespace. Use oc.getNamespaceLocked()
 // or oc.waitForNamespaceLocked() to get a locked namespaceInfo for a Namespace, and call
 // nsInfo.Unlock() on it when you are done with it. (No code outside of the code that
@@ -136,6 +149,10 @@ type Controller struct {
 
 	externalGWCache map[ktypes.NamespacedName]*externalRouteInfo
 	exGWCacheMutex  sync.RWMutex
+
+	// Info about policy-shared portGroup. key is <namespace>_<podSelectorString>
+	spgInfoMap   map[string]*sharedPortGroupInfo
+	spgInfoMutex sync.Mutex
 
 	// egressFirewalls is a map of namespaces and the egressFirewall attached to it
 	egressFirewalls sync.Map
@@ -289,6 +306,8 @@ func NewOvnController(ovnClient *util.OVNClientset, wf *factory.WatchFactory, st
 		svcFactory:               svcFactory,
 		modelClient:              modelClient,
 		metricsRecorder:          metrics.NewControlPlaneRecorder(libovsdbOvnSBClient),
+		spgInfoMap:               make(map[string]*sharedPortGroupInfo),
+		spgInfoMutex:             sync.Mutex{},
 	}
 }
 
