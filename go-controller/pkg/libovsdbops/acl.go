@@ -205,6 +205,45 @@ func CreateOrUpdateACLsOps(nbClient libovsdbclient.Client, ops []libovsdb.Operat
 	return ops, nil
 }
 
+func deleteACLOps(nbClient libovsdbclient.Client, ops []libovsdb.Operation, acl *nbdb.ACL) ([]libovsdb.Operation, error) {
+	if ops == nil {
+		ops = []libovsdb.Operation{}
+	}
+
+	err := findACL(nbClient, acl)
+	if err == libovsdbclient.ErrNotFound {
+		// noop
+		return ops, nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	op, err := nbClient.Where(acl).Delete()
+	if err != nil {
+		return nil, err
+	}
+	ops = append(ops, op...)
+	return ops, nil
+}
+
+func DeleteACLsOps(nbClient libovsdbclient.Client, ops []libovsdb.Operation, acls ...*nbdb.ACL) ([]libovsdb.Operation, error) {
+	if ops == nil {
+		ops = []libovsdb.Operation{}
+	}
+
+	for _, acl := range acls {
+		var err error
+		ops, err = deleteACLOps(nbClient, ops, acl)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return ops, nil
+}
+
 func CreateOrUpdateACLs(nbClient libovsdbclient.Client, acls ...*nbdb.ACL) error {
 	ops, err := CreateOrUpdateACLsOps(nbClient, nil, acls...)
 	if err != nil {
