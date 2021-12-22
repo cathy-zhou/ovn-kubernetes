@@ -34,8 +34,9 @@ var _ = Describe("ACL Logging", func() {
 	fr := framework.NewDefaultFramework(namespacePrefix)
 
 	var (
-		nsName string
-		pods   []v1.Pod
+		nsName          string
+		pods            []v1.Pod
+		sharedPortGroup string
 	)
 
 	setNamespaceACLLogSeverity := func(namespaceToUpdate *v1.Namespace, desiredDenyLogLevel string, desiredAllowLogLevel string) error {
@@ -58,8 +59,9 @@ var _ = Describe("ACL Logging", func() {
 		Expect(setNamespaceACLLogSeverity(namespace, initialDenyACLSeverity, initialAllowACLSeverity)).To(Succeed())
 
 		By("creating a \"default deny\" network policy")
-		_, err = makeDenyAllPolicy(fr, nsName, denyAllPolicyName)
+		policy, err := makeDenyAllPolicy(fr, nsName, denyAllPolicyName)
 		Expect(err).NotTo(HaveOccurred())
+		sharedPortGroup = getSharedPortGroupName(policy)
 
 		By("creating pods")
 		cmd := []string{"/bin/bash", "-c", "/agnhost netexec --http-port 8000"}
@@ -96,7 +98,7 @@ var _ = Describe("ACL Logging", func() {
 				clientPodScheduledPodName,
 				nsName,
 				denyAllPolicyName,
-				initialDenyACLSeverity)
+				initialDenyACLSeverity, sharedPortGroup)
 		}, maxPokeRetries*pokeInterval, pokeInterval).Should(BeTrue())
 	})
 
@@ -135,7 +137,7 @@ var _ = Describe("ACL Logging", func() {
 					clientPodScheduledPodName,
 					nsName,
 					denyAllPolicyName,
-					updatedAllowACLLogSeverity)
+					updatedAllowACLLogSeverity, sharedPortGroup)
 			}, maxPokeRetries*pokeInterval, pokeInterval).Should(BeTrue())
 		})
 	})
@@ -161,4 +163,14 @@ func waitForACLLoggingPod(f *framework.Framework, namespace string, podName stri
 		podIP := pod.Status.PodIP
 		return podIP != "" && pod.Status.Phase != v1.PodPending, nil
 	})
+}
+
+// now we only support portGroup sharing if the policy's local pod selector is empty.
+func getSharedPortGroupName(policy *knet.NetworkPolicy) string {
+	sel := &policy.Spec.PodSelector
+	if len(sel.MatchLabels) == 0 && len(sel.MatchExpressions) == 0 {
+		// now we only support empty podSelector policy to share the portGroup
+		return policy.Namespace + "_" + "Share_PortGrp"
+	}
+	return ""
 }
