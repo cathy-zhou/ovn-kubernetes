@@ -656,7 +656,7 @@ func pokePod(fr *framework.Framework, srcPodName string, dstPodIP string) error 
 	return fmt.Errorf("http request failed; stdout: %s, err: %v", stdout+stderr, err)
 }
 
-func assertDenyLogs(targetNodeName string, namespace string, policyName string, expectedAclSeverity string) (bool, error) {
+func assertDenyLogs(targetNodeName string, namespace string, policyName string, expectedAclSeverity, sharedPortGroup string) (bool, error) {
 	framework.Logf("collecting the ovn-controller logs for node: %s", targetNodeName)
 	targetNodeLog, err := runCommand([]string{"docker", "exec", targetNodeName, "grep", "acl_log", ovnControllerLogPath}...)
 	if err != nil {
@@ -664,6 +664,9 @@ func assertDenyLogs(targetNodeName string, namespace string, policyName string, 
 	}
 
 	composedPolicyName := fmt.Sprintf("%s_%s", namespace, policyName)
+	if sharedPortGroup != "" {
+		composedPolicyName = fmt.Sprintf("%s_%s", sharedPortGroup, "DefaultDeny")
+	}
 	framework.Logf("Ensuring the *deny* audit log contains: '%s\", verdict=drop' AND 'severity=%s'", composedPolicyName, expectedAclSeverity)
 	for _, logLine := range strings.Split(targetNodeLog, "\n") {
 		if strings.Contains(logLine, fmt.Sprintf("%s\", verdict=drop", composedPolicyName)) &&
