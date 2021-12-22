@@ -54,6 +54,23 @@ func FindACLsWithPredicate(nbClient libovsdbclient.Client, p aclPredicate) ([]*n
 	return acls, err
 }
 
+// FindEquivalentACLs looks up ACLs from the cache equivalent with any given acl
+func FindEquivalentACLs(nbClient libovsdbclient.Client, acls []*nbdb.ACL) ([]*nbdb.ACL, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), types.OVSDBTimeout)
+	defer cancel()
+	p := func(item *nbdb.ACL) bool {
+		for index := range acls {
+			acl := acls[index]
+			if isEquivalentACL(item, acl) {
+				return true
+			}
+		}
+		return false
+	}
+	err := nbClient.WhereCache(p).List(ctx, &acls)
+	return acls, err
+}
+
 // BuildACL builds an ACL with empty optional properties unset
 func BuildACL(name string, direction nbdb.ACLDirection, priority int, match string, action nbdb.ACLAction, meter string, severity nbdb.ACLSeverity, log bool, externalIds map[string]string, options map[string]string) *nbdb.ACL {
 	name = fmt.Sprintf("%.63s", name)

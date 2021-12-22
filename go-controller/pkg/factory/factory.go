@@ -87,6 +87,7 @@ type localPodSelector struct{}
 type egressIPPod struct{}
 type egressIPNamespace struct{}
 type egressNode struct{}
+type sharedPglocalPodSelector struct{}
 
 var (
 	PodType                               reflect.Type = reflect.TypeOf(&kapi.Pod{})
@@ -108,6 +109,7 @@ var (
 	PeerNamespaceSelectorType             reflect.Type = reflect.TypeOf(&peerNamespaceSelector{})
 	PeerPodSelectorType                   reflect.Type = reflect.TypeOf(&peerPodSelector{})
 	LocalPodSelectorType                  reflect.Type = reflect.TypeOf(&localPodSelector{})
+	SharedPgLocalPodSelectorType          reflect.Type = reflect.TypeOf(&sharedPglocalPodSelector{})
 )
 
 // NewMasterWatchFactory initializes a new watch factory for the master or master+node processes.
@@ -408,7 +410,7 @@ func (wf *WatchFactory) GetResourceHandlerFunc(objType reflect.Type) (AddHandler
 			return wf.AddFilteredServiceHandler(namespace, funcs, processExisting)
 		}, nil
 
-	case PeerPodSelectorType, LocalPodSelectorType, PodType, EgressIPPodType:
+	case PeerPodSelectorType, LocalPodSelectorType, PodType, EgressIPPodType, SharedPgLocalPodSelectorType:
 		return func(namespace string, sel labels.Selector,
 			funcs cache.ResourceEventHandler, processExisting func([]interface{}) error) (*Handler, error) {
 			return wf.AddFilteredPodHandler(namespace, sel, funcs, processExisting)
