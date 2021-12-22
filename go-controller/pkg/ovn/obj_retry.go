@@ -683,13 +683,7 @@ func (oc *Controller) addResource(objectsToRetry *RetryObjs, obj interface{}, fr
 		})
 
 	case factory.LocalPodSelectorType:
-		extraParameters := objectsToRetry.extraParameters.(*NetworkPolicyExtraParameters)
-		return oc.handleLocalPodSelectorAddFunc(
-			extraParameters.policy,
-			extraParameters.np,
-			extraParameters.portGroupIngressDenyName,
-			extraParameters.portGroupEgressDenyName,
-			obj)
+		return oc.handleLocalPodSelectorAddFunc(objectsToRetry.extraParameters.(*sharedPortGroupInfo), obj)
 
 	case factory.EgressFirewallType:
 		var err error
@@ -802,13 +796,7 @@ func (oc *Controller) updateResource(objectsToRetry *RetryObjs, oldObj, newObj i
 		return oc.handlePeerPodSelectorAddUpdate(extraParameters.gp, newObj)
 
 	case factory.LocalPodSelectorType:
-		extraParameters := objectsToRetry.extraParameters.(*NetworkPolicyExtraParameters)
-		return oc.handleLocalPodSelectorAddFunc(
-			extraParameters.policy,
-			extraParameters.np,
-			extraParameters.portGroupIngressDenyName,
-			extraParameters.portGroupEgressDenyName,
-			newObj)
+		return oc.handleLocalPodSelectorAddFunc(objectsToRetry.extraParameters.(*sharedPortGroupInfo), newObj)
 
 	case factory.EgressIPType:
 		oldEIP := oldObj.(*egressipv1.EgressIP)
@@ -975,23 +963,8 @@ func (oc *Controller) deleteResource(objectsToRetry *RetryObjs, obj, cachedObj i
 			return extraParameters.gp.delNamespaceAddressSet(namespace.Name)
 		})
 
-	case factory.PeerPodForNamespaceAndPodSelectorType:
-		extraParameters := objectsToRetry.extraParameters.(*NetworkPolicyExtraParameters)
-		return oc.handleLocalPodSelectorDelFunc(
-			extraParameters.policy,
-			extraParameters.np,
-			extraParameters.portGroupIngressDenyName,
-			extraParameters.portGroupEgressDenyName,
-			obj)
-
 	case factory.LocalPodSelectorType:
-		extraParameters := objectsToRetry.extraParameters.(*NetworkPolicyExtraParameters)
-		return oc.handleLocalPodSelectorDelFunc(
-			extraParameters.policy,
-			extraParameters.np,
-			extraParameters.portGroupIngressDenyName,
-			extraParameters.portGroupEgressDenyName,
-			obj)
+		return oc.handleLocalPodSelectorDelFunc(objectsToRetry.extraParameters.(*sharedPortGroupInfo), obj)
 
 	case factory.EgressFirewallType:
 		egressFirewall := obj.(*egressfirewall.EgressFirewall)

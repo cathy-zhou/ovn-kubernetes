@@ -60,6 +60,21 @@ type ACLLoggingLevels struct {
 	Deny  string `json:"deny,omitempty"`
 }
 
+type sharedPortGroupInfo struct {
+	sync.Mutex
+	pgName           string          // name of this shared port group
+	policies         map[string]bool // policies sharing this port group
+	lspIngressRefCnt int             // requires ingress default deny acl in this port group is it is greater than 0
+	lspEgressRefCnt  int             // requires egress default deny acl in this port group is it is greater than 0
+	podHandler       *factory.Handler
+	// localPods is a list of pods affected by this shared group
+	// this is a sync map so we can handle multiple pods at once
+	// map of string -> *lpInfo
+	localPods sync.Map
+
+	localPodSelector metav1.LabelSelector
+}
+
 // namespaceInfo contains information related to a Namespace. Use oc.getNamespaceLocked()
 // or oc.waitForNamespaceLocked() to get a locked namespaceInfo for a Namespace, and call
 // nsInfo.Unlock() on it when you are done with it. (No code outside of the code that
@@ -90,10 +105,6 @@ type namespaceInfo struct {
 
 	// If not empty, then it has to be set to a logging a severity level, e.g. "notice", "alert", etc
 	aclLogging ACLLoggingLevels
-
-	// Per-namespace port group default deny UUIDs
-	portGroupIngressDenyName string // Port group Name for ingress deny rule
-	portGroupEgressDenyName  string // Port group Name for egress deny rule
 }
 
 // Controller structure is the object which holds the controls for starting
@@ -129,6 +140,10 @@ type Controller struct {
 
 	externalGWCache map[ktypes.NamespacedName]*externalRouteInfo
 	exGWCacheMutex  sync.RWMutex
+
+	// Info about policy-shared portGroup. key is namespace, then shared port group name
+	spgInfoMap   map[string]map[string]*sharedPortGroupInfo
+	spgInfoMutex sync.Mutex
 
 	// egressFirewalls is a map of namespaces and the egressFirewall attached to it
 	egressFirewalls sync.Map
@@ -336,6 +351,8 @@ func NewOvnController(ovnClient *util.OVNClientset, wf *factory.WatchFactory, st
 		svcFactory:                svcFactory,
 		egressSvcController:       egressSvcController,
 		podRecorder:               metrics.NewPodRecorder(),
+		spgInfoMap:                make(map[string]map[string]*sharedPortGroupInfo),
+		spgInfoMutex:              sync.Mutex{},
 	}
 }
 
