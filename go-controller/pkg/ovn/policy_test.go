@@ -17,6 +17,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
+
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/libovsdb"
 	libovsdbtest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/libovsdb"
@@ -24,7 +25,7 @@ import (
 
 	"github.com/urfave/cli/v2"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	knet "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apimachinerytypes "k8s.io/apimachinery/pkg/types"
@@ -332,7 +333,7 @@ func (n kNetworkPolicy) getPolicyData(networkPolicies []*knet.NetworkPolicy, pol
 			lsps = append(lsps, &nbdb.LogicalSwitchPort{UUID: uuid})
 		}
 
-		pg := buildPortGroup(
+		pg := libovsdbops.BuildPortGroup(
 			pgArg.hashName,
 			pgArg.name,
 			lsps,
@@ -426,23 +427,6 @@ func (n kNetworkPolicy) getSharedNMDefaultDenyAcls(np *knet.NetworkPolicy, ports
 	ingressAllowACL.UUID = libovsdbops.BuildNamedUUID()
 	ingressAcls = append(ingressAcls, ingressAllowACL)
 	return egressAcls, ingressAcls
-
-	//sharedNMPG := buildPortGroup(
-	//	pgHashName,
-	//	pgName,
-	//	lsps,
-	//	[]*nbdb.ACL{},
-	//	util.NetNameInfo{types.DefaultNetworkName, "", false},
-	//)
-	//sharedNMPG.UUID = libovsdbops.BuildNamedUUID()
-
-	//return pgHashName, []libovsdb.TestData{
-	//	egressDenyACL,
-	//	egressAllowACL,
-	//	ingressDenyACL,
-	//	ingressAllowACL,
-	//	// sharedNMPG,
-	//}
 }
 
 func (n kNetworkPolicy) generateExpectedACLDataForFirstPolicyOnNamespace(policy knet.NetworkPolicy, denyLoggingSeverity, allowLoggingSeverity nbdb.ACLSeverity) []libovsdb.TestData {

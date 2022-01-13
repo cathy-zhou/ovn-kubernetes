@@ -257,9 +257,6 @@ func UpdateACLsLoggingOps(nbClient libovsdbclient.Client, ops []libovsdb.Operati
 
 	for _, acl := range acls {
 		err := findACL(nbClient, acl)
-		if err == libovsdbclient.ErrNotFound {
-			continue
-		}
 		if err != nil {
 			return nil, err
 		}

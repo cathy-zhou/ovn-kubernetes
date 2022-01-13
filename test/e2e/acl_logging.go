@@ -165,8 +165,8 @@ func waitForACLLoggingPod(f *framework.Framework, namespace string, podName stri
 	})
 }
 
+// now we only support portGroup sharing if the policy's local pod selector is empty.
 func getSharedPortGroupName(policy *knet.NetworkPolicy) string {
-	// now we only support empty podSelector policy to share the portGroup
 	sel := &policy.Spec.PodSelector
 	if len(sel.MatchLabels) == 0 && len(sel.MatchExpressions) == 0 {
 		// now we only support empty podSelector policy to share the portGroup

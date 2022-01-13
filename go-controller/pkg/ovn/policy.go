@@ -74,8 +74,8 @@ type networkPolicy struct {
 	egressDefDeny      bool
 }
 
+// now we only support portGroup sharing if the policy's local pod selector is empty. This can be changed later.
 func getSharedPortGroupName(policy *knet.NetworkPolicy) string {
-	// now we only support empty podSelector policy to share the portGroup
 	sel := &policy.Spec.PodSelector
 	if len(sel.MatchLabels) == 0 && len(sel.MatchExpressions) == 0 {
 		// now we only support empty podSelector policy to share the portGroup
@@ -248,10 +248,6 @@ func buildACL(namespace, portGroup, name, direction string, priority int, match,
 	return libovsdbops.BuildACL(aclName, direction, priority, match, action, meter, severity, log, externalIds)
 }
 
-func buildPortGroup(hashName, name string, ports []*nbdb.LogicalSwitchPort, acls []*nbdb.ACL) *nbdb.PortGroup {
-	return libovsdbops.BuildPortGroup(hashName, name, ports, acls)
-}
-
 func defaultDenyPortGroup(namespace, gressSuffix string) string {
 	return hashedPortGroup(namespace) + "_" + gressSuffix
 }
@@ -365,7 +361,7 @@ func (oc *Controller) setACLLoggingForNamespace(ns string, nsInfo *namespaceInfo
 		// libovsdb transactions take less than 50ms usually as well so pod create
 		// should be done within a couple iterations
 		retryErr := wait.PollImmediate(24*time.Millisecond, 1*time.Second, func() (bool, error) {
-			if err := oc.updateACLLoggingForPolicy(policy, policy.portGroupName, nsInfo.aclLogging.Allow); err == nil {
+			if err = oc.updateACLLoggingForPolicy(policy, policy.portGroupName, nsInfo.aclLogging.Allow); err == nil {
 				return true, nil
 			} else if errors.Is(err, NetworkPolicyNotCreated) {
 				return false, nil
@@ -393,17 +389,6 @@ func targetPortGroupName(portGroupIngressDenyName string, portGroupEgressDenyNam
 		return ""
 	}
 }
-
-//func targetSharedPolicyName(policyIngressName string, policyEgressName string, policyType knet.PolicyType) string {
-//	switch policyType {
-//	case knet.PolicyTypeIngress:
-//		return policyIngressName
-//	case knet.PolicyTypeEgress:
-//		return policyEgressName
-//	default:
-//		return ""
-//	}
-//}
 
 func getACLMatchAF(ipv4Match, ipv6Match string) string {
 	if config.IPv4Mode && config.IPv6Mode {
@@ -1068,7 +1053,7 @@ func (oc *Controller) createSharedNMPortGroupAndDenyAcls(policy *knet.NetworkPol
 	// create shared portGroup
 	pgName := np.sharePortGroupName
 	pgHashName := hashedPortGroup(pgName)
-	ingressPG := buildPortGroup(pgHashName, pgName, []*nbdb.LogicalSwitchPort{}, []*nbdb.ACL{})
+	ingressPG := libovsdbops.BuildPortGroup(pgHashName, pgName, []*nbdb.LogicalSwitchPort{}, []*nbdb.ACL{})
 	ops, err := libovsdbops.CreateOrUpdatePortGroupsOps(oc.nbClient, nil, ingressPG)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create shared portgroup ops for %s, error: %v", pgName, err)
@@ -1466,6 +1451,7 @@ func (oc *Controller) addNetworkPolicy(policy *knet.NetworkPolicy) {
 		return
 	}
 	np := NewNetworkPolicy(policy)
+
 	if len(nsInfo.networkPolicies) == 0 {
 		err = oc.createDefaultDenyPGAndACLs(policy.Namespace, policy.Name, nsInfo)
 		if err != nil {
@@ -1500,7 +1486,6 @@ func (oc *Controller) addNetworkPolicy(policy *knet.NetworkPolicy) {
 	aclLogAllow := nsInfo.aclLogging.Allow
 	portGroupIngressDenyName := nsInfo.portGroupIngressDenyName
 	portGroupEgressDenyName := nsInfo.portGroupEgressDenyName
-
 	nsUnlock()
 	oc.createNetworkPolicy(np, policy, aclLogDeny, aclLogAllow, portGroupIngressDenyName, portGroupEgressDenyName)
 }
