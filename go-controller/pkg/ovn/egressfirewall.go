@@ -131,7 +131,7 @@ func (oc *Controller) syncEgressFirewall(egressFirewalls []interface{}) error {
 	// Update the egressFirewallACL name if needed.
 	// Update logging related information if needed.
 	for i := range egressFirewallACLs {
-		egressFirewallACLs[i].Direction = types.DirectionToLPort
+		egressFirewallACLs[i].Direction = nbdb.ACLDirectionToLport
 		if namespace, ok := egressFirewallACLs[i].ExternalIDs["egressFirewall"]; ok && namespace != "" {
 			aclName := buildEgressFwAclName(namespace, egressFirewallACLs[i].Priority)
 			log, meterName, logSeverity := oc.getLogMeterSeverity(namespace, egressFirewallACLs[i].Action)
@@ -352,7 +352,7 @@ func (oc *Controller) createEgressFirewallRules(priority int, match, action, ext
 
 	egressFirewallACL := libovsdbops.BuildACL(
 		aclName,
-		types.DirectionToLPort,
+		nbdb.ACLDirectionToLport,
 		priority,
 		match,
 		action,
