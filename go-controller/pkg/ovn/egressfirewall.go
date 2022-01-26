@@ -128,7 +128,7 @@ func (oc *Controller) syncEgressFirewall(egressFirewalls []interface{}) {
 		opModels := []libovsdbops.OperationModel{}
 		for i := range egressFirewallACLs {
 			egressFirewallACL := egressFirewallACLs[i]
-			egressFirewallACL.Direction = types.DirectionToLPort
+			egressFirewallACL.Direction = nbdb.ACLDirectionToLport
 			aclName := ""
 			if egressFirewallACL.Name != nil {
 				aclName = *egressFirewallACL.Name
@@ -361,7 +361,7 @@ func (oc *Controller) createEgressFirewallRules(priority int, match, action, ext
 
 	egressFirewallACL := &nbdb.ACL{
 		Priority:    priority,
-		Direction:   types.DirectionToLPort,
+		Direction:   nbdb.ACLDirectionToLport,
 		Match:       match,
 		Action:      action,
 		ExternalIDs: map[string]string{"egressFirewall": externalID},
