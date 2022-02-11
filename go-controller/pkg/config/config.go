@@ -323,10 +323,11 @@ type MetricsConfig struct {
 
 // OVNKubernetesFeatureConfig holds OVN-Kubernetes feature enhancement config file parameters and command-line overrides
 type OVNKubernetesFeatureConfig struct {
-	EnableEgressIP       bool `gcfg:"enable-egress-ip"`
-	EnableEgressFirewall bool `gcfg:"enable-egress-firewall"`
-	EnableEgressQoS      bool `gcfg:"enable-egress-qos"`
-	EnableMultiNetwork   bool `gcfg:"enable-multi-network"`
+	EnableEgressIP           bool `gcfg:"enable-egress-ip"`
+	EnableEgressFirewall     bool `gcfg:"enable-egress-firewall"`
+	EnableEgressQoS          bool `gcfg:"enable-egress-qos"`
+	EnableMultiNetwork       bool `gcfg:"enable-multi-network"`
+	EnableMultiNetworkPolicy bool `gcfg:"enable-multi-networkpolicy"`
 }
 
 // GatewayMode holds the node gateway mode
@@ -865,6 +866,12 @@ var OVNK8sFeatureFlags = []cli.Flag{
 		Usage:       "Configure to use multiple NetworkAttachmentDefinition CRD feature with ovn-kubernetes.",
 		Destination: &cliConfig.OVNKubernetesFeature.EnableMultiNetwork,
 		Value:       OVNKubernetesFeature.EnableMultiNetwork,
+	},
+	&cli.BoolFlag{
+		Name:        "enable-multi-networkpolicy",
+		Usage:       "Configure to use multiple networkAttachmentDefinition CRD feature with ovn-kubernetes.",
+		Destination: &cliConfig.OVNKubernetesFeature.EnableMultiNetworkPolicy,
+		Value:       OVNKubernetesFeature.EnableMultiNetworkPolicy,
 	},
 }
 

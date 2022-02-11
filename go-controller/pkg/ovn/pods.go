@@ -299,7 +299,7 @@ func (oc *Controller) waitForNodeLogicalSwitchInCache(switchName string) error {
 }
 
 func (oc *Controller) addRoutesGatewayIP(pod *kapi.Pod, podAnnotation *util.PodAnnotation, nodeSubnets []*net.IPNet,
-	network *networkattachmentdefinitionapi.NetworkSelectionElement) (err error) {
+	network *networkattachmentdefinitionapi.NetworkSelectionElement) error {
 
 	if oc.nadInfo.IsSecondary {
 		// non default network, see if its network-attachment's annotation has default-route key.

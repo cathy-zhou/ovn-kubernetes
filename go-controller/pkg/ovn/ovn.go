@@ -67,6 +67,8 @@ type ACLLoggingLevels struct {
 // nsInfo.Unlock() on it when you are done with it. (No code outside of the code that
 // manages the oc.namespaces map is ever allowed to hold an unlocked namespaceInfo.)
 type namespaceInfo struct {
+	util.NetNameInfo
+
 	sync.RWMutex
 
 	// addressSet is an address set object that holds the IP addresses
@@ -126,13 +128,15 @@ type OvnMHController struct {
 // Controller structure is the object which holds the controls for starting
 // and reacting upon the watched resources (e.g. pods, endpoints)
 type Controller struct {
-	mc          *OvnMHController
-	wg          *sync.WaitGroup
-	stopChan    chan struct{}
-	podHandler  *factory.Handler
-	nodeHandler *factory.Handler
-	isStarted   bool
-	startMutex  sync.Mutex
+	mc                        *OvnMHController
+	wg                        *sync.WaitGroup
+	stopChan                  chan struct{}
+	podHandler                *factory.Handler
+	nodeHandler               *factory.Handler
+	namespaceHandler          *factory.Handler
+	multiNetworkPolicyHandler *factory.Handler
+	isStarted                 bool
+	startMutex                sync.Mutex
 
 	nadInfo *util.NetAttachDefInfo
 
@@ -397,9 +401,11 @@ func (mc *OvnMHController) NewOvnController(nadInfo *util.NetAttachDefInfo,
 	}
 	if !nadInfo.IsSecondary {
 		oc.wg = mc.wg
+		oc.retryNetworkPolicies = NewRetryObjs(factory.PolicyType, "", nil, nil, nil)
 		mc.ovnController = oc
 		oc.svcController, oc.svcFactory = newServiceController(mc.client, mc.nbClient)
 	} else {
+		oc.retryNetworkPolicies = NewRetryObjs(factory.MultinetworkpolicyType, "", nil, nil, nil)
 		oc.multicastSupport = false
 		oc.wg = &sync.WaitGroup{}
 		_, loaded := mc.nonDefaultOvnControllers.LoadOrStore(nadInfo.NetName, oc)
@@ -424,10 +430,8 @@ func (oc *Controller) Run(ctx context.Context) error {
 
 	// WatchNamespaces() should be started first because it has no other
 	// dependencies, and WatchNodes() depends on it
-	if !oc.nadInfo.IsSecondary {
-		if err := oc.WatchNamespaces(); err != nil {
-			return err
-		}
+	if err := oc.WatchNamespaces(); err != nil {
+		return err
 	}
 
 	// WatchNodes must be started next because it creates the node switch
@@ -539,6 +543,11 @@ func (oc *Controller) Run(ctx context.Context) error {
 			}()
 		}
 	} else {
+		if config.OVNKubernetesFeature.EnableMultiNetworkPolicy {
+			if err := oc.WatchMultiNetworkPolicy(); err != nil {
+				return err
+			}
+		}
 		klog.Infof("Completing all the Watchers for network %s took %v", oc.nadInfo.NetName, time.Since(start))
 	}
 
@@ -670,7 +679,25 @@ func (oc *Controller) WatchPods() error {
 // WatchNetworkPolicy starts the watching of the network policy resource and calls
 // back the appropriate handler logic
 func (oc *Controller) WatchNetworkPolicy() error {
+	if oc.nadInfo.IsSecondary {
+		klog.Infof("WatchNetworkPolicy for network %s is a no-op", oc.nadInfo.NetName)
+		return nil
+	}
 	_, err := oc.WatchResource(oc.retryNetworkPolicies)
+	return err
+}
+
+// WatchMultiNetworkPolicy starts the watching of multi network policy resource and calls
+// back the appropriate handler logic
+func (oc *Controller) WatchMultiNetworkPolicy() error {
+	if !oc.nadInfo.IsSecondary {
+		klog.Infof("WatchMultiNetworkPolicy for OVN Primary networkis a no-op")
+		return nil
+	}
+	multiNetworkPolicyHandler, err := oc.WatchResource(oc.retryNetworkPolicies)
+	if err == nil {
+		oc.multiNetworkPolicyHandler = multiNetworkPolicyHandler
+	}
 	return err
 }
 
@@ -752,7 +779,7 @@ func (oc *Controller) WatchNamespaces() error {
 	}
 
 	start := time.Now()
-	_, err := oc.mc.watchFactory.AddNamespaceHandler(cache.ResourceEventHandlerFuncs{
+	namespaceHandler, err := oc.mc.watchFactory.AddNamespaceHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			ns := obj.(*kapi.Namespace)
 			oc.AddNamespace(ns)
@@ -771,6 +798,7 @@ func (oc *Controller) WatchNamespaces() error {
 		klog.Errorf("Failed to watch namespaces err: %v", err)
 		return err
 	}
+	oc.namespaceHandler = namespaceHandler
 	return nil
 }
 
@@ -1017,12 +1045,25 @@ func (mc *OvnMHController) deleteNetworkAttachDefinition(netattachdef *nettypes.
 	oc.wg.Wait()
 	close(oc.stopChan)
 
+	if oc.multiNetworkPolicyHandler != nil {
+		oc.mc.watchFactory.RemoveMultiNetworkPolicyHandler(oc.multiNetworkPolicyHandler)
+	}
+
 	if oc.podHandler != nil {
 		oc.mc.watchFactory.RemovePodHandler(oc.podHandler)
 	}
 
 	if oc.nodeHandler != nil {
 		oc.mc.watchFactory.RemoveNodeHandler(oc.nodeHandler)
+	}
+
+	if oc.namespaceHandler != nil {
+		oc.mc.watchFactory.RemoveNamespaceHandler(oc.namespaceHandler)
+	}
+
+	for namespace := range oc.namespaces {
+		ns := kapi.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
+		oc.deleteNamespace(&ns)
 	}
 
 	oc.deleteMaster()
@@ -1032,6 +1073,7 @@ func (mc *OvnMHController) deleteNetworkAttachDefinition(netattachdef *nettypes.
 		klog.Errorf("Error in initializing/fetching subnets: %v", err)
 		return
 	}
+
 	// remove hostsubnet annoation for this network
 	for _, node := range existingNodes.Items {
 		err := oc.deleteNodeLogicalNetwork(node.Name)

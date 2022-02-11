@@ -255,8 +255,8 @@ func (gp *gressPolicy) getMatchFromIPBlock(lportMatch, l4Match string) []string 
 // it returns `false`.
 func (gp *gressPolicy) addNamespaceAddressSet(name string) bool {
 	v4HashName, v6HashName := addressset.MakeAddressSetHashNames(name)
-	v4HashName = "$" + v4HashName
-	v6HashName = "$" + v6HashName
+	v4HashName = "$" + gp.netAttachInfo.Prefix + v4HashName
+	v6HashName = "$" + gp.netAttachInfo.Prefix + v6HashName
 
 	if gp.peerV4AddressSets.Has(v4HashName) || gp.peerV6AddressSets.Has(v6HashName) {
 		return false
@@ -290,8 +290,8 @@ func (gp *gressPolicy) addNamespaceAddressSets(namespaces []interface{}) {
 // and returns whether the address set was in the policy or not.
 func (gp *gressPolicy) delNamespaceAddressSet(name string) bool {
 	v4HashName, v6HashName := addressset.MakeAddressSetHashNames(name)
-	v4HashName = "$" + v4HashName
-	v6HashName = "$" + v6HashName
+	v4HashName = "$" + gp.netAttachInfo.Prefix + v4HashName
+	v6HashName = "$" + gp.netAttachInfo.Prefix + v6HashName
 
 	if !gp.peerV4AddressSets.Has(v4HashName) && !gp.peerV6AddressSets.Has(v6HashName) {
 		return false
@@ -313,6 +313,7 @@ func (gp *gressPolicy) buildLocalPodACLs(portGroupName, aclLogging string) []*nb
 	l3Match := gp.getL3MatchFromAddressSet()
 	var lportMatch string
 	var cidrMatches []string
+	portGroupName = gp.netAttachInfo.Prefix + portGroupName
 	if gp.policyType == knet.PolicyTypeIngress {
 		lportMatch = fmt.Sprintf("outport == @%s", portGroupName)
 	} else {
@@ -399,6 +400,9 @@ func (gp *gressPolicy) buildACLAllow(match, l4Match string, ipBlockCIDR int, acl
 		policyACLExtIdKey:      gp.policyName,
 		policyTypeACLExtIdKey:  string(gp.policyType),
 		policyTypeNum:          policyTypeIndex,
+	}
+	if gp.netAttachInfo.IsSecondary {
+		externalIds["network_name"] = gp.netAttachInfo.NetName
 	}
 
 	acl := libovsdbops.BuildACL(aclName, direction, priority, match, action, types.OvnACLLoggingMeter, getACLLoggingSeverity(aclLogging), aclLogging != "", externalIds, options)

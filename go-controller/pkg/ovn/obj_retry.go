@@ -19,6 +19,7 @@ import (
 
 	"k8s.io/klog/v2"
 
+	multinetworkpolicy "github.com/k8snetworkplumbingwg/multi-networkpolicy/pkg/apis/k8s.cni.cncf.io/v1beta1"
 	egressfirewall "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1"
 	egressipv1 "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressip/v1"
 	factory "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
@@ -263,7 +264,8 @@ func hasResourceAnUpdateFunc(objType reflect.Type) bool {
 func areResourcesEqual(objType reflect.Type, obj1, obj2 interface{}) (bool, error) {
 	// switch based on type
 	switch objType {
-	case factory.PolicyType:
+	case factory.PolicyType,
+		factory.MultinetworkpolicyType:
 		np1, ok := obj1.(*knet.NetworkPolicy)
 		if !ok {
 			return false, fmt.Errorf("could not cast obj1 of type %T to *knet.NetworkPolicy", obj1)
@@ -350,7 +352,8 @@ func areResourcesEqual(objType reflect.Type, obj1, obj2 interface{}) (bool, erro
 // the key will be the object name itself.
 func getResourceKey(objType reflect.Type, obj interface{}) (string, error) {
 	switch objType {
-	case factory.PolicyType:
+	case factory.PolicyType,
+		factory.MultinetworkpolicyType:
 		np, ok := obj.(*knet.NetworkPolicy)
 		if !ok {
 			return "", fmt.Errorf("could not cast %T object to *knet.NetworkPolicy", obj)
@@ -455,6 +458,16 @@ func (oc *Controller) getResourceFromInformerCache(objType reflect.Type, key str
 		namespace, name := splitNamespacedName(key)
 		obj, err = oc.mc.watchFactory.GetNetworkPolicy(namespace, name)
 
+	case factory.MultinetworkpolicyType:
+		namespace, name := splitNamespacedName(key)
+		var mpObj *multinetworkpolicy.MultiNetworkPolicy
+		mpObj, err = oc.mc.watchFactory.GetMultiNetworkPolicy(namespace, name)
+		if err != nil {
+			obj = convertMultiNetPolicyToNetPolicy(mpObj)
+		} else {
+			obj = nil
+		}
+
 	case factory.NodeType,
 		factory.EgressNodeType:
 		obj, err = oc.mc.watchFactory.GetNode(key)
@@ -502,7 +515,8 @@ func (oc *Controller) recordAddEvent(objType reflect.Type, obj interface{}) {
 		pod := obj.(*kapi.Pod)
 		oc.podRecorder.AddPod(pod.UID)
 		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name)
-	case factory.PolicyType:
+	case factory.PolicyType,
+		factory.MultinetworkpolicyType:
 		klog.V(5).Infof("Recording add event on network policy")
 		np := obj.(*knet.NetworkPolicy)
 		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
@@ -517,7 +531,8 @@ func (oc *Controller) recordUpdateEvent(objType reflect.Type, obj interface{}) {
 		klog.V(5).Infof("Recording update event on pod")
 		pod := obj.(*kapi.Pod)
 		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name)
-	case factory.PolicyType:
+	case factory.PolicyType,
+		factory.MultinetworkpolicyType:
 		klog.V(5).Infof("Recording update event on network policy")
 		np := obj.(*knet.NetworkPolicy)
 		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
@@ -533,7 +548,8 @@ func (oc *Controller) recordDeleteEvent(objType reflect.Type, obj interface{}) {
 		pod := obj.(*kapi.Pod)
 		oc.podRecorder.CleanPod(pod.UID)
 		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name)
-	case factory.PolicyType:
+	case factory.PolicyType,
+		factory.MultinetworkpolicyType:
 		klog.V(5).Infof("Recording delete event on network policy")
 		np := obj.(*knet.NetworkPolicy)
 		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
@@ -547,7 +563,8 @@ func (oc *Controller) recordSuccessEvent(objType reflect.Type, obj interface{}) 
 		klog.V(5).Infof("Recording success event on pod")
 		pod := obj.(*kapi.Pod)
 		metrics.GetConfigDurationRecorder().End("pod", pod.Namespace, pod.Name)
-	case factory.PolicyType:
+	case factory.PolicyType,
+		factory.MultinetworkpolicyType:
 		klog.V(5).Infof("Recording success event on network policy")
 		np := obj.(*knet.NetworkPolicy)
 		metrics.GetConfigDurationRecorder().End("networkpolicy", np.Namespace, np.Name)
@@ -604,14 +621,15 @@ func (oc *Controller) addResource(objectsToRetry *retryObjs, obj interface{}, fr
 		}
 		return oc.ensurePod(nil, pod, true)
 
-	case factory.PolicyType:
+	case factory.PolicyType,
+		factory.MultinetworkpolicyType:
 		np, ok := obj.(*knet.NetworkPolicy)
 		if !ok {
 			return fmt.Errorf("could not cast %T object to *knet.NetworkPolicy", obj)
 		}
 
 		if err = oc.addNetworkPolicy(np); err != nil {
-			klog.Infof("Network Policy retry delete failed for %s/%s, will try again later: %v",
+			klog.Infof("Network Policy retry add failed for %s/%s, will try again later: %v",
 				np.Namespace, np.Name, err)
 			return err
 		}
@@ -923,7 +941,8 @@ func (oc *Controller) deleteResource(objectsToRetry *retryObjs, obj, cachedObj i
 		}
 		return oc.removePod(pod, portInfoMap)
 
-	case factory.PolicyType:
+	case factory.PolicyType,
+		factory.MultinetworkpolicyType:
 		var cachedNP *networkPolicy
 		knp, ok := obj.(*knet.NetworkPolicy)
 		if !ok {
@@ -1185,6 +1204,9 @@ func (oc *Controller) getSyncResourcesFunc(r *retryObjs) (func([]interface{}) er
 	case factory.PolicyType:
 		syncFunc = oc.syncNetworkPolicies
 
+	case factory.MultinetworkpolicyType:
+		syncFunc = oc.syncMultiNetworkPolicies
+
 	case factory.NodeType:
 		syncFunc = oc.syncNodesRetriable
 
@@ -1294,6 +1316,220 @@ func (oc *Controller) processObjectInTerminalState(objectsToRetry *retryObjs, ob
 	objectsToRetry.deleteRetryObj(key, true)
 }
 
+func (oc *Controller) addResourceHandler(obj interface{}, objectsToRetry *retryObjs) {
+	oc.recordAddEvent(objectsToRetry.oType, obj)
+	key, err := getResourceKey(objectsToRetry.oType, obj)
+	if err != nil {
+		klog.Errorf("Upon add event: %v", err)
+		return
+	}
+	klog.V(5).Infof("Add event received for resource %v, key=%s", objectsToRetry.oType, key)
+
+	objectsToRetry.initRetryObjWithAdd(obj, key)
+	objectsToRetry.skipRetryObj(key)
+
+	// This only applies to pod watchers (pods + dynamic network policy handlers watching pods):
+	// if ovnkube-master is restarted, it will gets all the add events with completed pods
+	if oc.isObjectInTerminalState(objectsToRetry.oType, obj) {
+		oc.processObjectInTerminalState(objectsToRetry, obj, key, resourceEventAdd)
+		return
+	}
+
+	// If there is a delete entry with the same key, we got an add event for an object
+	// with the same name as a previous object that failed deletion.
+	// Destroy the old object before we add the new one.
+	if retryEntry := objectsToRetry.getObjRetryEntry(key); retryEntry != nil && retryEntry.oldObj != nil {
+		klog.Infof("Detected stale object during new object"+
+			" add of type %v with the same key: %s",
+			objectsToRetry.oType, key)
+		internalCacheEntry := oc.getInternalCacheEntry(objectsToRetry.oType, obj)
+		if err := oc.deleteResource(objectsToRetry, obj, internalCacheEntry); err != nil {
+			klog.Errorf("Failed to delete old object %s of type %v,"+
+				" during add event: %v", key, objectsToRetry.oType, err)
+			oc.recordErrorEvent(objectsToRetry.oType, obj, err)
+			objectsToRetry.unSkipRetryObj(key)
+			return
+		}
+		objectsToRetry.removeDeleteFromRetryObj(key)
+	}
+	start := time.Now()
+	if err := oc.addResource(objectsToRetry, obj, false); err != nil {
+		klog.Errorf("Failed to create %v object %s, error: %v",
+			objectsToRetry.oType, key, err)
+		oc.recordErrorEvent(objectsToRetry.oType, obj, err)
+		objectsToRetry.unSkipRetryObj(key)
+		return
+	}
+	klog.Infof("Creating %v %s took: %v", objectsToRetry.oType, key, time.Since(start))
+	objectsToRetry.deleteRetryObj(key, true)
+	oc.recordSuccessEvent(objectsToRetry.oType, obj)
+}
+
+func (oc *Controller) updateResourceHandler(old, newer interface{}, objectsToRetry *retryObjs) {
+	// skip the whole update if old and newer are equal
+	areEqual, err := areResourcesEqual(objectsToRetry.oType, old, newer)
+	if err != nil {
+		klog.Errorf("Could not compare old and newer resource objects of type %v: %v",
+			objectsToRetry.oType, err)
+		return
+	}
+	klog.V(5).Infof("Update event received for resource %s, old object is equal to new: %v",
+		objectsToRetry.oType, areEqual)
+	if areEqual {
+		return
+	}
+	oc.recordUpdateEvent(objectsToRetry.oType, newer)
+
+	// get the object keys for newer and old (expected to be the same)
+	newKey, err := getResourceKey(objectsToRetry.oType, newer)
+	if err != nil {
+		klog.Errorf("Update of resource %v failed when looking up key of new obj: %v",
+			objectsToRetry.oType, err)
+		return
+	}
+	oldKey, err := getResourceKey(objectsToRetry.oType, old)
+	if err != nil {
+		klog.Errorf("Update of resource %v failed  when looking up key of old obj: %v",
+			objectsToRetry.oType, err)
+		return
+	}
+
+	// skip the whole update if the new object doesn't exist anymore in the API server
+	newer, err = oc.getResourceFromInformerCache(objectsToRetry.oType, newKey)
+	if err != nil {
+		klog.Warningf("Unable to get %v %s from informer cache (perhaps it was already"+
+			" deleted?), skipping update: %v", objectsToRetry.oType, newKey, err)
+		return
+	}
+
+	klog.V(5).Infof("Update event received for resource %v, oldKey=%s, newKey=%s",
+		objectsToRetry.oType, oldKey, newKey)
+
+	objectsToRetry.skipRetryObj(newKey)
+	hasUpdateFunc := hasResourceAnUpdateFunc(objectsToRetry.oType)
+
+	// STEP 1:
+	// Delete existing (old) object if:
+	// a) it has a retry entry marked for deletion and doesn't use update or
+	// b) the resource is in terminal state (e.g. pod is completed) or
+	// c) this resource type has no update function, so an update means delete old obj and add new one
+	retryEntry := objectsToRetry.getObjRetryEntry(oldKey)
+	if retryEntry != nil && retryEntry.oldObj != nil {
+		// [step 1a] there is a retry entry marked for deletion
+		klog.Infof("Found old retry object for %v %s: will delete it",
+			objectsToRetry.oType, oldKey)
+		if err := oc.deleteResource(objectsToRetry, retryEntry.oldObj,
+			retryEntry.config); err != nil {
+			klog.Errorf("Failed to delete stale object %s, during update: %v", oldKey, err)
+			oc.recordErrorEvent(objectsToRetry.oType, retryEntry.oldObj, err)
+			objectsToRetry.initRetryObjWithAdd(newer, newKey)
+			objectsToRetry.unSkipRetryObj(oldKey)
+			return
+		}
+		// remove the old object from retry entry since it was correctly deleted
+		objectsToRetry.removeDeleteFromRetryObj(oldKey)
+
+	} else if oc.isObjectInTerminalState(objectsToRetry.oType, newer) { // check the latest status on newer
+		// [step 1b] The object is in a terminal state: delete it from the cluster,
+		// delete its retry entry and return. This only applies to pod watchers
+		// (pods + dynamic network policy handlers watching pods).
+		oc.processObjectInTerminalState(objectsToRetry, old, oldKey, resourceEventUpdate)
+		return
+
+	} else if !hasUpdateFunc {
+		// [step 1c] if this resource type has no update function,
+		// delete old obj and in step 2 add the new one
+		var existingCacheEntry interface{}
+		if retryEntry != nil {
+			existingCacheEntry = retryEntry.config
+		}
+		klog.Infof("Deleting old %s of type %s during update", oldKey, objectsToRetry.oType)
+		if err := oc.deleteResource(objectsToRetry, old, existingCacheEntry); err != nil {
+			klog.Errorf("Failed to delete %s %s, during update: %v",
+				objectsToRetry.oType, oldKey, err)
+			oc.recordErrorEvent(objectsToRetry.oType, old, err)
+			objectsToRetry.initRetryObjWithDelete(old, oldKey, nil)
+			objectsToRetry.initRetryObjWithAdd(newer, newKey)
+			objectsToRetry.unSkipRetryObj(oldKey)
+			return
+		}
+		// remove the old object from retry entry since it was correctly deleted
+		objectsToRetry.removeDeleteFromRetryObj(oldKey)
+	}
+
+	// STEP 2:
+	// Execute the update function for this resource type; resort to add if no update
+	// function is available.
+	if hasUpdateFunc {
+		klog.Infof("Updating %s %s", objectsToRetry.oType, newKey)
+		// if this resource type has an update func, just call the update function
+		if err := oc.updateResource(objectsToRetry, old, newer); err != nil {
+			klog.Errorf("Failed to update resource %v, old=%s, new=%s, error: %v",
+				objectsToRetry.oType, oldKey, newKey, err)
+			oc.recordErrorEvent(objectsToRetry.oType, newer, err)
+			if resourceNeedsUpdate(objectsToRetry.oType) {
+				objectsToRetry.initRetryObjWithUpdate(old, newer, newKey)
+			} else {
+				objectsToRetry.initRetryObjWithAdd(newer, newKey)
+			}
+			objectsToRetry.unSkipRetryObj(newKey)
+			return
+		}
+	} else { // we previously deleted old object, now let's add the new one
+		klog.Infof("Adding new %s of type %s", newKey, objectsToRetry.oType)
+		if err := oc.addResource(objectsToRetry, newer, false); err != nil {
+			oc.recordErrorEvent(objectsToRetry.oType, newer, err)
+			objectsToRetry.initRetryObjWithAdd(newer, newKey)
+			objectsToRetry.unSkipRetryObj(newKey)
+			klog.Errorf("Failed to add %s %s, during update: %v",
+				objectsToRetry.oType, newKey, err)
+			return
+		}
+	}
+	objectsToRetry.deleteRetryObj(newKey, true)
+	oc.recordSuccessEvent(objectsToRetry.oType, newer)
+}
+
+func (oc *Controller) deleteResourceHandler(obj interface{}, objectsToRetry *retryObjs) {
+	oc.recordDeleteEvent(objectsToRetry.oType, obj)
+	key, err := getResourceKey(objectsToRetry.oType, obj)
+	if err != nil {
+		klog.Errorf("Delete of resource %v failed: %v", objectsToRetry.oType, err)
+		return
+	}
+	klog.V(5).Infof("Delete event received for resource %v %s", objectsToRetry.oType, key)
+	// If object is in terminal state, we would have already deleted it during update.
+	// No reason to attempt to delete it here again.
+	if oc.isObjectInTerminalState(objectsToRetry.oType, obj) {
+		klog.Infof("Ignoring delete event for completed resource %v %s", objectsToRetry.oType, key)
+		return
+	}
+	objectsToRetry.skipRetryObj(key)
+	internalCacheEntry := oc.getInternalCacheEntry(objectsToRetry.oType, obj)
+	objectsToRetry.initRetryObjWithDelete(obj, key, internalCacheEntry) // set up the retry obj for deletion
+	if err := oc.deleteResource(objectsToRetry, obj, internalCacheEntry); err != nil {
+		objectsToRetry.unSkipRetryObj(key)
+		klog.Errorf("Failed to delete resource object %s of type %v, error: %v",
+			key, objectsToRetry.oType, err)
+		return
+	}
+	objectsToRetry.deleteRetryObj(key, true)
+	oc.recordSuccessEvent(objectsToRetry.oType, obj)
+}
+
+func (oc *Controller) shouldApply(objType reflect.Type, obj interface{}) (bool, reflect.Type, interface{}) {
+	switch objType {
+	case factory.MultinetworkpolicyType:
+		mp, ok := obj.(*multinetworkpolicy.MultiNetworkPolicy)
+		if ok && oc.shouldApplyMultiPolicy(mp) {
+			np := convertMultiNetPolicyToNetPolicy(mp)
+			return true, factory.PolicyType, np
+		}
+		return false, objType, obj
+	}
+	return true, objType, obj
+}
+
 // WatchResource starts the watching of a resource type, manages its retry entries and calls
 // back the appropriate handler logic. It also starts a goroutine that goes over all retry objects
 // periodically or when explicitly requested.
@@ -1317,205 +1553,32 @@ func (oc *Controller) WatchResource(objectsToRetry *retryObjs) (*factory.Handler
 		objectsToRetry.labelSelectorForFilteredHandler, // filter out objects not matching these labels
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				oc.recordAddEvent(objectsToRetry.oType, obj)
-
-				key, err := getResourceKey(objectsToRetry.oType, obj)
-				if err != nil {
-					klog.Errorf("Upon add event: %v", err)
-					return
+				apply, _, nObj := oc.shouldApply(objectsToRetry.oType, obj)
+				if apply {
+					oc.addResourceHandler(nObj, objectsToRetry)
 				}
-				klog.V(5).Infof("Add event received for resource %v, key=%s", objectsToRetry.oType, key)
-
-				objectsToRetry.initRetryObjWithAdd(obj, key)
-				objectsToRetry.skipRetryObj(key)
-
-				// This only applies to pod watchers (pods + dynamic network policy handlers watching pods):
-				// if ovnkube-master is restarted, it will gets all the add events with completed pods
-				if oc.isObjectInTerminalState(objectsToRetry.oType, obj) {
-					oc.processObjectInTerminalState(objectsToRetry, obj, key, resourceEventAdd)
-					return
-				}
-
-				// If there is a delete entry with the same key, we got an add event for an object
-				// with the same name as a previous object that failed deletion.
-				// Destroy the old object before we add the new one.
-				if retryEntry := objectsToRetry.getObjRetryEntry(key); retryEntry != nil && retryEntry.oldObj != nil {
-					klog.Infof("Detected stale object during new object"+
-						" add of type %v with the same key: %s",
-						objectsToRetry.oType, key)
-					internalCacheEntry := oc.getInternalCacheEntry(objectsToRetry.oType, obj)
-					if err := oc.deleteResource(objectsToRetry, obj, internalCacheEntry); err != nil {
-						klog.Errorf("Failed to delete old object %s of type %v,"+
-							" during add event: %v", key, objectsToRetry.oType, err)
-						oc.recordErrorEvent(objectsToRetry.oType, obj, err)
-						objectsToRetry.unSkipRetryObj(key)
-						return
-					}
-					objectsToRetry.removeDeleteFromRetryObj(key)
-				}
-				start := time.Now()
-				if err := oc.addResource(objectsToRetry, obj, false); err != nil {
-					klog.Errorf("Failed to create %v object %s, error: %v",
-						objectsToRetry.oType, key, err)
-					oc.recordErrorEvent(objectsToRetry.oType, obj, err)
-					objectsToRetry.unSkipRetryObj(key)
-					return
-				}
-				klog.Infof("Creating %v %s took: %v", objectsToRetry.oType, key, time.Since(start))
-				objectsToRetry.deleteRetryObj(key, true)
-				oc.recordSuccessEvent(objectsToRetry.oType, obj)
 			},
-
 			UpdateFunc: func(old, newer interface{}) {
-				// skip the whole update if old and newer are equal
-				areEqual, err := areResourcesEqual(objectsToRetry.oType, old, newer)
-				if err != nil {
-					klog.Errorf("Could not compare old and newer resource objects of type %v: %v",
-						objectsToRetry.oType, err)
-					return
-				}
-				klog.V(5).Infof("Update event received for resource %s, old object is equal to new: %v",
-					objectsToRetry.oType, areEqual)
-				if areEqual {
-					return
-				}
-				oc.recordUpdateEvent(objectsToRetry.oType, newer)
-
-				// get the object keys for newer and old (expected to be the same)
-				newKey, err := getResourceKey(objectsToRetry.oType, newer)
-				if err != nil {
-					klog.Errorf("Update of resource %v failed when looking up key of new obj: %v",
-						objectsToRetry.oType, err)
-					return
-				}
-				oldKey, err := getResourceKey(objectsToRetry.oType, old)
-				if err != nil {
-					klog.Errorf("Update of resource %v failed  when looking up key of old obj: %v",
-						objectsToRetry.oType, err)
-					return
-				}
-
-				// skip the whole update if the new object doesn't exist anymore in the API server
-				newer, err = oc.getResourceFromInformerCache(objectsToRetry.oType, newKey)
-				if err != nil {
-					klog.Warningf("Unable to get %v %s from informer cache (perhaps it was already"+
-						" deleted?), skipping update: %v", objectsToRetry.oType, newKey, err)
-					return
-				}
-
-				klog.V(5).Infof("Update event received for resource %v, oldKey=%s, newKey=%s",
-					objectsToRetry.oType, oldKey, newKey)
-
-				objectsToRetry.skipRetryObj(newKey)
-				hasUpdateFunc := hasResourceAnUpdateFunc(objectsToRetry.oType)
-
-				// STEP 1:
-				// Delete existing (old) object if:
-				// a) it has a retry entry marked for deletion and doesn't use update or
-				// b) the resource is in terminal state (e.g. pod is completed) or
-				// c) this resource type has no update function, so an update means delete old obj and add new one
-				retryEntry := objectsToRetry.getObjRetryEntry(oldKey)
-				if retryEntry != nil && retryEntry.oldObj != nil {
-					// [step 1a] there is a retry entry marked for deletion
-					klog.Infof("Found old retry object for %v %s: will delete it",
-						objectsToRetry.oType, oldKey)
-					if err := oc.deleteResource(objectsToRetry, retryEntry.oldObj,
-						retryEntry.config); err != nil {
-						klog.Errorf("Failed to delete stale object %s, during update: %v", oldKey, err)
-						oc.recordErrorEvent(objectsToRetry.oType, retryEntry.oldObj, err)
-						objectsToRetry.initRetryObjWithAdd(newer, newKey)
-						objectsToRetry.unSkipRetryObj(oldKey)
+				oldApply, _, oldObj := oc.shouldApply(objectsToRetry.oType, old)
+				newApply, _, newObj := oc.shouldApply(objectsToRetry.oType, newer)
+				if oldApply == newApply {
+					if !oldApply {
 						return
 					}
-					// remove the old object from retry entry since it was correctly deleted
-					objectsToRetry.removeDeleteFromRetryObj(oldKey)
-
-				} else if oc.isObjectInTerminalState(objectsToRetry.oType, newer) { // check the latest status on newer
-					// [step 1b] The object is in a terminal state: delete it from the cluster,
-					// delete its retry entry and return. This only applies to pod watchers
-					// (pods + dynamic network policy handlers watching pods).
-					oc.processObjectInTerminalState(objectsToRetry, old, oldKey, resourceEventUpdate)
-					return
-
-				} else if !hasUpdateFunc {
-					// [step 1c] if this resource type has no update function,
-					// delete old obj and in step 2 add the new one
-					var existingCacheEntry interface{}
-					if retryEntry != nil {
-						existingCacheEntry = retryEntry.config
-					}
-					klog.Infof("Deleting old %s of type %s during update", oldKey, objectsToRetry.oType)
-					if err := oc.deleteResource(objectsToRetry, old, existingCacheEntry); err != nil {
-						klog.Errorf("Failed to delete %s %s, during update: %v",
-							objectsToRetry.oType, oldKey, err)
-						oc.recordErrorEvent(objectsToRetry.oType, old, err)
-						objectsToRetry.initRetryObjWithDelete(old, oldKey, nil)
-						objectsToRetry.initRetryObjWithAdd(newer, newKey)
-						objectsToRetry.unSkipRetryObj(oldKey)
-						return
-					}
-					// remove the old object from retry entry since it was correctly deleted
-					objectsToRetry.removeDeleteFromRetryObj(oldKey)
-				}
-
-				// STEP 2:
-				// Execute the update function for this resource type; resort to add if no update
-				// function is available.
-				if hasUpdateFunc {
-					klog.Infof("Updating %s %s", objectsToRetry.oType, newKey)
-					// if this resource type has an update func, just call the update function
-					if err := oc.updateResource(objectsToRetry, old, newer); err != nil {
-						klog.Errorf("Failed to update resource %v, old=%s, new=%s, error: %v",
-							objectsToRetry.oType, oldKey, newKey, err)
-						oc.recordErrorEvent(objectsToRetry.oType, newer, err)
-						if resourceNeedsUpdate(objectsToRetry.oType) {
-							objectsToRetry.initRetryObjWithUpdate(old, newer, newKey)
-						} else {
-							objectsToRetry.initRetryObjWithAdd(newer, newKey)
-						}
-						objectsToRetry.unSkipRetryObj(newKey)
-						return
-					}
-				} else { // we previously deleted old object, now let's add the new one
-					klog.Infof("Adding new %s of type %s", newKey, objectsToRetry.oType)
-					if err := oc.addResource(objectsToRetry, newer, false); err != nil {
-						oc.recordErrorEvent(objectsToRetry.oType, newer, err)
-						objectsToRetry.initRetryObjWithAdd(newer, newKey)
-						objectsToRetry.unSkipRetryObj(newKey)
-						klog.Errorf("Failed to add %s %s, during update: %v",
-							objectsToRetry.oType, newKey, err)
-						return
+					oc.updateResourceHandler(oldObj, newObj, objectsToRetry)
+				} else {
+					if newApply {
+						oc.addResourceHandler(newObj, objectsToRetry)
+					} else {
+						oc.deleteResourceHandler(oldObj, objectsToRetry)
 					}
 				}
-				objectsToRetry.deleteRetryObj(newKey, true)
-				oc.recordSuccessEvent(objectsToRetry.oType, newer)
-
 			},
 			DeleteFunc: func(obj interface{}) {
-				oc.recordDeleteEvent(objectsToRetry.oType, obj)
-				key, err := getResourceKey(objectsToRetry.oType, obj)
-				if err != nil {
-					klog.Errorf("Delete of resource %v failed: %v", objectsToRetry.oType, err)
-					return
+				apply, _, nObj := oc.shouldApply(objectsToRetry.oType, obj)
+				if apply {
+					oc.deleteResourceHandler(nObj, objectsToRetry)
 				}
-				klog.V(5).Infof("Delete event received for resource %v %s", objectsToRetry.oType, key)
-				// If object is in terminal state, we would have already deleted it during update.
-				// No reason to attempt to delete it here again.
-				if oc.isObjectInTerminalState(objectsToRetry.oType, obj) {
-					klog.Infof("Ignoring delete event for completed resource %v %s", objectsToRetry.oType, key)
-					return
-				}
-				objectsToRetry.skipRetryObj(key)
-				internalCacheEntry := oc.getInternalCacheEntry(objectsToRetry.oType, obj)
-				objectsToRetry.initRetryObjWithDelete(obj, key, internalCacheEntry) // set up the retry obj for deletion
-				if err := oc.deleteResource(objectsToRetry, obj, internalCacheEntry); err != nil {
-					objectsToRetry.unSkipRetryObj(key)
-					klog.Errorf("Failed to delete resource object %s of type %v, error: %v",
-						key, objectsToRetry.oType, err)
-					return
-				}
-				objectsToRetry.deleteRetryObj(key, true)
-				oc.recordSuccessEvent(objectsToRetry.oType, obj)
 			},
 		},
 		syncFunc) // adds all existing objects at startup
