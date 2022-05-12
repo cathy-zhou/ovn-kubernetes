@@ -210,6 +210,11 @@ func (oc *Controller) syncNetworkPolicies(networkPolicies []interface{}) error {
 		return fmt.Errorf("cannot find NetworkPolicy Egress ACLs: %v", err)
 	}
 
+	klog.Infof("Cathy debug found egresssAcls length %d", len(egressACLs))
+	for _, acl := range egressACLs {
+		klog.Infof("Cathy debug found %d egresssAcls direction %v", acl.Direction)
+	}
+
 	// if the first egress ACL is correct they should all be correct and not need to update
 	if len(egressACLs) > 0 && egressACLs[0].Direction != nbdb.ACLDirectionFromLport {
 		for _, acl := range egressACLs {
