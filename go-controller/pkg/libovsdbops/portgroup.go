@@ -161,12 +161,26 @@ func DeleteACLsFromPortGroupOps(nbClient libovsdbclient.Client, ops []libovsdb.O
 		return ops, nil
 	}
 
+	pACL := func(item *nbdb.ACL) bool {
+		for _, acl := range acls {
+			if isEquivalentACL(item, acl) {
+				return true
+			}
+		}
+		return false
+	}
+
+	matchAcls, err := FindACLsWithPredicate(nbClient, pACL)
+	if err != nil {
+		return nil, err
+	}
+
 	pg := nbdb.PortGroup{
 		Name: name,
 		ACLs: make([]string, 0, len(acls)),
 	}
 
-	for _, acl := range acls {
+	for _, acl := range matchAcls {
 		pg.ACLs = append(pg.ACLs, acl.UUID)
 	}
 
