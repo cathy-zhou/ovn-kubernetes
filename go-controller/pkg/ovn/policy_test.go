@@ -1098,9 +1098,21 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 						},
 					})
 				npTest := kNetworkPolicy{}
-				gressPolicyInitialData := npTest.getPolicyData([]*knet.NetworkPolicy{networkPolicy}, nil, []string{namespace2.Name}, nil, nbdb.ACLSeverityInfo, nbdb.ACLSeverityInfo, true, true)
-				defaultDenyInitialData := npTest.getDefaultDenyData(networkPolicy, nil, nbdb.ACLSeverityInfo, true, true)
+				gressPolicyInitialData := npTest.getPolicyData([]*knet.NetworkPolicy{networkPolicy}, nil, []string{namespace2.Name}, nil, nbdb.ACLSeverityInfo, nbdb.ACLSeverityInfo, true, false)
+				defaultDenyInitialData := npTest.getDefaultDenyData(networkPolicy, nil, nbdb.ACLSeverityInfo, true, false)
 				initialData := []libovsdb.TestData{}
+				lr := &nbdb.LogicalRouter{
+					UUID: types.OVNClusterRouter + "-UUID",
+					Name: types.OVNClusterRouter,
+					ExternalIDs: map[string]string{
+						"k8s-cluster-router":   "yes",
+						"k8s-ovn-topo-version": strconv.Itoa(types.OvnRoutingViaHostTopoVersion),
+					},
+					Options: map[string]string{
+						"always_learn_from_arp_request": "false",
+					},
+				}
+				initialData = append(initialData, lr)
 				initialData = append(initialData, gressPolicyInitialData...)
 				initialData = append(initialData, defaultDenyInitialData...)
 				fakeOvn.startWithDBSetup(
@@ -1122,7 +1134,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 
 				err := fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				fakeOvn.controller.syncNetworkPolicies([]interface{}{networkPolicy})
+				fakeOvn.controller.WatchNetworkPolicy()
 
 				fakeOvn.asf.ExpectEmptyAddressSet(namespaceName1)
 				fakeOvn.asf.ExpectEmptyAddressSet(namespaceName2)
@@ -1135,6 +1147,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 				expectedData := npTest.getPolicyData([]*knet.NetworkPolicy{networkPolicy}, nil, []string{namespace2.Name}, nil, nbdb.ACLSeverityInfo, nbdb.ACLSeverityInfo, false, true)
 				defaultDenyExpectedData := npTest.getDefaultDenyData(networkPolicy, nil, nbdb.ACLSeverityInfo, false, true)
 				expectedData = append(expectedData, defaultDenyExpectedData...)
+				expectedData = append(expectedData, lr)
 				gomega.Eventually(fakeOvn.nbClient).Should(libovsdb.HaveData(expectedData...))
 
 				return nil
