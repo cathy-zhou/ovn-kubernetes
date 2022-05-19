@@ -58,10 +58,11 @@ type ACLLoggingLevels struct {
 }
 
 type sharedPortGroupInfo struct {
+	sync.Mutex
 	pgName           string
 	aclLogDeny       string
 	aclLogAllow      string
-	sharedPolicyCnt  int // number of policies sharing the Per-namespace shared ingress port group
+	policies         map[string]bool // policies sharing this port group
 	lspIngressRefCnt int
 	lspEgressRefCnt  int
 	podHandler       *factory.Handler
@@ -142,7 +143,7 @@ type Controller struct {
 	externalGWCache map[ktypes.NamespacedName]*externalRouteInfo
 	exGWCacheMutex  sync.RWMutex
 
-	// Info about policy-shared portGroup. key is <namespace>_<podSelectorString>
+	// Info about policy-shared portGroup. key is shared port group name
 	spgInfoMap   map[string]*sharedPortGroupInfo
 	spgInfoMutex sync.Mutex
 

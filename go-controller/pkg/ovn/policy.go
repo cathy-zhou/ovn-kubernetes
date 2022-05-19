@@ -1188,11 +1188,11 @@ func (oc *Controller) createSharedNMPortGroup(policy *knet.NetworkPolicy, np *ne
 
 	spgInfo := &sharedPortGroupInfo{
 		pgName:           pgHashName,
-		sharedPolicyCnt:  0,
 		lspIngressRefCnt: 0,
 		lspEgressRefCnt:  0,
 		podHandler:       nil,
 		localPods:        sync.Map{},
+		policies:         map[string]bool{},
 	}
 	var selectedPods []interface{}
 	handleSharedPortGroupInitialSelectedPods := func(objs []interface{}) error {
@@ -1233,11 +1233,6 @@ func (oc *Controller) createSharedNMPortGroup(policy *knet.NetworkPolicy, np *ne
 func (oc *Controller) deleteSharedNMPortGroup(np *networkPolicy, spgInfo *sharedPortGroupInfo, ops []libovsdb.Operation) ([]libovsdb.Operation, error) {
 	klog.V(5).Infof("Delete shared portGroup for %s", np.sharePortGroupName)
 
-	if spgInfo.podHandler != nil {
-		oc.watchFactory.RemovePodHandler(spgInfo.podHandler)
-		spgInfo.podHandler = nil
-	}
-
 	pgName := spgInfo.pgName
 
 	// delete shared portgroup
@@ -1250,9 +1245,7 @@ func (oc *Controller) deleteSharedNMPortGroup(np *networkPolicy, spgInfo *shared
 	return ops, nil
 }
 
-func (oc *Controller) createSharedPolicy(np *networkPolicy, policy *knet.NetworkPolicy, aclLogDeny, aclLogAllow string) error {
-	var err error
-
+func (oc *Controller) createSharedPolicy(np *networkPolicy, policy *knet.NetworkPolicy, aclLogDeny, aclLogAllow string) (err error) {
 	klog.Infof("Policy %s/%s to be added to shared portGroup", np.namespace, np.name)
 	// create shared portGroup
 	oc.spgInfoMutex.Lock()
@@ -1268,7 +1261,14 @@ func (oc *Controller) createSharedPolicy(np *networkPolicy, policy *knet.Network
 		spgInfo.aclLogDeny = aclLogDeny
 		oc.spgInfoMap[np.sharePortGroupName] = spgInfo
 	}
-	spgInfo.sharedPolicyCnt++
+	spgInfo.Lock()
+	oc.spgInfoMutex.Unlock()
+
+	defer spgInfo.Unlock()
+	_, ok = spgInfo.policies[getPolicyNamespacedName(policy)]
+	if ok {
+		return nil
+	}
 
 	np.portGroupName = spgInfo.pgName
 	acls := []*nbdb.ACL{}
@@ -1279,7 +1279,6 @@ func (oc *Controller) createSharedPolicy(np *networkPolicy, policy *knet.Network
 			acls = append(acls, ingressAllowACL)
 
 		}
-		spgInfo.lspIngressRefCnt++
 	}
 	if np.egressDefDeny {
 		if spgInfo.lspEgressRefCnt == 0 {
@@ -1287,9 +1286,19 @@ func (oc *Controller) createSharedPolicy(np *networkPolicy, policy *knet.Network
 			acls = append(acls, egressDenyACL)
 			acls = append(acls, egressAllowACL)
 		}
-		spgInfo.lspEgressRefCnt++
 	}
-	oc.spgInfoMutex.Unlock()
+
+	defer func() {
+		if err == nil {
+			if np.ingressDefDeny {
+				spgInfo.lspIngressRefCnt++
+			}
+			if np.egressDefDeny {
+				spgInfo.lspEgressRefCnt++
+			}
+			spgInfo.policies[getPolicyNamespacedName(policy)] = true
+		}
+	}()
 
 	if len(acls) == 0 {
 		return nil
@@ -1315,99 +1324,95 @@ func (oc *Controller) createSharedPolicy(np *networkPolicy, policy *knet.Network
 
 func (oc *Controller) deleteSharedPolicy(np *networkPolicy) error {
 	var err error
-
 	klog.V(5).Infof("Policy %s/%s to be removed from shared portGroup %s", np.namespace, np.name, np.sharePortGroupName)
 
 	// delete shared portGroup
 	oc.spgInfoMutex.Lock()
-	defer oc.spgInfoMutex.Unlock()
 	spgInfo, ok := oc.spgInfoMap[np.sharePortGroupName]
 	if !ok {
+		oc.spgInfoMutex.Unlock()
 		return nil
 	}
-	acls := []*nbdb.ACL{}
-	// delete shared portGroup if this is the last policy sharing the perNamespace portGroup
-	if np.ingressDefDeny {
-		if spgInfo.lspIngressRefCnt > 0 {
+	spgInfo.Lock()
+	oc.spgInfoMutex.Unlock()
+	defer spgInfo.Unlock()
+
+	// check if this is the last policy sharing this port group
+	expectedLastPolicyNum := 0
+	_, ok = spgInfo.policies[getNPNamespacedName(np)]
+	if ok {
+		expectedLastPolicyNum = 1
+	}
+	ops := []libovsdb.Operation{}
+	isLastPolicyInSharedGroup := len(spgInfo.policies) == expectedLastPolicyNum
+	if isLastPolicyInSharedGroup {
+		ops, err = oc.deleteSharedNMPortGroup(np, spgInfo, ops)
+		if err != nil {
+			return err
+		}
+	}
+
+	if ok {
+		acls := []*nbdb.ACL{}
+		// delete shared portGroup if this is the last policy sharing the perNamespace portGroup
+		if np.ingressDefDeny {
 			if spgInfo.lspIngressRefCnt == 1 {
 				ingressDenyACL, ingressAllowACL := buildDenyACLs(np.sharePortGroupName, "DefaultDeny", np.portGroupName, spgInfo.aclLogDeny, knet.PolicyTypeIngress)
 				acls = append(acls, ingressDenyACL)
 				acls = append(acls, ingressAllowACL)
+			} else if spgInfo.lspIngressRefCnt <= 0 {
+				return fmt.Errorf("unexpected ingress refCount number sharing portGroup %s", np.sharePortGroupName)
 			}
-			spgInfo.lspIngressRefCnt--
-			defer func() {
-				if err != nil {
-					spgInfo.lspIngressRefCnt++
-				}
-			}()
-		} else {
-			klog.Errorf("Unexpected ingress refCount number sharing portGroup %s", np.sharePortGroupName)
 		}
-	}
-	if np.egressDefDeny {
-		if spgInfo.lspEgressRefCnt > 0 {
+		if np.egressDefDeny {
 			if spgInfo.lspEgressRefCnt == 1 {
 				egressDenyACL, egressAllowACL := buildDenyACLs(np.sharePortGroupName, "DefaultDeny", np.portGroupName, spgInfo.aclLogDeny, knet.PolicyTypeEgress)
 				acls = append(acls, egressDenyACL)
 				acls = append(acls, egressAllowACL)
+			} else if spgInfo.lspEgressRefCnt <= 0 {
+				klog.Errorf("Unexpected egress refCount number sharing portGroup %s", np.sharePortGroupName)
 			}
+		}
+
+		if np.created {
+			localAcls := oc.buildNetworkPolicyACLs(np, spgInfo.pgName, spgInfo.aclLogAllow)
+			acls = append(acls, localAcls...)
+		}
+		klog.V(5).Infof("Destroying acls %+v for network policy %s/%s sharing portGroup %s",
+			acls, np.namespace, np.name, np.sharePortGroupName)
+
+		ops, err = libovsdbops.DeleteACLsFromPortGroupOps(oc.nbClient, ops, spgInfo.pgName, acls...)
+		if err != nil {
+			return fmt.Errorf("failed to make ops for remove acls %+v for network policy %s/%s sharing portGroup %s: %v",
+				acls, np.namespace, np.name, np.sharePortGroupName, err.Error())
+		}
+		ops, err = libovsdbops.DeleteACLsOps(oc.nbClient, ops, acls...)
+		if err != nil {
+			return fmt.Errorf("failed to make ops for remove acls %+v: %v", acls, err.Error())
+		}
+
+		_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
+		if err != nil {
+			return fmt.Errorf("failed to execute ovsdb txn to delete network policy: %s/%s, error: %v",
+				np.namespace, np.name, err)
+		}
+		if np.ingressDefDeny {
+			spgInfo.lspIngressRefCnt--
+		}
+		if np.egressDefDeny {
 			spgInfo.lspEgressRefCnt--
-			defer func() {
-				if err != nil {
-					spgInfo.lspEgressRefCnt++
-				}
-			}()
-		} else {
-			klog.Errorf("Unexpected egress refCount number sharing portGroup %s", np.sharePortGroupName)
 		}
+		delete(spgInfo.policies, getNPNamespacedName(np))
 	}
-
-	if np.created {
-		localAcls := oc.buildNetworkPolicyACLs(np, spgInfo.pgName, spgInfo.aclLogAllow)
-		acls = append(acls, localAcls...)
-	}
-	klog.V(5).Infof("Destroying acls %+v for network policy %s/%s sharing portGroup %s",
-		acls, np.namespace, np.name, np.sharePortGroupName)
-
-	ops, err := libovsdbops.DeleteACLsFromPortGroupOps(oc.nbClient, nil, spgInfo.pgName, acls...)
-	if err != nil {
-		return fmt.Errorf("failed to make ops for remove acls %+v for network policy %s/%s sharing portGroup %s: %v",
-			acls, np.namespace, np.name, np.sharePortGroupName, err.Error())
-	}
-	ops, err = libovsdbops.DeleteACLsOps(oc.nbClient, ops, acls...)
-	if err != nil {
-		return fmt.Errorf("failed to make ops for remove acls %+v: %v", acls, err.Error())
-	}
-
-	if spgInfo.sharedPolicyCnt > 0 {
-		spgInfo.sharedPolicyCnt--
-		defer func() {
-			if err != nil {
-				spgInfo.sharedPolicyCnt++
-			}
-		}()
-		if spgInfo.sharedPolicyCnt == 0 {
-			ops, err = oc.deleteSharedNMPortGroup(np, spgInfo, ops)
-			if err != nil {
-				return err
-			}
-			_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
-			if err != nil {
-				return fmt.Errorf("failed to execute ovsdb txn to delete network policy: %s/%s, error: %v",
-					np.namespace, np.name, err)
-			}
-			klog.V(5).Infof("Policy %s/%s is the last one being removed from shared portGroup %s")
-			delete(oc.spgInfoMap, np.sharePortGroupName)
-		} else {
-			_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
-			if err != nil {
-				return fmt.Errorf("failed to execute ovsdb txn to delete network policy: %s/%s, error: %v",
-					np.namespace, np.name, err)
-			}
+	if isLastPolicyInSharedGroup {
+		if spgInfo.podHandler != nil {
+			oc.watchFactory.RemovePodHandler(spgInfo.podHandler)
+			spgInfo.podHandler = nil
 		}
-	} else {
-		klog.Errorf("Unexpected policy count sharing portGroup %s", np.sharePortGroupName)
+
+		delete(oc.spgInfoMap, np.sharePortGroupName)
 	}
+
 	return nil
 }
 
@@ -1527,6 +1532,11 @@ func (oc *Controller) createNetworkPolicy(np *networkPolicy, policy *knet.Networ
 	}
 
 	if np.sharePortGroupName != "" {
+		err := oc.createSharedPolicy(np, policy, aclLogDeny, aclLogAllow)
+		if err != nil {
+			return fmt.Errorf("failed to create shared portGroup for policy %s/%s: %v", np.namespace, np.name, err)
+		}
+
 		np.Lock()
 		defer np.Unlock()
 		if np.deleted {
@@ -1658,24 +1668,6 @@ func (oc *Controller) addNetworkPolicy(policy *knet.NetworkPolicy) error {
 	aclLogAllow := nsInfo.aclLogging.Allow
 	portGroupIngressDenyName := nsInfo.portGroupIngressDenyName
 	portGroupEgressDenyName := nsInfo.portGroupEgressDenyName
-	defer func() {
-		// rollback network policy
-		if err != nil {
-			err = oc.deleteNetworkPolicy(policy, np)
-			if err != nil {
-				// rollback failed, add to retry to cleanup
-				key := getPolicyNamespacedName(policy)
-				oc.retryNetworkPolicies.addDeleteToRetryObj(policy, key, np)
-			}
-		}
-	}()
-	if np.sharePortGroupName != "" {
-		err = oc.createSharedPolicy(np, policy, aclLogDeny, aclLogAllow)
-		if err != nil {
-			nsUnlock()
-			return fmt.Errorf("failed to create shared portGroup for policy %s/%s: %v", np.namespace, np.name, err)
-		}
-	}
 	nsUnlock()
 	err = oc.createNetworkPolicy(np, policy, aclLogDeny, aclLogAllow,
 		portGroupIngressDenyName, portGroupEgressDenyName)
@@ -1687,6 +1679,12 @@ func (oc *Controller) addNetworkPolicy(policy *knet.NetworkPolicy) error {
 	// Now do nsinfo operations to set the policy
 	nsInfo, nsUnlock, err = oc.ensureNamespaceLocked(policy.Namespace, false, nil)
 	if err != nil {
+		// rollback network policy
+		if err := oc.deleteNetworkPolicy(policy, np); err != nil {
+			// rollback failed, add to retry to cleanup
+			key := getPolicyNamespacedName(policy)
+			oc.retryNetworkPolicies.addDeleteToRetryObj(policy, key, np)
+		}
 		return fmt.Errorf("unable to ensure namespace for network policy: %s, namespace: %s, error: %v",
 			policy.Name, policy.Namespace, err)
 	}
@@ -2060,4 +2058,8 @@ func (oc *Controller) shutdownHandlers(np *networkPolicy) {
 
 func getPolicyNamespacedName(policy *knet.NetworkPolicy) string {
 	return fmt.Sprintf("%v/%v", policy.Namespace, policy.Name)
+}
+
+func getNPNamespacedName(np *networkPolicy) string {
+	return fmt.Sprintf("%v/%v", np.namespace, np.name)
 }
