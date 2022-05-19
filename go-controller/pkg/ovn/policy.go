@@ -1195,11 +1195,14 @@ func (oc *Controller) createSharedNMPortGroup(policy *knet.NetworkPolicy, np *ne
 		localPods:        sync.Map{},
 	}
 	var selectedPods []interface{}
-	var err error
 	handleSharedPortGroupInitialSelectedPods := func(objs []interface{}) error {
 		selectedPods = objs
 		policyPorts := oc.processSharedPortGroupLocalPodSelectorSetPods(spgInfo, selectedPods...)
-		ingressPG.Ports = append(ingressPG.Ports, policyPorts...)
+		ingressPG.Ports = policyPorts
+		err := libovsdbops.CreateOrUpdatePortGroups(oc.nbClient, ingressPG)
+		if err != nil {
+			return fmt.Errorf("failed to create port group %s: %v", ingressPG.Name, err)
+		}
 		return nil
 	}
 	// NetworkPolicy is validated by the apiserver
@@ -1223,17 +1226,6 @@ func (oc *Controller) createSharedNMPortGroup(policy *knet.NetworkPolicy, np *ne
 		return nil, err
 	}
 
-	ops, err := libovsdbops.CreateOrUpdatePortGroupsOps(oc.nbClient, nil, ingressPG)
-	if err != nil {
-		oc.processSharedPortGroupLocalPodSelectorDelPods(spgInfo, selectedPods...)
-		return nil, fmt.Errorf("failed to create ops to add port to a port group: %v", err)
-	}
-
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
-	if err != nil {
-		oc.processSharedPortGroupLocalPodSelectorDelPods(spgInfo, selectedPods...)
-		return nil, fmt.Errorf("failed to run ovsdb txn to add ports to port group: %v", err)
-	}
 	spgInfo.podHandler = podHandler
 	return spgInfo, nil
 }

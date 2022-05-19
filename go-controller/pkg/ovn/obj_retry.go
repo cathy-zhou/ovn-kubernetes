@@ -613,7 +613,7 @@ func (oc *Controller) addResource(objectsToRetry *retryObjs, obj interface{}, fr
 		}
 
 		if err = oc.addNetworkPolicy(np); err != nil {
-			klog.Infof("Network Policy retry delete failed for %s/%s, will try again later: %v",
+			klog.Infof("Network Policy retry add failed for %s/%s, will try again later: %v",
 				np.Namespace, np.Name, err)
 			return err
 		}
