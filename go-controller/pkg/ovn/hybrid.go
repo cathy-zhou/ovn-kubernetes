@@ -25,7 +25,7 @@ import (
 // hybridOverlayNodeEnsureSubnet allocates a subnet and sets the
 // hybrid overlay subnet annotation. It returns any newly allocated subnet
 // or an error. If an error occurs, the newly allocated subnet will be released.
-func (oc *Controller) hybridOverlayNodeEnsureSubnet(node *kapi.Node, annotator kube.Annotator) (*net.IPNet, error) {
+func (oc *DefaultL3Controller) hybridOverlayNodeEnsureSubnet(node *kapi.Node, annotator kube.Annotator) (*net.IPNet, error) {
 	var existingSubnets []*net.IPNet
 
 	// Do not allocate a subnet if the node already has one
@@ -52,7 +52,7 @@ func (oc *Controller) hybridOverlayNodeEnsureSubnet(node *kapi.Node, annotator k
 	return hostSubnets[0], nil
 }
 
-func (oc *Controller) releaseHybridOverlayNodeSubnet(nodeName string) {
+func (oc *DefaultL3Controller) releaseHybridOverlayNodeSubnet(nodeName string) {
 	oc.hybridOverlaySubnetAllocator.ReleaseAllNodeSubnets(nodeName)
 	klog.Infof("Deleted hybrid overlay HostSubnets for node %s", nodeName)
 }
@@ -64,7 +64,7 @@ func (oc *Controller) releaseHybridOverlayNodeSubnet(nodeName string) {
 //   - annotation, no lsp: configure lsp
 //   - annotation, lsp: ensure lsp matches annotation
 //   - no annotation, lsp: set annotation from lsp
-func (oc *Controller) handleHybridOverlayPort(node *kapi.Node, annotator kube.Annotator) error {
+func (oc *DefaultL3Controller) handleHybridOverlayPort(node *kapi.Node, annotator kube.Annotator) error {
 	var err error
 	var annotationMAC, portMAC net.HardwareAddr
 	portName := util.GetHybridOverlayPortName(node.Name)
@@ -164,7 +164,7 @@ func (oc *Controller) handleHybridOverlayPort(node *kapi.Node, annotator kube.An
 	return nil
 }
 
-func (oc *Controller) deleteHybridOverlayPort(node *kapi.Node) {
+func (oc *DefaultL3Controller) deleteHybridOverlayPort(node *kapi.Node) {
 	klog.Infof("Removing node %s hybrid overlay port", node.Name)
 	portName := util.GetHybridOverlayPortName(node.Name)
 	lsp := nbdb.LogicalSwitchPort{Name: portName}
@@ -174,7 +174,7 @@ func (oc *Controller) deleteHybridOverlayPort(node *kapi.Node) {
 	}
 }
 
-func (oc *Controller) setupHybridLRPolicySharedGw(nodeSubnets []*net.IPNet, nodeName string, portMac net.HardwareAddr) error {
+func (oc *DefaultL3Controller) setupHybridLRPolicySharedGw(nodeSubnets []*net.IPNet, nodeName string, portMac net.HardwareAddr) error {
 	klog.Infof("Setting up logical route policy for hybrid subnet on node: %s", nodeName)
 	var L3Prefix string
 	for _, nodeSubnet := range nodeSubnets {
@@ -309,7 +309,7 @@ func (oc *Controller) setupHybridLRPolicySharedGw(nodeSubnets []*net.IPNet, node
 	return nil
 }
 
-func (oc *Controller) removeHybridLRPolicySharedGW(nodeName string) error {
+func (oc *DefaultL3Controller) removeHybridLRPolicySharedGW(nodeName string) error {
 	name := ovntypes.HybridSubnetPrefix + nodeName
 
 	if err := libovsdbops.DeleteLogicalRouterPoliciesWithPredicate(oc.nbClient, ovntypes.OVNClusterRouter, func(item *nbdb.LogicalRouterPolicy) bool {
@@ -332,7 +332,7 @@ func (oc *Controller) removeHybridLRPolicySharedGW(nodeName string) error {
 }
 
 // takes the node name and allocates the hybrid overlay distributed router ip address
-func (oc *Controller) allocateHybridOverlayDRIP(node *kapi.Node) error {
+func (oc *DefaultL3Controller) allocateHybridOverlayDRIP(node *kapi.Node) error {
 	if atomic.LoadUint32(&oc.allInitialPodsProcessed) == 0 {
 		return fmt.Errorf("cannot allocate hybrid overlay distributed router ip for nodes until all initial pods are processed")
 	}
