@@ -878,6 +878,7 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 	ginkgo.BeforeEach(func() {
 		// Restore global default values before each testcase
 		gomega.Expect(config.PrepareTestConfig()).To(gomega.Succeed())
+		config.Default.RawClusterSubnets = clusterCIDR
 
 		app = cli.NewApp()
 		app.Name = "test"
@@ -962,16 +963,18 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 		err = f.Start()
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-		clusterController = NewOvnController(fakeClient, f, stopChan, addressset.NewFakeAddressSetFactory(),
-			libovsdbOvnNBClient, libovsdbOvnSBClient,
-			record.NewFakeRecorder(0))
+		ovnMHController := NewOvnMHController(fakeClient, "", f,
+			stopChan, libovsdbOvnNBClient, libovsdbOvnSBClient,
+			record.NewFakeRecorder(0), nil)
+		clusterController, err = ovnMHController.NewOvnController(addressset.NewFakeAddressSetFactory())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		clusterController.loadBalancerGroupUUID = expectedClusterLBGroup.UUID
 		gomega.Expect(clusterController).NotTo(gomega.BeNil())
 		clusterController.defaultGatewayCOPPUUID, err = EnsureDefaultCOPP(libovsdbOvnNBClient)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 		clusterController.SCTPSupport = true
-		clusterController.joinSwIPManager, _ = lsm.NewJoinLogicalSwitchIPManager(clusterController.nbClient, expectedNodeSwitch.UUID, []string{node1.Name})
+		clusterController.joinSwIPManager, _ = lsm.NewJoinLogicalSwitchIPManager(clusterController.mc.nbClient, expectedNodeSwitch.UUID, []string{node1.Name})
 		_, _ = clusterController.joinSwIPManager.EnsureJoinLRPIPs(types.OVNClusterRouter)
 	})
 
@@ -1029,7 +1032,7 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 
 			skipSnat := false
 			expectedDatabaseState = generateGatewayInitExpectedNB(expectedDatabaseState, expectedOVNClusterRouter, expectedNodeSwitch, node1.Name, clusterSubnets, []*net.IPNet{subnet}, l3GatewayConfig, []*net.IPNet{classBIPAddress(node1.LrpIP)}, []*net.IPNet{classBIPAddress(node1.DrLrpIP)}, skipSnat, node1.NodeMgmtPortIP)
-			gomega.Eventually(clusterController.nbClient).Should(libovsdbtest.HaveData(expectedDatabaseState))
+			gomega.Eventually(clusterController.mc.nbClient).Should(libovsdbtest.HaveData(expectedDatabaseState))
 
 			return nil
 		}
@@ -1084,7 +1087,7 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 
 			skipSnat := false
 			expectedDatabaseState = generateGatewayInitExpectedNB(expectedDatabaseState, expectedOVNClusterRouter, expectedNodeSwitch, node1.Name, clusterSubnets, []*net.IPNet{subnet}, l3GatewayConfig, []*net.IPNet{classBIPAddress(node1.LrpIP)}, []*net.IPNet{classBIPAddress(node1.DrLrpIP)}, skipSnat, node1.NodeMgmtPortIP)
-			gomega.Eventually(clusterController.nbClient).Should(libovsdbtest.HaveData(expectedDatabaseState))
+			gomega.Eventually(clusterController.mc.nbClient).Should(libovsdbtest.HaveData(expectedDatabaseState))
 
 			return nil
 		}
@@ -1125,7 +1128,7 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 			skipSnat := false
 			l3Config := node1.gatewayConfig(config.GatewayModeShared, uint(vlanID))
 			expectedDatabaseState = generateGatewayInitExpectedNB(expectedDatabaseState, expectedOVNClusterRouter, expectedNodeSwitch, node1.Name, clusterSubnets, []*net.IPNet{subnet}, l3Config, []*net.IPNet{classBIPAddress(node1.LrpIP)}, []*net.IPNet{classBIPAddress(node1.DrLrpIP)}, skipSnat, node1.NodeMgmtPortIP)
-			gomega.Eventually(clusterController.nbClient).Should(libovsdbtest.HaveData(expectedDatabaseState))
+			gomega.Eventually(clusterController.mc.nbClient).Should(libovsdbtest.HaveData(expectedDatabaseState))
 
 			ginkgo.By("modifying the node and triggering an update")
 
@@ -1187,12 +1190,12 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 			skipSnat := false
 			l3Config := node1.gatewayConfig(config.GatewayModeLocal, uint(vlanID))
 			expectedDatabaseState = generateGatewayInitExpectedNB(expectedDatabaseState, expectedOVNClusterRouter, expectedNodeSwitch, node1.Name, clusterSubnets, []*net.IPNet{subnet}, l3Config, []*net.IPNet{classBIPAddress(node1.LrpIP)}, []*net.IPNet{classBIPAddress(node1.DrLrpIP)}, skipSnat, node1.NodeMgmtPortIP)
-			gomega.Eventually(clusterController.nbClient).Should(libovsdbtest.HaveData(expectedDatabaseState))
+			gomega.Eventually(clusterController.mc.nbClient).Should(libovsdbtest.HaveData(expectedDatabaseState))
 			ginkgo.By("Bringing down NBDB")
 			// inject transient problem, nbdb is down
-			clusterController.nbClient.Close()
+			clusterController.mc.nbClient.Close()
 			gomega.Eventually(func() bool {
-				return clusterController.nbClient.Connected()
+				return clusterController.mc.nbClient.Connected()
 			}).Should(gomega.BeFalse())
 
 			ginkgo.By("modifying the node and triggering an update")
@@ -1216,7 +1219,7 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 			connCtx, cancel := context.WithTimeout(context.Background(), types.OVSDBTimeout)
 			defer cancel()
 			ginkgo.By("bring up NBDB")
-			resetNBClient(connCtx, clusterController.nbClient)
+			resetNBClient(connCtx, clusterController.mc.nbClient)
 			setRetryObjWithNoBackoff(node1.Name, clusterController.retryNodes)
 			clusterController.retryNodes.RequestRetryObjs() // retry the failed entry
 			ginkgo.By("should be no retry entry after update completes")
@@ -1228,7 +1231,7 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 					}
 				}
 			}
-			gomega.Eventually(clusterController.nbClient).Should(libovsdbtest.HaveData(expectedDatabaseState))
+			gomega.Eventually(clusterController.mc.nbClient).Should(libovsdbtest.HaveData(expectedDatabaseState))
 			return nil
 		}
 
@@ -1642,9 +1645,13 @@ func TestController_allocateNodeSubnets(t *testing.T) {
 			}
 			t.Cleanup(libovsdbCleanup.Cleanup)
 
-			clusterController := NewOvnController(fakeClient, f, stopChan, addressset.NewFakeAddressSetFactory(),
-				libovsdbOvnNBClient, libovsdbOvnSBClient,
-				record.NewFakeRecorder(0))
+			ovnMHController := NewOvnMHController(fakeClient, "", f,
+				stopChan, libovsdbOvnNBClient, libovsdbOvnSBClient,
+				record.NewFakeRecorder(0), nil)
+			clusterController, err := ovnMHController.NewOvnController(addressset.NewFakeAddressSetFactory())
+			if err != nil {
+				t.Fatalf("Error creating OVN controller: %v", err)
+			}
 			clusterController.loadBalancerGroupUUID = expectedClusterLBGroup.UUID
 
 			// configure the cluster allocators
@@ -1735,14 +1742,13 @@ func TestController_syncNodesRetriable(t *testing.T) {
 			}
 			t.Cleanup(libovsdbCleanup.Cleanup)
 
-			controller := NewOvnController(
-				fakeClient,
-				f,
-				stopChan,
-				addressset.NewFakeAddressSetFactory(),
-				nbClient,
-				sbClient,
-				record.NewFakeRecorder(0))
+			ovnMHController := NewOvnMHController(fakeClient, "", f,
+				stopChan, nbClient, sbClient,
+				record.NewFakeRecorder(0), nil)
+			controller, err := ovnMHController.NewOvnController(addressset.NewFakeAddressSetFactory())
+			if err != nil {
+				t.Fatalf("Error creating OVN Controller: %v", err)
+			}
 
 			controller.joinSwIPManager, err = lsm.NewJoinLogicalSwitchIPManager(nbClient, "", []string{})
 			if err != nil {
@@ -1822,14 +1828,13 @@ func TestController_deleteStaleNodeChassis(t *testing.T) {
 			}
 			t.Cleanup(libovsdbCleanup.Cleanup)
 
-			controller := NewOvnController(
-				fakeClient,
-				f,
-				stopChan,
-				addressset.NewFakeAddressSetFactory(),
-				nbClient,
-				sbClient,
-				record.NewFakeRecorder(0))
+			ovnMHController := NewOvnMHController(fakeClient, "", f,
+				stopChan, nbClient, sbClient,
+				record.NewFakeRecorder(0), nil)
+			controller, err := ovnMHController.NewOvnController(addressset.NewFakeAddressSetFactory())
+			if err != nil {
+				t.Fatalf("Error creating OVN Controller: %v", err)
+			}
 
 			controller.joinSwIPManager, err = lsm.NewJoinLogicalSwitchIPManager(nbClient, "", []string{})
 			if err != nil {

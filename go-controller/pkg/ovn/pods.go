@@ -86,7 +86,7 @@ func (oc *Controller) syncPodsRetriable(pods []interface{}) error {
 	}
 
 	// get all the nodes from the watchFactory
-	nodes, err := oc.watchFactory.GetNodes()
+	nodes, err := oc.mc.watchFactory.GetNodes()
 	if err != nil {
 		return fmt.Errorf("failed to get nodes: %v", err)
 	}
@@ -105,7 +105,7 @@ func (oc *Controller) syncPodsRetriable(pods []interface{}) error {
 		}
 		sw.UUID, _ = oc.lsManager.GetUUID(n.Name)
 
-		ops, err = libovsdbops.DeleteLogicalSwitchPortsWithPredicateOps(oc.nbClient, ops, &sw, p)
+		ops, err = libovsdbops.DeleteLogicalSwitchPortsWithPredicateOps(oc.mc.nbClient, ops, &sw, p)
 		if err != nil {
 			return fmt.Errorf("could not generate ops to delete stale ports from logical switch %s (%+v)", n.Name, err)
 		}
@@ -127,7 +127,7 @@ func (oc *Controller) syncPodsRetriable(pods []interface{}) error {
 			for _, ip := range AllocatedHybridOverlayDRIPes {
 				sliceHybridOverlayDRIP = append(sliceHybridOverlayDRIP, ip.IP.String())
 			}
-			err = oc.kube.SetAnnotationsOnNode(n.Name, map[string]interface{}{hotypes.HybridOverlayDRIP: strings.Join(sliceHybridOverlayDRIP, ",")})
+			err = oc.mc.kube.SetAnnotationsOnNode(n.Name, map[string]interface{}{hotypes.HybridOverlayDRIP: strings.Join(sliceHybridOverlayDRIP, ",")})
 			if err != nil {
 				return fmt.Errorf("cannot set hybrid annotations on node %s - %v", n.Name, err)
 
@@ -136,7 +136,7 @@ func (oc *Controller) syncPodsRetriable(pods []interface{}) error {
 		}
 	}
 
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
+	_, err = libovsdbops.TransactAndCheck(oc.mc.nbClient, ops)
 	if err != nil {
 		return fmt.Errorf("could not remove stale logicalPorts from switches (%+v)", err)
 	}
@@ -148,7 +148,7 @@ func (oc *Controller) syncPodsRetriable(pods []interface{}) error {
 // that owns such port (aka nodeName), based on the logical port name.
 func (oc *Controller) lookupPortUUIDAndNodeName(logicalPort string) (portUUID string, logicalSwitch string, err error) {
 	lsp := &nbdb.LogicalSwitchPort{Name: logicalPort}
-	lsp, err = libovsdbops.GetLogicalSwitchPort(oc.nbClient, lsp)
+	lsp, err = libovsdbops.GetLogicalSwitchPort(oc.mc.nbClient, lsp)
 	if err != nil {
 		return "", "", err
 	}
@@ -160,7 +160,7 @@ func (oc *Controller) lookupPortUUIDAndNodeName(logicalPort string) (portUUID st
 		}
 		return false
 	}
-	nodeSwitches, err := libovsdbops.FindLogicalSwitchesWithPredicate(oc.nbClient, p)
+	nodeSwitches, err := libovsdbops.FindLogicalSwitchesWithPredicate(oc.mc.nbClient, p)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to get node logical switch for logical port %s (%s): %w", logicalPort, lsp.UUID, err)
 	}
@@ -232,7 +232,7 @@ func (oc *Controller) deleteLogicalPort(pod *kapi.Pod, portInfo *lpInfo) (err er
 	// check to make sure no other pods are using this IP before we try to release it if this is a completed pod.
 	if util.PodCompleted(pod) {
 		if shouldRelease, err = oc.lsManager.ConditionalIPRelease(nodeName, podIfAddrs, func() (bool, error) {
-			pods, err := oc.watchFactory.GetAllPods()
+			pods, err := oc.mc.watchFactory.GetAllPods()
 			if err != nil {
 				return false, fmt.Errorf("unable to get pods to determine if completed pod IP is in use by another pod. "+
 					"Will not release pod %s/%s IP: %#v from allocator", pod.Namespace, pod.Name, podIfAddrs)
@@ -282,13 +282,13 @@ func (oc *Controller) deleteLogicalPort(pod *kapi.Pod, portInfo *lpInfo) (err er
 	}
 	allOps = append(allOps, ops...)
 
-	recordOps, txOkCallBack, _, err := metrics.GetConfigDurationRecorder().AddOVN(oc.nbClient, "pod", pod.Namespace,
+	recordOps, txOkCallBack, _, err := metrics.GetConfigDurationRecorder().AddOVN(oc.mc.nbClient, "pod", pod.Namespace,
 		pod.Name)
 	if err != nil {
 		klog.Errorf("Failed to record config duration: %v", err)
 	}
 	allOps = append(allOps, recordOps...)
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, allOps)
+	_, err = libovsdbops.TransactAndCheck(oc.mc.nbClient, allOps)
 	if err != nil {
 		return fmt.Errorf("cannot delete logical switch port %s, %v", logicalPort, err)
 	}
@@ -300,7 +300,7 @@ func (oc *Controller) deleteLogicalPort(pod *kapi.Pod, portInfo *lpInfo) (err er
 	}
 
 	if config.Gateway.DisableSNATMultipleGWs {
-		if err := deletePerPodGRSNAT(oc.nbClient, nodeName, []*net.IPNet{}, podIfAddrs); err != nil {
+		if err := deletePerPodGRSNAT(oc.mc.nbClient, nodeName, []*net.IPNet{}, podIfAddrs); err != nil {
 			return fmt.Errorf("cannot delete GR SNAT for pod %s: %w", podDesc, err)
 		}
 	}
@@ -390,7 +390,7 @@ func (oc *Controller) addRoutesGatewayIP(pod *kapi.Pod, podAnnotation *util.PodA
 		}
 		var gatewayIP net.IP
 		if otherDefaultRoute {
-			for _, clusterSubnet := range config.Default.ClusterSubnets {
+			for _, clusterSubnet := range oc.clusterSubnets {
 				if isIPv6 == utilnet.IsIPv6CIDR(clusterSubnet.CIDR) {
 					podAnnotation.Routes = append(podAnnotation.Routes, util.PodRoute{
 						Dest:    clusterSubnet.CIDR,
@@ -453,7 +453,7 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 	// UUID and and the port cache, address sets, and port groups
 	// will still have the old UUID.
 	lsp := &nbdb.LogicalSwitchPort{Name: portName}
-	existingLSP, err := libovsdbops.GetLogicalSwitchPort(oc.nbClient, lsp)
+	existingLSP, err := libovsdbops.GetLogicalSwitchPort(oc.mc.nbClient, lsp)
 	if err != nil && err != libovsdbclient.ErrNotFound {
 		return fmt.Errorf("unable to get the lsp %s from the nbdb: %s", portName, err)
 	}
@@ -462,7 +462,7 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 	// Sanity check. If port exists, it should be in the logical switch obtained from the pod spec.
 	if lspExist {
 		portFound := false
-		ls, err = libovsdbops.GetLogicalSwitch(oc.nbClient, ls)
+		ls, err = libovsdbops.GetLogicalSwitch(oc.mc.nbClient, ls)
 		if err != nil {
 			return fmt.Errorf("[%s/%s] unable to find logical switch %s in NBDB", pod.Namespace, pod.Name,
 				logicalSwitch)
@@ -643,7 +643,7 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 	} else if config.Gateway.DisableSNATMultipleGWs {
 		// Add NAT rules to pods if disable SNAT is set and does not have
 		// namespace annotations to go through external egress router
-		if extIPs, err := getExternalIPsGRSNAT(oc.watchFactory, pod.Spec.NodeName); err != nil {
+		if extIPs, err := getExternalIPsGRSNAT(oc.mc.watchFactory, pod.Spec.NodeName); err != nil {
 			return err
 		} else if ops, err = oc.addOrUpdatePerPodGRSNATReturnOps(pod.Spec.NodeName, extIPs, podIfAddrs, ops); err != nil {
 			return err
@@ -665,12 +665,12 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 	// CNI depends on the flows from port security, delay setting it until end
 	lsp.PortSecurity = addresses
 
-	ops, err = libovsdbops.CreateOrUpdateLogicalSwitchPortsOnSwitchOps(oc.nbClient, ops, ls, lsp)
+	ops, err = libovsdbops.CreateOrUpdateLogicalSwitchPortsOnSwitchOps(oc.mc.nbClient, ops, ls, lsp)
 	if err != nil {
 		return fmt.Errorf("error creating logical switch port %+v on switch %+v: %+v", *lsp, *ls, err)
 	}
 
-	recordOps, txOkCallBack, _, err := metrics.GetConfigDurationRecorder().AddOVN(oc.nbClient, "pod", pod.Namespace,
+	recordOps, txOkCallBack, _, err := metrics.GetConfigDurationRecorder().AddOVN(oc.mc.nbClient, "pod", pod.Namespace,
 		pod.Name)
 	if err != nil {
 		klog.Errorf("Config duration recorder: %v", err)
@@ -678,13 +678,13 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 	ops = append(ops, recordOps...)
 
 	transactStart := time.Now()
-	_, err = libovsdbops.TransactAndCheckAndSetUUIDs(oc.nbClient, lsp, ops)
+	_, err = libovsdbops.TransactAndCheckAndSetUUIDs(oc.mc.nbClient, lsp, ops)
 	libovsdbExecuteTime = time.Since(transactStart)
 	if err != nil {
 		return fmt.Errorf("error transacting operations %+v: %v", ops, err)
 	}
 	txOkCallBack()
-	oc.podRecorder.AddLSP(pod.UID)
+	oc.mc.podRecorder.AddLSP(pod.UID)
 
 	// check if this pod is serving as an external GW
 	err = oc.addPodExternalGW(pod)
@@ -703,12 +703,12 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 	// If multicast is allowed and enabled for the namespace, add the port to the allow policy.
 	// FIXME: there's a race here with the Namespace multicastUpdateNamespace() handler, but
 	// it's rare and easily worked around for now.
-	ns, err := oc.watchFactory.GetNamespace(pod.Namespace)
+	ns, err := oc.mc.watchFactory.GetNamespace(pod.Namespace)
 	if err != nil {
 		return err
 	}
 	if oc.multicastSupport && isNamespaceMulticastEnabled(ns.Annotations) {
-		if err := podAddAllowMulticastPolicy(oc.nbClient, pod.Namespace, portInfo); err != nil {
+		if err := podAddAllowMulticastPolicy(oc.mc.nbClient, pod.Namespace, portInfo); err != nil {
 			return err
 		}
 	}
@@ -720,7 +720,7 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 func (oc *Controller) updatePodAnnotationWithRetry(origPod *kapi.Pod, podInfo *util.PodAnnotation) error {
 	resultErr := retry.RetryOnConflict(util.OvnConflictBackoff, func() error {
 		// Informer cache should not be mutated, so get a copy of the object
-		pod, err := oc.watchFactory.GetPod(origPod.Namespace, origPod.Name)
+		pod, err := oc.mc.watchFactory.GetPod(origPod.Namespace, origPod.Name)
 		if err != nil {
 			return err
 		}
@@ -730,7 +730,7 @@ func (oc *Controller) updatePodAnnotationWithRetry(origPod *kapi.Pod, podInfo *u
 		if err != nil {
 			return err
 		}
-		return oc.kube.UpdatePod(cpod)
+		return oc.mc.kube.UpdatePod(cpod)
 	})
 	if resultErr != nil {
 		return fmt.Errorf("failed to update annotation on pod %s/%s: %v", origPod.Namespace, origPod.Name, resultErr)
@@ -796,7 +796,7 @@ func (oc *Controller) delLSPOps(logicalPort, logicalSwitch, lspUUID string) ([]o
 		UUID: lspUUID,
 		Name: logicalPort,
 	}
-	ops, err := libovsdbops.DeleteLogicalSwitchPortsOps(oc.nbClient, nil, &lsw, &lsp)
+	ops, err := libovsdbops.DeleteLogicalSwitchPortsOps(oc.mc.nbClient, nil, &lsw, &lsp)
 	if err != nil {
 		return nil, fmt.Errorf("error deleting logical switch port %+v from switch %+v: %w", lsp, lsw, err)
 	}

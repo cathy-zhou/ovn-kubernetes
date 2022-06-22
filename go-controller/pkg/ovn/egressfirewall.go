@@ -105,7 +105,7 @@ func (oc *Controller) syncEgressFirewall(egressFirewalls []interface{}) error {
 	aclPred := func(item *nbdb.ACL) bool {
 		return item.Priority >= types.MinimumReservedEgressFirewallPriority && item.Priority <= types.EgressFirewallStartPriority
 	}
-	egressFirewallACLs, err := libovsdbops.FindACLsWithPredicate(oc.nbClient, aclPred)
+	egressFirewallACLs, err := libovsdbops.FindACLsWithPredicate(oc.mc.nbClient, aclPred)
 	if err != nil {
 		return fmt.Errorf("unable to list egress firewall ACLs, cannot cleanup old stale data, err: %v", err)
 	}
@@ -123,7 +123,7 @@ func (oc *Controller) syncEgressFirewall(egressFirewalls []interface{}) error {
 				return (strings.HasPrefix(item.Name, types.JoinSwitchPrefix) || item.Name == "join")
 			}
 		}
-		err = libovsdbops.RemoveACLsFromLogicalSwitchesWithPredicate(oc.nbClient, p, egressFirewallACLs...)
+		err = libovsdbops.RemoveACLsFromLogicalSwitchesWithPredicate(oc.mc.nbClient, p, egressFirewallACLs...)
 		if err != nil {
 			return fmt.Errorf("failed to remove reject acl from node logical switches: %v", err)
 		}
@@ -144,7 +144,7 @@ func (oc *Controller) syncEgressFirewall(egressFirewalls []interface{}) error {
 			klog.Warningf("Could not find namespace for egress firewall ACL during refresh operation: %v", egressFirewallACLs[i])
 		}
 	}
-	err = libovsdbops.CreateOrUpdateACLs(oc.nbClient, egressFirewallACLs...)
+	err = libovsdbops.CreateOrUpdateACLs(oc.mc.nbClient, egressFirewallACLs...)
 	if err != nil {
 		return fmt.Errorf("unable to update ACL information (direction and logging) during resync operation, err: %v", err)
 	}
@@ -154,7 +154,7 @@ func (oc *Controller) syncEgressFirewall(egressFirewalls []interface{}) error {
 		// access nsInfo with lock
 		aclLogging := oc.GetNamespaceACLLogging(namespace)
 		// Update acl logging based on namespace logLevels
-		err = UpdateACLLogging(oc.nbClient, nsACLs, aclLogging)
+		err = UpdateACLLogging(oc.mc.nbClient, nsACLs, aclLogging)
 		if err != nil {
 			return fmt.Errorf("failed to update egress firewall ACL logging for namespace %s: %v", namespace, err)
 		}
@@ -165,7 +165,7 @@ func (oc *Controller) syncEgressFirewall(egressFirewalls []interface{}) error {
 	p := func(item *nbdb.LogicalRouterPolicy) bool {
 		return item.Priority <= types.EgressFirewallStartPriority && item.Priority >= types.MinimumReservedEgressFirewallPriority
 	}
-	err = libovsdbops.DeleteLogicalRouterPoliciesWithPredicate(oc.nbClient, types.OVNClusterRouter, p)
+	err = libovsdbops.DeleteLogicalRouterPoliciesWithPredicate(oc.mc.nbClient, types.OVNClusterRouter, p)
 	if err != nil {
 		return fmt.Errorf("error deleting egress firewall policies on router %s: %v", types.OVNClusterRouter, err)
 	}
@@ -184,7 +184,7 @@ func (oc *Controller) syncEgressFirewall(egressFirewalls []interface{}) error {
 	}
 
 	// get all the k8s EgressFirewall Objects
-	egressFirewallList, err := oc.kube.GetEgressFirewalls()
+	egressFirewallList, err := oc.mc.kube.GetEgressFirewalls()
 	if err != nil {
 		return fmt.Errorf("cannot reconcile the state of egressfirewalls in ovn database and k8s. err: %v", err)
 	}
@@ -290,7 +290,7 @@ func (oc *Controller) deleteEgressFirewall(egressFirewallObj *egressfirewallapi.
 
 func (oc *Controller) updateEgressFirewallStatusWithRetry(egressfirewall *egressfirewallapi.EgressFirewall) error {
 	retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		return oc.kube.UpdateEgressFirewall(egressfirewall)
+		return oc.mc.kube.UpdateEgressFirewall(egressfirewall)
 	})
 	if retryErr != nil {
 		return fmt.Errorf("error in updating status on EgressFirewall %s/%s: %v",
@@ -347,7 +347,7 @@ func (oc *Controller) createEgressFirewallRules(priority int, match, action, ext
 			// Ignore external and Join switches(both legacy and current)
 			return !(strings.HasPrefix(item.Name, types.JoinSwitchPrefix) || item.Name == "join" || strings.HasPrefix(item.Name, types.ExternalSwitchPrefix))
 		}
-		nodeLocalSwitches, err := libovsdbops.FindLogicalSwitchesWithPredicate(oc.nbClient, p)
+		nodeLocalSwitches, err := libovsdbops.FindLogicalSwitchesWithPredicate(oc.mc.nbClient, p)
 		if err != nil {
 			return fmt.Errorf("unable to setup egress firewall ACLs on cluster nodes, err: %v", err)
 		}
@@ -372,19 +372,19 @@ func (oc *Controller) createEgressFirewallRules(priority int, match, action, ext
 		map[string]string{egressFirewallACLExtIdKey: externalID},
 		nil,
 	)
-	ops, err := libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, nil, egressFirewallACL)
+	ops, err := libovsdbops.CreateOrUpdateACLsOps(oc.mc.nbClient, nil, egressFirewallACL)
 	if err != nil {
 		return fmt.Errorf("failed to create egressFirewall ACL %v: %v", egressFirewallACL, err)
 	}
 
 	for _, logicalSwitchName := range logicalSwitches {
-		ops, err = libovsdbops.AddACLsToLogicalSwitchOps(oc.nbClient, ops, logicalSwitchName, egressFirewallACL)
+		ops, err = libovsdbops.AddACLsToLogicalSwitchOps(oc.mc.nbClient, ops, logicalSwitchName, egressFirewallACL)
 		if err != nil {
 			return fmt.Errorf("failed to add egressFirewall ACL %v to switch %s: %v", egressFirewallACL, logicalSwitchName, err)
 		}
 	}
 
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
+	_, err = libovsdbops.TransactAndCheck(oc.mc.nbClient, ops)
 	if err != nil {
 		return fmt.Errorf("failed to transact egressFirewall ACL: %v", err)
 	}
@@ -398,7 +398,7 @@ func (oc *Controller) deleteEgressFirewallRules(externalID string) error {
 	pACL := func(item *nbdb.ACL) bool {
 		return item.ExternalIDs[egressFirewallACLExtIdKey] == externalID
 	}
-	egressFirewallACLs, err := libovsdbops.FindACLsWithPredicate(oc.nbClient, pACL)
+	egressFirewallACLs, err := libovsdbops.FindACLsWithPredicate(oc.mc.nbClient, pACL)
 	if err != nil {
 		return fmt.Errorf("unable to list egress firewall ACLs, cannot cleanup old stale data, err: %v", err)
 	}
@@ -411,7 +411,7 @@ func (oc *Controller) deleteEgressFirewallRules(externalID string) error {
 	// delete egress firewall acls off any logical switch which has it,
 	// then manually remove the egressFirewall ACLs instead of relying on ovsdb garbage collection to do so
 	pSwitch := func(item *nbdb.LogicalSwitch) bool { return true }
-	err = libovsdbops.DeleteACLs(oc.nbClient, nil, pSwitch, egressFirewallACLs...)
+	err = libovsdbops.DeleteACLs(oc.mc.nbClient, nil, pSwitch, egressFirewallACLs...)
 	if err != nil {
 		return err
 	}
@@ -611,7 +611,7 @@ func (oc *Controller) updateACLLoggingForEgressFirewall(egressFirewallNamespace 
 	p := func(item *nbdb.ACL) bool {
 		return item.ExternalIDs[egressFirewallACLExtIdKey] == ef.namespace
 	}
-	if err := UpdateACLLoggingWithPredicate(oc.nbClient, p, &nsInfo.aclLogging); err != nil {
+	if err := UpdateACLLoggingWithPredicate(oc.mc.nbClient, p, &nsInfo.aclLogging); err != nil {
 		return false, fmt.Errorf("unable to update ACL logging in ns %s, err: %v", ef.namespace, err)
 	}
 	return true, nil

@@ -437,15 +437,15 @@ func (oc *Controller) getResourceFromInformerCache(objType reflect.Type, key str
 	switch objType {
 	case factory.PolicyType:
 		namespace, name := splitNamespacedName(key)
-		obj, err = oc.watchFactory.GetNetworkPolicy(namespace, name)
+		obj, err = oc.mc.watchFactory.GetNetworkPolicy(namespace, name)
 
 	case factory.NodeType,
 		factory.EgressNodeType:
-		obj, err = oc.watchFactory.GetNode(key)
+		obj, err = oc.mc.watchFactory.GetNode(key)
 
 	case factory.PeerServiceType:
 		namespace, name := splitNamespacedName(key)
-		obj, err = oc.watchFactory.GetService(namespace, name)
+		obj, err = oc.mc.watchFactory.GetService(namespace, name)
 
 	case factory.PodType,
 		factory.PeerPodSelectorType,
@@ -453,23 +453,23 @@ func (oc *Controller) getResourceFromInformerCache(objType reflect.Type, key str
 		factory.LocalPodSelectorType,
 		factory.EgressIPPodType:
 		namespace, name := splitNamespacedName(key)
-		obj, err = oc.watchFactory.GetPod(namespace, name)
+		obj, err = oc.mc.watchFactory.GetPod(namespace, name)
 
 	case factory.PeerNamespaceAndPodSelectorType,
 		factory.PeerNamespaceSelectorType,
 		factory.EgressIPNamespaceType,
 		factory.NamespaceType:
-		obj, err = oc.watchFactory.GetNamespace(key)
+		obj, err = oc.mc.watchFactory.GetNamespace(key)
 
 	case factory.EgressFirewallType:
 		namespace, name := splitNamespacedName(key)
-		obj, err = oc.watchFactory.GetEgressFirewall(namespace, name)
+		obj, err = oc.mc.watchFactory.GetEgressFirewall(namespace, name)
 
 	case factory.EgressIPType:
-		obj, err = oc.watchFactory.GetEgressIP(key)
+		obj, err = oc.mc.watchFactory.GetEgressIP(key)
 
 	case factory.CloudPrivateIPConfigType:
-		obj, err = oc.watchFactory.GetCloudPrivateIPConfig(key)
+		obj, err = oc.mc.watchFactory.GetCloudPrivateIPConfig(key)
 
 	default:
 		err = fmt.Errorf("object type %s not supported, cannot retrieve it from informers cache",
@@ -484,7 +484,7 @@ func (oc *Controller) recordAddEvent(objType reflect.Type, obj interface{}) {
 	case factory.PodType:
 		klog.V(5).Infof("Recording add event on pod")
 		pod := obj.(*kapi.Pod)
-		oc.podRecorder.AddPod(pod.UID)
+		oc.mc.podRecorder.AddPod(pod.UID)
 		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name)
 	case factory.PolicyType:
 		klog.V(5).Infof("Recording add event on network policy")
@@ -513,7 +513,7 @@ func (oc *Controller) recordDeleteEvent(objType reflect.Type, obj interface{}) {
 	case factory.PodType:
 		klog.V(5).Infof("Recording delete event on pod")
 		pod := obj.(*kapi.Pod)
-		oc.podRecorder.CleanPod(pod.UID)
+		oc.mc.podRecorder.CleanPod(pod.UID)
 		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name)
 	case factory.PolicyType:
 		klog.V(5).Infof("Recording delete event on network policy")
@@ -667,7 +667,7 @@ func (oc *Controller) addResource(objectsToRetry *RetryObjs, obj interface{}, fr
 		extraParameters.np.Lock()
 		defer extraParameters.np.Unlock()
 		if extraParameters.np.deleted {
-			oc.watchFactory.RemovePodHandler(podHandler)
+			oc.mc.watchFactory.RemovePodHandler(podHandler)
 			return nil
 		}
 		extraParameters.np.podHandlerList = append(extraParameters.np.podHandlerList, podHandler)
@@ -951,7 +951,7 @@ func (oc *Controller) deleteResource(objectsToRetry *RetryObjs, obj, cachedObj i
 		// remove the namespaces pods from the address_set
 		var errs []error
 		namespace := obj.(*kapi.Namespace)
-		pods, _ := oc.watchFactory.GetPods(namespace.Name)
+		pods, _ := oc.mc.watchFactory.GetPods(namespace.Name)
 
 		for _, pod := range pods {
 			if err := oc.handlePeerPodSelectorDelete(extraParameters.gp, pod); err != nil {
@@ -1292,7 +1292,7 @@ func (oc *Controller) processObjectInTerminalState(objectsToRetry *RetryObjs, ob
 // Note: when applying WatchResource to a new resource type, the appropriate resource-specific logic must be added to the
 // the different methods it calls.
 func (oc *Controller) WatchResource(objectsToRetry *RetryObjs) (*factory.Handler, error) {
-	addHandlerFunc, err := oc.watchFactory.GetResourceHandlerFunc(objectsToRetry.oType)
+	addHandlerFunc, err := oc.mc.watchFactory.GetResourceHandlerFunc(objectsToRetry.oType)
 	if err != nil {
 		return nil, fmt.Errorf("no resource handler function found for resource %v. "+
 			"Cannot watch this resource", objectsToRetry.oType)

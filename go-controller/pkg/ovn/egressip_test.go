@@ -379,7 +379,7 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 				gomega.Eventually(isEgressAssignableNode(node2.Name)).Should(gomega.BeFalse())
 
 				lsp := &nbdb.LogicalSwitchPort{Name: types.EXTSwitchToGWRouterPrefix + types.GWRouterPrefix + node1Name}
-				fakeOvn.controller.nbClient.Get(context.Background(), lsp)
+				fakeOvn.nbClient.Get(context.Background(), lsp)
 				gomega.Eventually(lsp.Options["nat-addresses"]).Should(gomega.Equal("router"))
 				gomega.Eventually(lsp.Options["exclude-lb-vips-from-garp"]).Should(gomega.Equal("true"))
 
@@ -632,7 +632,7 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 				gomega.Eventually(isEgressAssignableNode(node2.Name)).Should(gomega.BeFalse())
 
 				lsp := &nbdb.LogicalSwitchPort{Name: types.EXTSwitchToGWRouterPrefix + types.GWRouterPrefix + node1Name}
-				err = fakeOvn.controller.nbClient.Get(context.Background(), lsp)
+				err = fakeOvn.nbClient.Get(context.Background(), lsp)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				gomega.Eventually(lsp.Options["nat-addresses"]).Should(gomega.Equal("router"))
 				gomega.Eventually(lsp.Options["exclude-lb-vips-from-garp"]).Should(gomega.Equal("true"))
@@ -649,9 +649,9 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 
 				ginkgo.By("Bringing down NBDB")
 				// inject transient problem, nbdb is down
-				fakeOvn.controller.nbClient.Close()
+				fakeOvn.nbClient.Close()
 				gomega.Eventually(func() bool {
-					return fakeOvn.controller.nbClient.Connected()
+					return fakeOvn.nbClient.Connected()
 				}).Should(gomega.BeFalse())
 				err = fakeOvn.fakeClient.KubeClient.CoreV1().Nodes().Delete(context.TODO(), node1.Name, metav1.DeleteOptions{})
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -680,7 +680,7 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 				gomega.Expect(retryEntry.config).NotTo(gomega.BeNil())
 				connCtx, cancel := context.WithTimeout(context.Background(), types.OVSDBTimeout)
 				defer cancel()
-				resetNBClient(connCtx, fakeOvn.controller.nbClient)
+				resetNBClient(connCtx, fakeOvn.nbClient)
 				setRetryObjWithNoBackoff(key1, fakeOvn.controller.retryEgressNodes)
 				setRetryObjWithNoBackoff(key2, fakeOvn.controller.retryEgressNodes)
 				fakeOvn.controller.retryEgressNodes.RequestRetryObjs()
@@ -917,7 +917,7 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 				gomega.Eventually(isEgressAssignableNode(node2.Name)).Should(gomega.BeFalse())
 
 				lsp := &nbdb.LogicalSwitchPort{Name: types.EXTSwitchToGWRouterPrefix + types.GWRouterPrefix + node1Name}
-				fakeOvn.controller.nbClient.Get(context.Background(), lsp)
+				fakeOvn.nbClient.Get(context.Background(), lsp)
 				gomega.Eventually(lsp.Options["nat-addresses"]).Should(gomega.Equal("router"))
 				gomega.Eventually(lsp.Options["exclude-lb-vips-from-garp"]).Should(gomega.Equal("true"))
 
@@ -1175,7 +1175,7 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 				gomega.Eventually(isEgressAssignableNode(node2.Name)).Should(gomega.BeFalse())
 
 				lsp := &nbdb.LogicalSwitchPort{Name: types.EXTSwitchToGWRouterPrefix + types.GWRouterPrefix + node1Name}
-				fakeOvn.controller.nbClient.Get(context.Background(), lsp)
+				fakeOvn.nbClient.Get(context.Background(), lsp)
 				gomega.Eventually(lsp.Options["nat-addresses"]).Should(gomega.Equal("router"))
 				gomega.Eventually(lsp.Options["exclude-lb-vips-from-garp"]).Should(gomega.Equal("true"))
 
@@ -1677,9 +1677,9 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 				podUpdate := newPod(namespace, podName, node1Name, podV6IP)
 				ginkgo.By("Bringing down NBDB")
 				// inject transient problem, nbdb is down
-				fakeOvn.controller.nbClient.Close()
+				fakeOvn.nbClient.Close()
 				gomega.Eventually(func() bool {
-					return fakeOvn.controller.nbClient.Connected()
+					return fakeOvn.nbClient.Connected()
 				}).Should(gomega.BeFalse())
 				_, err = fakeOvn.fakeClient.KubeClient.CoreV1().Pods(egressPod.Namespace).Update(context.TODO(), podUpdate, metav1.UpdateOptions{})
 				gomega.Expect(err).ToNot(gomega.HaveOccurred())
@@ -1697,7 +1697,7 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 				gomega.Expect(retryEntry.config).NotTo(gomega.BeNil())
 				connCtx, cancel := context.WithTimeout(context.Background(), types.OVSDBTimeout)
 				defer cancel()
-				resetNBClient(connCtx, fakeOvn.controller.nbClient)
+				resetNBClient(connCtx, fakeOvn.nbClient)
 
 				setRetryObjWithNoBackoff(key, fakeOvn.controller.retryEgressIPPods)
 				fakeOvn.controller.retryEgressIPPods.RequestRetryObjs()
@@ -2289,9 +2289,9 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 
 				ginkgo.By("Bringing down NBDB")
 				// inject transient problem, nbdb is down
-				fakeOvn.controller.nbClient.Close()
+				fakeOvn.nbClient.Close()
 				gomega.Eventually(func() bool {
-					return fakeOvn.controller.nbClient.Connected()
+					return fakeOvn.nbClient.Connected()
 				}).Should(gomega.BeFalse())
 
 				_, err = fakeOvn.fakeClient.EgressIPClient.K8sV1().EgressIPs().Create(context.TODO(), &eIP, metav1.CreateOptions{})
@@ -2305,7 +2305,7 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 				}, inspectTimeout).Should(gomega.BeTrue())
 				connCtx, cancel := context.WithTimeout(context.Background(), types.OVSDBTimeout)
 				defer cancel()
-				resetNBClient(connCtx, fakeOvn.controller.nbClient)
+				resetNBClient(connCtx, fakeOvn.nbClient)
 				setRetryObjWithNoBackoff(key, fakeOvn.controller.retryEgressIPs)
 				fakeOvn.controller.retryEgressIPs.RequestRetryObjs()
 				// check the cache no longer has the entry
@@ -3349,9 +3349,9 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				ginkgo.By("Bringing down NBDB")
 				// inject transient problem, nbdb is down
-				fakeOvn.controller.nbClient.Close()
+				fakeOvn.nbClient.Close()
 				gomega.Eventually(func() bool {
-					return fakeOvn.controller.nbClient.Connected()
+					return fakeOvn.nbClient.Connected()
 				}).Should(gomega.BeFalse())
 
 				// sleep long enough for TransactWithRetry to fail, causing egressnode operations to fail
@@ -3373,7 +3373,7 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				connCtx, cancel := context.WithTimeout(context.Background(), types.OVSDBTimeout)
 				defer cancel()
-				resetNBClient(connCtx, fakeOvn.controller.nbClient)
+				resetNBClient(connCtx, fakeOvn.nbClient)
 				setRetryObjWithNoBackoff(key, fakeOvn.controller.retryEgressNodes)
 				fakeOvn.controller.retryEgressNodes.RequestRetryObjs()
 				// check the cache no longer has the entry

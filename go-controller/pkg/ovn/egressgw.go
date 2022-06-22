@@ -202,7 +202,7 @@ func (oc *Controller) addPodExternalGWForNamespace(namespace string, pod *kapi.P
 		return err
 	}
 	// add the exgw podIP to the namespace's k8s.ovn.org/external-gw-pod-ips list
-	if err := util.UpdateExternalGatewayPodIPsAnnotation(oc.kube, namespace, existingGWs.List()); err != nil {
+	if err := util.UpdateExternalGatewayPodIPsAnnotation(oc.mc.kube, namespace, existingGWs.List()); err != nil {
 		klog.Errorf("Unable to update %s/%v annotation for namespace %s: %v", util.ExternalGatewayPodIPsAnnotation, existingGWs, namespace, err)
 	}
 	return nil
@@ -220,7 +220,7 @@ func (oc *Controller) addExternalGWsForNamespace(egress gatewayInfo, nsInfo *nam
 
 // addGWRoutesForNamespace handles adding routes for all existing pods in namespace
 func (oc *Controller) addGWRoutesForNamespace(namespace string, egress gatewayInfo) error {
-	existingPods, err := oc.watchFactory.GetPods(namespace)
+	existingPods, err := oc.mc.watchFactory.GetPods(namespace)
 	if err != nil {
 		return fmt.Errorf("failed to get all the pods (%v)", err)
 	}
@@ -244,7 +244,7 @@ func (oc *Controller) addGWRoutesForNamespace(namespace string, egress gatewayIn
 		if config.Gateway.DisableSNATMultipleGWs {
 			// delete all perPodSNATs (if this pod was controlled by egressIP controller, it will stop working since
 			// a pod cannot be used for multiple-external-gateways and egressIPs at the same time)
-			if err = deletePerPodGRSNAT(oc.nbClient, pod.Spec.NodeName, []*net.IPNet{}, podIPs); err != nil {
+			if err = deletePerPodGRSNAT(oc.mc.nbClient, pod.Spec.NodeName, []*net.IPNet{}, podIPs); err != nil {
 				klog.Error(err.Error())
 			}
 		}
@@ -274,7 +274,7 @@ func (oc *Controller) createBFDStaticRoute(bfdEnabled bool, gw string, podIP, gr
 			DstIP:       gw,
 			LogicalPort: port,
 		}
-		ops, err = libovsdbops.CreateOrUpdateBFDOps(oc.nbClient, ops, &bfd)
+		ops, err = libovsdbops.CreateOrUpdateBFDOps(oc.mc.nbClient, ops, &bfd)
 		if err != nil {
 			return fmt.Errorf("error creating or updating BFD %+v: %v", bfd, err)
 		}
@@ -288,13 +288,13 @@ func (oc *Controller) createBFDStaticRoute(bfdEnabled bool, gw string, podIP, gr
 			*item.OutputPort == *lrsr.OutputPort &&
 			item.Policy == lrsr.Policy
 	}
-	ops, err = libovsdbops.CreateOrUpdateLogicalRouterStaticRoutesWithPredicateOps(oc.nbClient, ops, gr, &lrsr, p,
+	ops, err = libovsdbops.CreateOrUpdateLogicalRouterStaticRoutesWithPredicateOps(oc.mc.nbClient, ops, gr, &lrsr, p,
 		&lrsr.Options)
 	if err != nil {
 		return fmt.Errorf("error creating or updating static route %+v on router %s: %v", lrsr, gr, err)
 	}
 
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
+	_, err = libovsdbops.TransactAndCheck(oc.mc.nbClient, ops)
 	if err != nil {
 		return fmt.Errorf("error transacting static route: %v", err)
 	}
@@ -309,7 +309,7 @@ func (oc *Controller) deleteLogicalRouterStaticRoute(podIP, mask, gw, gr string)
 			item.IPPrefix == podIP+mask &&
 			item.Nexthop == gw
 	}
-	err := libovsdbops.DeleteLogicalRouterStaticRoutesWithPredicate(oc.nbClient, gr, p)
+	err := libovsdbops.DeleteLogicalRouterStaticRoutesWithPredicate(oc.mc.nbClient, gr, p)
 	if err != nil {
 		return fmt.Errorf("error deleting static route from router %s: %v", gr, err)
 	}
@@ -401,7 +401,7 @@ func (oc *Controller) deletePodGWRoutesForNamespace(pod *kapi.Pod, namespace str
 		return fmt.Errorf("failed to delete GW routes for pod %s: %w", pod.Name, err)
 	}
 	// remove the exgw podIP from the namespace's k8s.ovn.org/external-gw-pod-ips list
-	if err := util.UpdateExternalGatewayPodIPsAnnotation(oc.kube, namespace, existingGWs.List()); err != nil {
+	if err := util.UpdateExternalGatewayPodIPsAnnotation(oc.mc.kube, namespace, existingGWs.List()); err != nil {
 		klog.Errorf("Unable to update %s/%v annotation for namespace %s: %v", util.ExternalGatewayPodIPsAnnotation, existingGWs, namespace, err)
 	}
 	return nil
@@ -610,7 +610,7 @@ func (oc *Controller) addOrUpdatePerPodGRSNATReturnOps(nodeName string, extIPs, 
 	if err != nil {
 		return nil, err
 	}
-	if ops, err = libovsdbops.CreateOrUpdateNATsOps(oc.nbClient, ops, router, nats...); err != nil {
+	if ops, err = libovsdbops.CreateOrUpdateNATsOps(oc.mc.nbClient, ops, router, nats...); err != nil {
 		return nil, fmt.Errorf("failed to update SNAT for pods of router: %s, error: %v", gr, err)
 	}
 	return ops, nil
@@ -644,7 +644,7 @@ func (oc *Controller) addHybridRoutePolicyForPod(podIP net.IP, node string) erro
 		}
 
 		// get the GR to join switch ip address
-		grJoinIfAddrs, err := util.GetLRPAddrs(oc.nbClient, types.GWRouterToJoinSwitchPrefix+types.GWRouterPrefix+node)
+		grJoinIfAddrs, err := util.GetLRPAddrs(oc.mc.nbClient, types.GWRouterToJoinSwitchPrefix+types.GWRouterPrefix+node)
 		if err != nil {
 			return fmt.Errorf("unable to find IP address for node: %s, %s port, err: %v", node, types.GWRouterToJoinSwitchPrefix, err)
 		}
@@ -680,7 +680,7 @@ func (oc *Controller) addHybridRoutePolicyForPod(podIP net.IP, node string) erro
 		p := func(item *nbdb.LogicalRouterPolicy) bool {
 			return item.Priority == logicalRouterPolicy.Priority && strings.Contains(item.Match, matchSrcAS)
 		}
-		err = libovsdbops.CreateOrUpdateLogicalRouterPolicyWithPredicate(oc.nbClient, types.OVNClusterRouter,
+		err = libovsdbops.CreateOrUpdateLogicalRouterPolicyWithPredicate(oc.mc.nbClient, types.OVNClusterRouter,
 			&logicalRouterPolicy, p, &logicalRouterPolicy.Nexthops, &logicalRouterPolicy.Match, &logicalRouterPolicy.Action)
 		if err != nil {
 			return fmt.Errorf("failed to add policy route %+v to %s: %v", logicalRouterPolicy, types.OVNClusterRouter, err)
@@ -742,7 +742,7 @@ func (oc *Controller) delHybridRoutePolicyForPod(podIP net.IP, node string) erro
 			p := func(item *nbdb.LogicalRouterPolicy) bool {
 				return item.Priority == types.HybridOverlayReroutePriority && item.Match == matchStr
 			}
-			err := libovsdbops.DeleteLogicalRouterPoliciesWithPredicate(oc.nbClient, types.OVNClusterRouter, p)
+			err := libovsdbops.DeleteLogicalRouterPoliciesWithPredicate(oc.mc.nbClient, types.OVNClusterRouter, p)
 			if err != nil {
 				return fmt.Errorf("error deleting policy %s on router %s: %v", matchStr, types.OVNClusterRouter, err)
 			}
@@ -767,7 +767,7 @@ func (oc *Controller) delAllHybridRoutePolicies() error {
 	policyPred := func(item *nbdb.LogicalRouterPolicy) bool {
 		return item.Priority == types.HybridOverlayReroutePriority
 	}
-	err := libovsdbops.DeleteLogicalRouterPoliciesWithPredicate(oc.nbClient, types.OVNClusterRouter, policyPred)
+	err := libovsdbops.DeleteLogicalRouterPoliciesWithPredicate(oc.mc.nbClient, types.OVNClusterRouter, policyPred)
 	if err != nil {
 		return fmt.Errorf("error deleting hybrid route policies on %s: %v", types.OVNClusterRouter, err)
 	}
@@ -777,7 +777,7 @@ func (oc *Controller) delAllHybridRoutePolicies() error {
 	asPred := func(item *nbdb.AddressSet) bool {
 		return strings.Contains(item.ExternalIDs["name"], types.HybridRoutePolicyPrefix)
 	}
-	err = libovsdbops.DeleteAddressSetsWithPredicate(oc.nbClient, asPred)
+	err = libovsdbops.DeleteAddressSetsWithPredicate(oc.mc.nbClient, asPred)
 	if err != nil {
 		return fmt.Errorf("failed to remove hybrid route address sets: %v", err)
 	}
@@ -799,7 +799,7 @@ func (oc *Controller) delAllLegacyHybridRoutePolicies() error {
 		}
 		return true
 	}
-	err := libovsdbops.DeleteLogicalRouterPoliciesWithPredicate(oc.nbClient, types.OVNClusterRouter, p)
+	err := libovsdbops.DeleteLogicalRouterPoliciesWithPredicate(oc.mc.nbClient, types.OVNClusterRouter, p)
 	if err != nil {
 		return fmt.Errorf("error deleting legacy hybrid route policies on %s: %v", types.OVNClusterRouter, err)
 	}
@@ -815,7 +815,7 @@ func (oc *Controller) cleanUpBFDEntry(gatewayIP, gatewayRouter, prefix string) e
 	p := func(item *nbdb.LogicalRouterStaticRoute) bool {
 		return item.OutputPort != nil && *item.OutputPort == portName && item.Nexthop == gatewayIP && item.BFD != nil && *item.BFD != ""
 	}
-	logicalRouterStaticRoutes, err := libovsdbops.FindLogicalRouterStaticRoutesWithPredicate(oc.nbClient, p)
+	logicalRouterStaticRoutes, err := libovsdbops.FindLogicalRouterStaticRoutesWithPredicate(oc.mc.nbClient, p)
 	if err != nil {
 		return fmt.Errorf("cleanUpBFDEntry failed to list routes for %s: %w", portName, err)
 	}
@@ -829,7 +829,7 @@ func (oc *Controller) cleanUpBFDEntry(gatewayIP, gatewayRouter, prefix string) e
 		DstIP:       gatewayIP,
 	}
 
-	err = libovsdbops.DeleteBFDs(oc.nbClient, &bfd)
+	err = libovsdbops.DeleteBFDs(oc.mc.nbClient, &bfd)
 	if err != nil {
 		return fmt.Errorf("error deleting BFD %+v: %v", bfd, err)
 	}
@@ -841,7 +841,7 @@ func (oc *Controller) cleanUpBFDEntry(gatewayIP, gatewayRouter, prefix string) e
 // external gateway routes. In case no second bridge is configured, we
 // use the default one and the prefix is empty.
 func (oc *Controller) extSwitchPrefix(nodeName string) (string, error) {
-	node, err := oc.watchFactory.GetNode(nodeName)
+	node, err := oc.mc.watchFactory.GetNode(nodeName)
 	if err != nil {
 		return "", errors.Wrapf(err, "extSwitchPrefix: failed to find node %s", nodeName)
 	}
@@ -946,7 +946,7 @@ func (oc *Controller) cleanExGwECMPRoutes() {
 				klog.Infof("Found stale exgw ecmp route, podIP: %s, nexthop: %s, router: %s",
 					podIP, ovnRoute.nextHop, ovnRoute.router)
 				lrsr := nbdb.LogicalRouterStaticRoute{UUID: ovnRoute.uuid}
-				err := libovsdbops.DeleteLogicalRouterStaticRoutes(oc.nbClient, ovnRoute.router, &lrsr)
+				err := libovsdbops.DeleteLogicalRouterStaticRoutes(oc.mc.nbClient, ovnRoute.router, &lrsr)
 				if err != nil {
 					klog.Errorf("Error deleting static route %s from router %s: %v", ovnRoute.uuid, ovnRoute.router, err)
 				}
@@ -1020,7 +1020,7 @@ func getExGwPodIPs(gatewayPod *kapi.Pod) (sets.String, error) {
 }
 
 func (oc *Controller) buildClusterECMPCacheFromNamespaces(clusterRouteCache map[string][]string) {
-	namespaces, err := oc.watchFactory.GetNamespaces()
+	namespaces, err := oc.mc.watchFactory.GetNamespaces()
 	if err != nil {
 		klog.Errorf("Error getting all namespaces for exgw ecmp route sync: %v", err)
 		return
@@ -1036,7 +1036,7 @@ func (oc *Controller) buildClusterECMPCacheFromNamespaces(clusterRouteCache map[
 			continue
 		}
 		// get all pods in the namespace
-		nsPods, err := oc.watchFactory.GetPods(namespace.Name)
+		nsPods, err := oc.mc.watchFactory.GetPods(namespace.Name)
 		if err != nil {
 			klog.Errorf("Unable to clean ExGw ECMP routes for namespace: %s, %v",
 				namespace, err)
@@ -1075,7 +1075,7 @@ func (oc *Controller) buildClusterECMPCacheFromNamespaces(clusterRouteCache map[
 
 func (oc *Controller) buildClusterECMPCacheFromPods(clusterRouteCache map[string][]string) {
 	// Get all Pods serving as exgws
-	pods, err := oc.watchFactory.GetAllPods()
+	pods, err := oc.mc.watchFactory.GetAllPods()
 	if err != nil {
 		klog.Error("Error getting all pods for exgw ecmp route sync: %v", err)
 		return
@@ -1086,7 +1086,7 @@ func (oc *Controller) buildClusterECMPCacheFromPods(clusterRouteCache map[string
 			continue
 		}
 		// get all pods in the namespace
-		nsPods, err := oc.watchFactory.GetPods(podRoutingNamespaceAnno)
+		nsPods, err := oc.mc.watchFactory.GetPods(podRoutingNamespaceAnno)
 		if err != nil {
 			klog.Errorf("Unable to clean ExGw ECMP routes for exgw: %s, serving namespace: %s, %v",
 				pod.Name, podRoutingNamespaceAnno, err)
@@ -1120,7 +1120,7 @@ func (oc *Controller) buildOVNECMPCache() map[string][]*ovnRoute {
 	p := func(item *nbdb.LogicalRouterStaticRoute) bool {
 		return item.Options["ecmp_symmetric_reply"] == "true"
 	}
-	logicalRouterStaticRoutes, err := libovsdbops.FindLogicalRouterStaticRoutesWithPredicate(oc.nbClient, p)
+	logicalRouterStaticRoutes, err := libovsdbops.FindLogicalRouterStaticRoutesWithPredicate(oc.mc.nbClient, p)
 	if err != nil {
 		klog.Errorf("CleanECMPRoutes: failed to list ecmp routes: %v", err)
 		return nil
@@ -1131,7 +1131,7 @@ func (oc *Controller) buildOVNECMPCache() map[string][]*ovnRoute {
 		p := func(item *nbdb.LogicalRouter) bool {
 			return util.SliceHasStringItem(item.StaticRoutes, logicalRouterStaticRoute.UUID)
 		}
-		logicalRouters, err := libovsdbops.FindLogicalRoutersWithPredicate(oc.nbClient, p)
+		logicalRouters, err := libovsdbops.FindLogicalRoutersWithPredicate(oc.mc.nbClient, p)
 		if err != nil {
 			klog.Errorf("CleanECMPRoutes: failed to find logical router for %s, err: %v", logicalRouterStaticRoute.UUID, err)
 			continue
