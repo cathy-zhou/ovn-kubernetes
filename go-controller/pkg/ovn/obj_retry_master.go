@@ -11,10 +11,7 @@ import (
 
 	"k8s.io/klog/v2"
 
-	ocpcloudnetworkapi "github.com/openshift/api/cloudnetwork/v1"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	egressfirewall "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1"
-	egressipv1 "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressip/v1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
@@ -25,7 +22,8 @@ type masterEventHandler struct {
 	retry.EventHandler
 
 	objType         reflect.Type
-	oc              *Controller
+	watchFactory    *factory.WatchFactory
+	oc              Controller
 	extraParameters interface{}
 	syncFunc        func([]interface{}) error
 }
@@ -43,7 +41,9 @@ type masterEventHandler struct {
 // newRetryFrameworkMasterWithParameters is instead called directly by the watchers that are
 // dynamically created when a network policy is added: PeerServiceType, PeerNamespaceAndPodSelectorType,
 // PeerPodForNamespaceAndPodSelectorType, PeerNamespaceSelectorType, PeerPodSelectorType.
-func (oc *Controller) newRetryFrameworkMasterWithParameters(
+func newRetryFrameworkMasterWithParameters(
+	oc Controller,
+	watchFactory *factory.WatchFactory,
 	objectType reflect.Type,
 	syncFunc func([]interface{}) error,
 	extraParameters interface{}) *retry.RetryFramework {
@@ -53,13 +53,14 @@ func (oc *Controller) newRetryFrameworkMasterWithParameters(
 		ObjType:                objectType,
 		EventHandler: &masterEventHandler{
 			objType:         objectType,
+			watchFactory:    watchFactory,
 			oc:              oc,
 			extraParameters: extraParameters, // in use by network policy dynamic watchers
 			syncFunc:        syncFunc,
 		},
 	}
 	r := retry.NewRetryFramework(
-		oc.watchFactory,
+		watchFactory,
 		resourceHandler,
 	)
 	return r
@@ -72,8 +73,9 @@ func (oc *Controller) newRetryFrameworkMasterWithParameters(
 // configuration parameters (extraParameters field).
 // This is true for all resource types except for those that are dynamically created when
 // adding a network policy.
-func (oc *Controller) newRetryFrameworkMaster(objectType reflect.Type) *retry.RetryFramework {
-	return oc.newRetryFrameworkMasterWithParameters(objectType, nil, nil)
+func newRetryFrameworkMaster(oc Controller, watchFactory *factory.WatchFactory,
+	objectType reflect.Type) *retry.RetryFramework {
+	return newRetryFrameworkMasterWithParameters(oc, watchFactory, objectType, nil, nil)
 }
 
 // hasResourceAnUpdateFunc returns true if the given resource type has a dedicated update function.
@@ -189,7 +191,7 @@ func (h *masterEventHandler) AreResourcesEqual(obj1, obj2 interface{}) (bool, er
 	return false, fmt.Errorf("no object comparison for type %s", h.objType)
 }
 
-func (oc *Controller) getPortInfo(pod *kapi.Pod) *lpInfo {
+func (oc *DefaultL3Controller) getPortInfo(pod *kapi.Pod) *lpInfo {
 	var portInfo *lpInfo
 	key := util.GetLogicalPortName(pod.Namespace, pod.Name)
 	if !util.PodWantsNetwork(pod) {
@@ -211,13 +213,7 @@ func (oc *Controller) getPortInfo(pod *kapi.Pod) *lpInfo {
 // Given an object and its type, GetInternalCacheEntry returns the internal cache entry for this object.
 // This is now used only for pods, which will get their the logical port cache entry.
 func (h *masterEventHandler) GetInternalCacheEntry(obj interface{}) interface{} {
-	switch h.objType {
-	case factory.PodType:
-		pod := obj.(*kapi.Pod)
-		return h.oc.getPortInfo(pod)
-	default:
-		return nil
-	}
+	return h.oc.GetInternalCacheEntry(h.objType, obj)
 }
 
 // Given an object key and its type, getResourceFromInformerCache returns the latest state of the object
@@ -234,36 +230,36 @@ func (h *masterEventHandler) GetResourceFromInformerCache(key string) (interface
 
 	switch h.objType {
 	case factory.PolicyType:
-		obj, err = h.oc.watchFactory.GetNetworkPolicy(namespace, name)
+		obj, err = h.watchFactory.GetNetworkPolicy(namespace, name)
 
 	case factory.NodeType,
 		factory.EgressNodeType:
-		obj, err = h.oc.watchFactory.GetNode(name)
+		obj, err = h.watchFactory.GetNode(name)
 
 	case factory.PeerServiceType:
-		obj, err = h.oc.watchFactory.GetService(namespace, name)
+		obj, err = h.watchFactory.GetService(namespace, name)
 
 	case factory.PodType,
 		factory.PeerPodSelectorType,
 		factory.PeerPodForNamespaceAndPodSelectorType,
 		factory.LocalPodSelectorType,
 		factory.EgressIPPodType:
-		obj, err = h.oc.watchFactory.GetPod(namespace, name)
+		obj, err = h.watchFactory.GetPod(namespace, name)
 
 	case factory.PeerNamespaceAndPodSelectorType,
 		factory.PeerNamespaceSelectorType,
 		factory.EgressIPNamespaceType,
 		factory.NamespaceType:
-		obj, err = h.oc.watchFactory.GetNamespace(name)
+		obj, err = h.watchFactory.GetNamespace(name)
 
 	case factory.EgressFirewallType:
-		obj, err = h.oc.watchFactory.GetEgressFirewall(namespace, name)
+		obj, err = h.watchFactory.GetEgressFirewall(namespace, name)
 
 	case factory.EgressIPType:
-		obj, err = h.oc.watchFactory.GetEgressIP(name)
+		obj, err = h.watchFactory.GetEgressIP(name)
 
 	case factory.CloudPrivateIPConfigType:
-		obj, err = h.oc.watchFactory.GetCloudPrivateIPConfig(name)
+		obj, err = h.watchFactory.GetCloudPrivateIPConfig(name)
 
 	default:
 		err = fmt.Errorf("object type %s not supported, cannot retrieve it from informers cache",
@@ -274,46 +270,17 @@ func (h *masterEventHandler) GetResourceFromInformerCache(key string) (interface
 
 // Given an object and its type, RecordAddEvent records the add event on this object.
 func (h *masterEventHandler) RecordAddEvent(obj interface{}) {
-	switch h.objType {
-	case factory.PodType:
-		pod := obj.(*kapi.Pod)
-		klog.V(5).Infof("Recording add event on pod %s/%s", pod.Namespace, pod.Name)
-		h.oc.podRecorder.AddPod(pod.UID)
-		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name)
-	case factory.PolicyType:
-		np := obj.(*knet.NetworkPolicy)
-		klog.V(5).Infof("Recording add event on network policy %s/%s", np.Namespace, np.Name)
-		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
-	}
+	h.oc.RecordAddEvent(obj)
 }
 
 // Given an object and its type, RecordUpdateEvent records the update event on this object.
 func (h *masterEventHandler) RecordUpdateEvent(obj interface{}) {
-	switch h.objType {
-	case factory.PodType:
-		pod := obj.(*kapi.Pod)
-		klog.V(5).Infof("Recording update event on pod %s/%s", pod.Namespace, pod.Name)
-		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name)
-	case factory.PolicyType:
-		np := obj.(*knet.NetworkPolicy)
-		klog.V(5).Infof("Recording update event on network policy %s/%s", np.Namespace, np.Name)
-		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
-	}
+	h.oc.RecordUpdateEvent(obj)
 }
 
 // Given an object and its type, RecordDeleteEvent records the delete event on this object. Only used for pods now.
 func (h *masterEventHandler) RecordDeleteEvent(obj interface{}) {
-	switch h.objType {
-	case factory.PodType:
-		pod := obj.(*kapi.Pod)
-		klog.V(5).Infof("Recording delete event on pod %s/%s", pod.Namespace, pod.Name)
-		h.oc.podRecorder.CleanPod(pod.UID)
-		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name)
-	case factory.PolicyType:
-		np := obj.(*knet.NetworkPolicy)
-		klog.V(5).Infof("Recording delete event on network policy %s/%s", np.Namespace, np.Name)
-		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
-	}
+	h.oc.RecordDeleteEvent(obj)
 }
 
 func (h *masterEventHandler) RecordSuccessEvent(obj interface{}) {
@@ -332,12 +299,7 @@ func (h *masterEventHandler) RecordSuccessEvent(obj interface{}) {
 // Given an object and its type, RecordErrorEvent records an error event on this object.
 // Only used for pods now.
 func (h *masterEventHandler) RecordErrorEvent(obj interface{}, err error) {
-	switch h.objType {
-	case factory.PodType:
-		pod := obj.(*kapi.Pod)
-		klog.V(5).Infof("Recording error event on pod %s/%s", pod.Namespace, pod.Name)
-		h.oc.recordPodEvent(err, pod)
-	}
+	h.oc.RecordObjErrorEvent(err, obj)
 }
 
 // Given an object and its type, isResourceScheduled returns true if the object has been scheduled.
@@ -368,444 +330,34 @@ func needsUpdateDuringRetry(objType reflect.Type) bool {
 // iterateRetryResources, AddResource adds the specified object to the cluster according to its type and
 // returns the error, if any, yielded during object creation.
 func (h *masterEventHandler) AddResource(obj interface{}, fromRetryLoop bool) error {
-	var err error
-
-	switch h.objType {
-	case factory.PodType:
-		pod, ok := obj.(*kapi.Pod)
-		if !ok {
-			return fmt.Errorf("could not cast %T object to *knet.Pod", obj)
-		}
-		return h.oc.ensurePod(nil, pod, true)
-
-	case factory.PolicyType:
-		np, ok := obj.(*knet.NetworkPolicy)
-		if !ok {
-			return fmt.Errorf("could not cast %T object to *knet.NetworkPolicy", obj)
-		}
-
-		if err = h.oc.addNetworkPolicy(np); err != nil {
-			klog.Infof("Network Policy add failed for %s/%s, will try again later: %v",
-				np.Namespace, np.Name, err)
-			return err
-		}
-
-	case factory.NodeType:
-		node, ok := obj.(*kapi.Node)
-		if !ok {
-			return fmt.Errorf("could not cast %T object to *kapi.Node", obj)
-		}
-		var nodeParams *nodeSyncs
-		if fromRetryLoop {
-			_, nodeSync := h.oc.addNodeFailed.Load(node.Name)
-			_, clusterRtrSync := h.oc.nodeClusterRouterPortFailed.Load(node.Name)
-			_, mgmtSync := h.oc.mgmtPortFailed.Load(node.Name)
-			_, gwSync := h.oc.gatewaysFailed.Load(node.Name)
-			_, hoSync := h.oc.hybridOverlayFailed.Load(node.Name)
-			nodeParams = &nodeSyncs{
-				nodeSync,
-				clusterRtrSync,
-				mgmtSync,
-				gwSync,
-				hoSync}
-		} else {
-			nodeParams = &nodeSyncs{true, true, true, true, config.HybridOverlay.Enabled}
-		}
-
-		if err = h.oc.addUpdateNodeEvent(node, nodeParams); err != nil {
-			klog.Infof("Node add failed for %s, will try again later: %v",
-				node.Name, err)
-			return err
-		}
-
-	case factory.PeerServiceType:
-		service, ok := obj.(*kapi.Service)
-		if !ok {
-			return fmt.Errorf("could not cast peer service of type %T to *kapi.Service", obj)
-		}
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerServiceAdd(extraParameters.np, extraParameters.gp, service)
-
-	case factory.PeerPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerPodSelectorAddUpdate(extraParameters.np, extraParameters.gp, obj)
-
-	case factory.PeerNamespaceAndPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerNamespaceAndPodAdd(extraParameters.np, extraParameters.gp,
-			extraParameters.podSelector, obj)
-
-	case factory.PeerPodForNamespaceAndPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerPodSelectorAddUpdate(extraParameters.np, extraParameters.gp, obj)
-
-	case factory.PeerNamespaceSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerNamespaceSelectorAdd(extraParameters.np, extraParameters.gp, obj)
-
-	case factory.LocalPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handleLocalPodSelectorAddFunc(
-			extraParameters.np,
-			obj)
-
-	case factory.EgressFirewallType:
-		var err error
-		egressFirewall := obj.(*egressfirewall.EgressFirewall).DeepCopy()
-		if err = h.oc.addEgressFirewall(egressFirewall); err != nil {
-			egressFirewall.Status.Status = egressFirewallAddError
-		} else {
-			egressFirewall.Status.Status = egressFirewallAppliedCorrectly
-			metrics.UpdateEgressFirewallRuleCount(float64(len(egressFirewall.Spec.Egress)))
-			metrics.IncrementEgressFirewallCount()
-		}
-		if err = h.oc.updateEgressFirewallStatusWithRetry(egressFirewall); err != nil {
-			klog.Errorf("Failed to update egress firewall status %s, error: %v",
-				getEgressFirewallNamespacedName(egressFirewall), err)
-		}
-		return err
-
-	case factory.EgressIPType:
-		eIP := obj.(*egressipv1.EgressIP)
-		return h.oc.reconcileEgressIP(nil, eIP)
-
-	case factory.EgressIPNamespaceType:
-		namespace := obj.(*kapi.Namespace)
-		return h.oc.reconcileEgressIPNamespace(nil, namespace)
-
-	case factory.EgressIPPodType:
-		pod := obj.(*kapi.Pod)
-		return h.oc.reconcileEgressIPPod(nil, pod)
-
-	case factory.EgressNodeType:
-		node := obj.(*kapi.Node)
-		if err := h.oc.setupNodeForEgress(node); err != nil {
-			return err
-		}
-		nodeEgressLabel := util.GetNodeEgressLabel()
-		nodeLabels := node.GetLabels()
-		_, hasEgressLabel := nodeLabels[nodeEgressLabel]
-		if hasEgressLabel {
-			h.oc.setNodeEgressAssignable(node.Name, true)
-		}
-		isReady := h.oc.isEgressNodeReady(node)
-		if isReady {
-			h.oc.setNodeEgressReady(node.Name, true)
-		}
-		isReachable := h.oc.isEgressNodeReachable(node)
-		if isReachable {
-			h.oc.setNodeEgressReachable(node.Name, true)
-		}
-		if hasEgressLabel && isReachable && isReady {
-			if err := h.oc.addEgressNode(node.Name); err != nil {
-				return err
-			}
-		}
-
-	case factory.CloudPrivateIPConfigType:
-		cloudPrivateIPConfig := obj.(*ocpcloudnetworkapi.CloudPrivateIPConfig)
-		return h.oc.reconcileCloudPrivateIPConfig(nil, cloudPrivateIPConfig)
-
-	case factory.NamespaceType:
-		ns, ok := obj.(*kapi.Namespace)
-		if !ok {
-			return fmt.Errorf("could not cast %T object to *kapi.Namespace", obj)
-		}
-		return h.oc.AddNamespace(ns)
-
-	default:
-		return fmt.Errorf("no add function for object type %s", h.objType)
-	}
-
-	return nil
+	return h.oc.AddResource(h.objType, obj, fromRetryLoop, h.extraParameters)
 }
 
 // Given a *RetryFramework instance, an old and a new object, UpdateResource updates the specified object in the cluster
 // to its version in newObj according to its type and returns the error, if any, yielded during the object update.
 // The inRetryCache boolean argument is to indicate if the given resource is in the retryCache or not.
 func (h *masterEventHandler) UpdateResource(oldObj, newObj interface{}, inRetryCache bool) error {
-	switch h.objType {
-	case factory.PodType:
-		oldPod := oldObj.(*kapi.Pod)
-		newPod := newObj.(*kapi.Pod)
-
-		return h.oc.ensurePod(oldPod, newPod, inRetryCache || util.PodScheduled(oldPod) != util.PodScheduled(newPod))
-
-	case factory.NodeType:
-		newNode, ok := newObj.(*kapi.Node)
-		if !ok {
-			return fmt.Errorf("could not cast newObj of type %T to *kapi.Node", newObj)
-		}
-		oldNode, ok := oldObj.(*kapi.Node)
-		if !ok {
-			return fmt.Errorf("could not cast oldObj of type %T to *kapi.Node", oldObj)
-		}
-		// determine what actually changed in this update
-		_, nodeSync := h.oc.addNodeFailed.Load(newNode.Name)
-		_, failed := h.oc.nodeClusterRouterPortFailed.Load(newNode.Name)
-		clusterRtrSync := failed || nodeChassisChanged(oldNode, newNode) || nodeSubnetChanged(oldNode, newNode)
-		_, failed = h.oc.mgmtPortFailed.Load(newNode.Name)
-		mgmtSync := failed || macAddressChanged(oldNode, newNode) || nodeSubnetChanged(oldNode, newNode)
-		_, failed = h.oc.gatewaysFailed.Load(newNode.Name)
-		gwSync := (failed || gatewayChanged(oldNode, newNode) ||
-			nodeSubnetChanged(oldNode, newNode) || hostAddressesChanged(oldNode, newNode))
-		_, hoSync := h.oc.hybridOverlayFailed.Load(newNode.Name)
-
-		return h.oc.addUpdateNodeEvent(newNode, &nodeSyncs{nodeSync, clusterRtrSync, mgmtSync, gwSync, hoSync})
-
-	case factory.PeerPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerPodSelectorAddUpdate(extraParameters.np, extraParameters.gp, newObj)
-
-	case factory.PeerPodForNamespaceAndPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerPodSelectorAddUpdate(extraParameters.np, extraParameters.gp, newObj)
-
-	case factory.LocalPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handleLocalPodSelectorAddFunc(
-			extraParameters.np,
-			newObj)
-
-	case factory.EgressIPType:
-		oldEIP := oldObj.(*egressipv1.EgressIP)
-		newEIP := newObj.(*egressipv1.EgressIP)
-		return h.oc.reconcileEgressIP(oldEIP, newEIP)
-
-	case factory.EgressIPNamespaceType:
-		oldNamespace := oldObj.(*kapi.Namespace)
-		newNamespace := newObj.(*kapi.Namespace)
-		return h.oc.reconcileEgressIPNamespace(oldNamespace, newNamespace)
-
-	case factory.EgressIPPodType:
-		oldPod := oldObj.(*kapi.Pod)
-		newPod := newObj.(*kapi.Pod)
-		return h.oc.reconcileEgressIPPod(oldPod, newPod)
-
-	case factory.EgressNodeType:
-		oldNode := oldObj.(*kapi.Node)
-		newNode := newObj.(*kapi.Node)
-		// Initialize the allocator on every update,
-		// ovnkube-node/cloud-network-config-controller will make sure to
-		// annotate the node with the egressIPConfig, but that might have
-		// happened after we processed the ADD for that object, hence keep
-		// retrying for all UPDATEs.
-		if err := h.oc.initEgressIPAllocator(newNode); err != nil {
-			klog.Warningf("Egress node initialization error: %v", err)
-		}
-		nodeEgressLabel := util.GetNodeEgressLabel()
-		oldLabels := oldNode.GetLabels()
-		newLabels := newNode.GetLabels()
-		_, oldHadEgressLabel := oldLabels[nodeEgressLabel]
-		_, newHasEgressLabel := newLabels[nodeEgressLabel]
-		// If the node is not labeled for egress assignment, just return
-		// directly, we don't really need to set the ready / reachable
-		// status on this node if the user doesn't care about using it.
-		if !oldHadEgressLabel && !newHasEgressLabel {
-			return nil
-		}
-		if oldHadEgressLabel && !newHasEgressLabel {
-			klog.Infof("Node: %s has been un-labeled, deleting it from egress assignment", newNode.Name)
-			h.oc.setNodeEgressAssignable(oldNode.Name, false)
-			return h.oc.deleteEgressNode(oldNode.Name)
-		}
-		isOldReady := h.oc.isEgressNodeReady(oldNode)
-		isNewReady := h.oc.isEgressNodeReady(newNode)
-		isNewReachable := h.oc.isEgressNodeReachable(newNode)
-		h.oc.setNodeEgressReady(newNode.Name, isNewReady)
-		h.oc.setNodeEgressReachable(newNode.Name, isNewReachable)
-		if !oldHadEgressLabel && newHasEgressLabel {
-			klog.Infof("Node: %s has been labeled, adding it for egress assignment", newNode.Name)
-			h.oc.setNodeEgressAssignable(newNode.Name, true)
-			if isNewReady && isNewReachable {
-				if err := h.oc.addEgressNode(newNode.Name); err != nil {
-					return err
-				}
-			} else {
-				klog.Warningf("Node: %s has been labeled, but node is not ready"+
-					" and reachable, cannot use it for egress assignment", newNode.Name)
-			}
-			return nil
-		}
-		if isOldReady == isNewReady {
-			return nil
-		}
-		if !isNewReady {
-			klog.Warningf("Node: %s is not ready, deleting it from egress assignment", newNode.Name)
-			if err := h.oc.deleteEgressNode(newNode.Name); err != nil {
-				return err
-			}
-		} else if isNewReady && isNewReachable {
-			klog.Infof("Node: %s is ready and reachable, adding it for egress assignment", newNode.Name)
-			if err := h.oc.addEgressNode(newNode.Name); err != nil {
-				return err
-			}
-		}
-		return nil
-
-	case factory.CloudPrivateIPConfigType:
-		oldCloudPrivateIPConfig := oldObj.(*ocpcloudnetworkapi.CloudPrivateIPConfig)
-		newCloudPrivateIPConfig := newObj.(*ocpcloudnetworkapi.CloudPrivateIPConfig)
-		return h.oc.reconcileCloudPrivateIPConfig(oldCloudPrivateIPConfig, newCloudPrivateIPConfig)
-
-	case factory.NamespaceType:
-		oldNs, newNs := oldObj.(*kapi.Namespace), newObj.(*kapi.Namespace)
-		return h.oc.updateNamespace(oldNs, newNs)
-	}
-	return fmt.Errorf("no update function for object type %s", h.objType)
+	return h.oc.UpdateResource(h.objType, oldObj, newObj, inRetryCache, h.extraParameters)
 }
 
 // Given a *RetryFramework instance, an object and optionally a cachedObj, DeleteResource deletes the object from the cluster
 // according to the delete logic of its resource type. cachedObj is the internal cache entry for this object,
 // used for now for pods and network policies.
 func (h *masterEventHandler) DeleteResource(obj, cachedObj interface{}) error {
-	switch h.objType {
-	case factory.PodType:
-		var portInfo *lpInfo
-		pod := obj.(*kapi.Pod)
-
-		if cachedObj != nil {
-			portInfo = cachedObj.(*lpInfo)
-		}
-		h.oc.logicalPortCache.remove(util.GetLogicalPortName(pod.Namespace, pod.Name))
-		return h.oc.removePod(pod, portInfo)
-
-	case factory.PolicyType:
-		knp, ok := obj.(*knet.NetworkPolicy)
-		if !ok {
-			return fmt.Errorf("could not cast obj of type %T to *knet.NetworkPolicy", obj)
-		}
-		return h.oc.deleteNetworkPolicy(knp)
-
-	case factory.NodeType:
-		node, ok := obj.(*kapi.Node)
-		if !ok {
-			return fmt.Errorf("could not cast obj of type %T to *knet.Node", obj)
-		}
-		return h.oc.deleteNodeEvent(node)
-
-	case factory.PeerServiceType:
-		service, ok := obj.(*kapi.Service)
-		if !ok {
-			return fmt.Errorf("could not cast peer service of type %T to *kapi.Service", obj)
-		}
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerServiceDelete(extraParameters.np, extraParameters.gp, service)
-
-	case factory.PeerPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerPodSelectorDelete(extraParameters.np, extraParameters.gp, obj)
-
-	case factory.PeerNamespaceAndPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerNamespaceAndPodDel(extraParameters.np, extraParameters.gp, obj)
-
-	case factory.PeerPodForNamespaceAndPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerPodSelectorDelete(extraParameters.np, extraParameters.gp, obj)
-
-	case factory.PeerNamespaceSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerNamespaceSelectorDel(extraParameters.np, extraParameters.gp, obj)
-
-	case factory.LocalPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handleLocalPodSelectorDelFunc(
-			extraParameters.np,
-			obj)
-
-	case factory.EgressFirewallType:
-		egressFirewall := obj.(*egressfirewall.EgressFirewall)
-		if err := h.oc.deleteEgressFirewall(egressFirewall); err != nil {
-			return err
-		}
-		metrics.UpdateEgressFirewallRuleCount(float64(-len(egressFirewall.Spec.Egress)))
-		metrics.DecrementEgressFirewallCount()
-		return nil
-
-	case factory.EgressIPType:
-		eIP := obj.(*egressipv1.EgressIP)
-		return h.oc.reconcileEgressIP(eIP, nil)
-
-	case factory.EgressIPNamespaceType:
-		namespace := obj.(*kapi.Namespace)
-		return h.oc.reconcileEgressIPNamespace(namespace, nil)
-
-	case factory.EgressIPPodType:
-		pod := obj.(*kapi.Pod)
-		return h.oc.reconcileEgressIPPod(pod, nil)
-
-	case factory.EgressNodeType:
-		node := obj.(*kapi.Node)
-		if err := h.oc.deleteNodeForEgress(node); err != nil {
-			return err
-		}
-		nodeEgressLabel := util.GetNodeEgressLabel()
-		nodeLabels := node.GetLabels()
-		if _, hasEgressLabel := nodeLabels[nodeEgressLabel]; hasEgressLabel {
-			if err := h.oc.deleteEgressNode(node.Name); err != nil {
-				return err
-			}
-		}
-		return nil
-
-	case factory.CloudPrivateIPConfigType:
-		cloudPrivateIPConfig := obj.(*ocpcloudnetworkapi.CloudPrivateIPConfig)
-		return h.oc.reconcileCloudPrivateIPConfig(cloudPrivateIPConfig, nil)
-
-	case factory.NamespaceType:
-		ns := obj.(*kapi.Namespace)
-		return h.oc.deleteNamespace(ns)
-
-	default:
-		return fmt.Errorf("object type %s not supported", h.objType)
-	}
+	return h.oc.DeleteResource(h.objType, obj, cachedObj, h.extraParameters)
 }
 
 func (h *masterEventHandler) SyncFunc(objs []interface{}) error {
 	var syncFunc func([]interface{}) error
+	var err error
 
 	if h.syncFunc != nil {
 		// syncFunc was provided explicitly
 		syncFunc = h.syncFunc
 	} else {
-		switch h.objType {
-		case factory.PodType:
-			syncFunc = h.oc.syncPods
-
-		case factory.PolicyType:
-			syncFunc = h.oc.syncNetworkPolicies
-
-		case factory.NodeType:
-			syncFunc = h.oc.syncNodes
-
-		case factory.LocalPodSelectorType,
-			factory.PeerServiceType,
-			factory.PeerNamespaceAndPodSelectorType,
-			factory.PeerPodSelectorType,
-			factory.PeerPodForNamespaceAndPodSelectorType,
-			factory.PeerNamespaceSelectorType:
-			syncFunc = nil
-
-		case factory.EgressFirewallType:
-			syncFunc = h.oc.syncEgressFirewall
-
-		case factory.EgressIPNamespaceType:
-			syncFunc = h.oc.syncEgressIPs
-
-		case factory.EgressNodeType:
-			syncFunc = h.oc.initClusterEgressPolicies
-
-		case factory.EgressIPPodType,
-			factory.EgressIPType,
-			factory.CloudPrivateIPConfigType:
-			syncFunc = nil
-
-		case factory.NamespaceType:
-			syncFunc = h.oc.syncNamespaces
-
-		default:
-			return fmt.Errorf("no sync function for object type %s", h.objType)
+		syncFunc, err = h.oc.GetSyncFunc(h.objType)
+		if err != nil {
+			return err
 		}
 	}
 	if syncFunc == nil {

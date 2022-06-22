@@ -13,6 +13,8 @@ import (
 	egressqos "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressqos/v1"
 	egressqosfake "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressqos/v1/apis/clientset/versioned/fake"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
 	libovsdbtest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/libovsdb"
@@ -39,7 +41,7 @@ const (
 type FakeOVN struct {
 	fakeClient   *util.OVNClientset
 	watcher      *factory.WatchFactory
-	controller   *Controller
+	controller   *DefaultL3Controller
 	stopChan     chan struct{}
 	asf          *addressset.FakeAddressSetFactory
 	fakeRecorder *record.FakeRecorder
@@ -115,7 +117,8 @@ func (o *FakeOVN) init() {
 	o.controller = NewOvnController(o.fakeClient, o.watcher,
 		o.stopChan, o.asf,
 		o.nbClient, o.sbClient,
-		o.fakeRecorder)
+		o.fakeRecorder, nil)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	o.controller.multicastSupport = true
 	o.controller.loadBalancerGroupUUID = types.ClusterLBGroupName + "-UUID"
 }
@@ -134,4 +137,33 @@ func resetNBClient(ctx context.Context, nbClient libovsdbclient.Client) {
 	}).Should(gomega.BeTrue())
 	_, err = nbClient.MonitorAll(ctx)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
+// NewOvnController creates a new OVN controller for creating logical network
+// infrastructure and policy
+func NewOvnController(ovnClient *util.OVNClientset, wf *factory.WatchFactory, stopChan chan struct{},
+	addressSetFactory addressset.AddressSetFactory, libovsdbOvnNBClient libovsdbclient.Client,
+	libovsdbOvnSBClient libovsdbclient.Client, recorder record.EventRecorder, wg *sync.WaitGroup) *DefaultL3Controller {
+	if addressSetFactory == nil {
+		addressSetFactory = addressset.NewOvnAddressSetFactory(libovsdbOvnNBClient)
+	}
+
+	podRecorder := metrics.NewPodRecorder()
+	sharedInfo := NewControllerSharedInfo(
+		ovnClient.KubeClient,
+		&kube.Kube{
+			KClient:              ovnClient.KubeClient,
+			EIPClient:            ovnClient.EgressIPClient,
+			EgressFirewallClient: ovnClient.EgressFirewallClient,
+			CloudNetworkClient:   ovnClient.CloudNetworkClient,
+		},
+		wf,
+		recorder,
+		libovsdbOvnNBClient,
+		libovsdbOvnSBClient,
+		&podRecorder,
+		false,
+	)
+
+	return NewDefaultL3Controller(sharedInfo, stopChan, wg, addressSetFactory)
 }
