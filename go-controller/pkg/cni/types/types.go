@@ -10,6 +10,14 @@ type NetConf struct {
 	types.NetConf
 	// PciAddrs in case of using sriov
 	DeviceID string `json:"deviceID,omitempty"`
+
+	// Network Cidr
+	NetCidr string `json:"net_cidr,omitempty"`
+	// Network MTU
+	MTU int `json:"mtu,omitempty"`
+	// set to true if it is a secondary networkattachmentdefintion
+	IsSecondary bool `json:"isSecondary,omitempty"`
+
 	// LogFile to log all the messages from cni shim binary to
 	LogFile string `json:"logFile,omitempty"`
 	// Level is the logging verbosity level

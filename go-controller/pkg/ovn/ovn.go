@@ -10,13 +10,15 @@ import (
 	"sync"
 	"time"
 
+	cnitypes "github.com/containernetworking/cni/pkg/types"
 	nettypes "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	libovsdbclient "github.com/ovn-org/libovsdb/client"
-
+	ovncnitypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	egressqoslisters "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressqos/v1/apis/listers/egressqos/v1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
@@ -59,23 +61,63 @@ type ACLLoggingLevels struct {
 	Deny  string `json:"deny,omitempty"`
 }
 
-// Controller structure is the object which holds the controls for starting
-// and reacting upon the watched resources (e.g. pods, endpoints)
-type Controller struct {
+// GenericController structure is place holder for all fields shared among controllers.
+type GenericController struct {
 	client       clientset.Interface
 	kube         kube.Interface
 	watchFactory *factory.WatchFactory
-	stopChan     <-chan struct{}
+	podRecorder  metrics.PodRecorder
+
+	// event recorder used to post events to k8s
+	recorder record.EventRecorder
+
+	// libovsdb northbound client interface
+	nbClient libovsdbclient.Client
+
+	// libovsdb southbound client interface
+	sbClient libovsdbclient.Client
+
+	// has SCTP support
+	SCTPSupport bool
+}
+
+// ControllerManager structure is the object manages all controllers for all networks
+type ControllerManager struct {
+	GenericController
+
+	// default wait group and stop channel, used by default network controller
+	defaultWg       *sync.WaitGroup
+	defaultStopChan <-chan struct{}
+
+	// unique identity for controllerManager running on different ovnkube-master instance,
+	// used for leader election
+	identity string
+
+	// default network controller
+	defaultController *Controller
+
+	// controller for all networks, key is netName of net-attach-def, value is *Controller
+	allOvnControllers sync.Map
+}
+
+// Controller structure is the object which holds the controls for starting
+// and reacting upon the watched resources (e.g. pods, endpoints)
+type Controller struct {
+	GenericController
+
+	// network configuration information
+	nadInfo *util.NetAttachDefInfo
+
+	// wg and stopChan is per-Controller
+	wg       *sync.WaitGroup
+	stopChan <-chan struct{}
+
+	// configured cluster subnets
+	clusterSubnets []config.CIDRNetworkEntry
 
 	// FIXME DUAL-STACK -  Make IP Allocators more dual-stack friendly
 	masterSubnetAllocator        *subnetallocator.SubnetAllocator
 	hybridOverlaySubnetAllocator *subnetallocator.SubnetAllocator
-
-	SCTPSupport bool
-
-	// For TCP, UDP, and SCTP type traffic, cache OVN load-balancers used for the
-	// cluster's east-west traffic.
-	loadbalancerClusterCache map[kapi.Protocol]string
 
 	// A cache of all logical switches seen by the watcher and their subnets
 	lsManager *lsm.LogicalSwitchManager
@@ -137,7 +179,7 @@ type Controller struct {
 	defaultGatewayCOPPUUID string
 
 	// Controller used for programming OVN for egress IP
-	eIPC egressIPController
+	eIPC *egressIPController
 
 	// Controller used to handle services
 	svcController *svccontroller.Controller
@@ -153,30 +195,26 @@ type Controller struct {
 
 	joinSwIPManager *lsm.JoinSwitchIPManager
 
-	// event recorder used to post events to k8s
-	recorder record.EventRecorder
-
-	// libovsdb northbound client interface
-	nbClient libovsdbclient.Client
-
-	// libovsdb southbound client interface
-	sbClient libovsdbclient.Client
-
 	// v4HostSubnetsUsed keeps track of number of v4 subnets currently assigned to nodes
+	// TBD, need to determine if this metrics is per-controller or global
 	v4HostSubnetsUsed float64
 
 	// v6HostSubnetsUsed keeps track of number of v6 subnets currently assigned to nodes
 	v6HostSubnetsUsed float64
 
+	// RetryObjs needed for both default and secondary networks
 	// Objects for pods that need to be retried
 	retryPods *RetryObjs
+	// Objects for nodes that need to be retried
+	retryNodes *RetryObjs
 
+	// RetryObjs needed for default network only
+	// Objects for namespaces that need to be retried
+	retryNamespaces *RetryObjs
 	// Objects for network policies that need to be retried
 	retryNetworkPolicies *RetryObjs
-
 	// Objects for egress firewall that need to be retried
 	retryEgressFirewalls *RetryObjs
-
 	// Objects for egress IP that need to be retried
 	retryEgressIPs *RetryObjs
 	// Objects for egress IP Namespaces that need to be retried
@@ -187,19 +225,14 @@ type Controller struct {
 	retryEgressNodes *RetryObjs
 	// EgressIP Node-specific syncMap used by egressip node event handler
 	addEgressNodeFailed sync.Map
-	// Objects for nodes that need to be retried
-	retryNodes *RetryObjs
 	// Objects for Cloud private IP config that need to be retried
 	retryCloudPrivateIPConfig *RetryObjs
-	// Objects for namespaces that need to be retried
-	retryNamespaces *RetryObjs
+
 	// Node-specific syncMap used by node event handler
 	gatewaysFailed              sync.Map
 	mgmtPortFailed              sync.Map
 	addNodeFailed               sync.Map
 	nodeClusterRouterPortFailed sync.Map
-
-	podRecorder metrics.PodRecorder
 }
 
 const (
@@ -232,85 +265,188 @@ func getPodNamespacedName(pod *kapi.Pod) string {
 	return util.GetLogicalPortName(pod.Namespace, pod.Name)
 }
 
+func NewControllerManager(ovnClient *util.OVNClientset, identity string, wf *factory.WatchFactory,
+	stopChan chan struct{}, libovsdbOvnNBClient libovsdbclient.Client, libovsdbOvnSBClient libovsdbclient.Client,
+	recorder record.EventRecorder, wg *sync.WaitGroup) *ControllerManager {
+	return &ControllerManager{
+		GenericController: GenericController{
+			client: ovnClient.KubeClient,
+			kube: &kube.Kube{
+				KClient:              ovnClient.KubeClient,
+				EIPClient:            ovnClient.EgressIPClient,
+				EgressFirewallClient: ovnClient.EgressFirewallClient,
+				CloudNetworkClient:   ovnClient.CloudNetworkClient,
+			},
+			watchFactory: wf,
+			recorder:     recorder,
+			nbClient:     libovsdbOvnNBClient,
+			sbClient:     libovsdbOvnSBClient,
+			podRecorder:  metrics.NewPodRecorder(),
+		},
+		defaultWg:       wg,
+		defaultStopChan: stopChan,
+		identity:        identity,
+	}
+}
+
+func (cm *ControllerManager) InitDefaultController(addressSetFactory addressset.AddressSetFactory) (*Controller, error) {
+	defaultNetConf := &ovncnitypes.NetConf{
+		NetConf: cnitypes.NetConf{
+			Name: ovntypes.DefaultNetworkName,
+		},
+		NetCidr:     config.Default.RawClusterSubnets,
+		MTU:         config.Default.MTU,
+		IsSecondary: false,
+	}
+	nadInfo, _ := util.NewNetAttachDefInfo(defaultNetConf)
+	return cm.NewOvnController(nadInfo, addressSetFactory)
+}
+
+func (cm *ControllerManager) Init() error {
+	if cm.defaultController != nil {
+		return nil
+	}
+
+	// If the default network net_attach_def does not exist, we'd need to create default OVN Controller based on config.
+	_, err := cm.InitDefaultController(nil)
+	if err != nil {
+		return err
+	}
+
+	hasSCTPSupport, err := util.DetectSCTPSupport()
+	if err != nil {
+		return err
+	}
+
+	if !hasSCTPSupport {
+		klog.Warningf("SCTP unsupported by this version of OVN. Kubernetes service creation with SCTP will not work ")
+	} else {
+		klog.Info("SCTP support detected in OVN")
+	}
+	cm.SCTPSupport = hasSCTPSupport
+
+	// enableOVNLogicalDataPathGroups sets an OVN flag to enable logical datapath
+	// groups on OVN 20.12 and later. The option is ignored if OVN doesn't
+	// understand it. Logical datapath groups reduce the size of the southbound
+	// database in large clusters. ovn-controllers should be upgraded to a version
+	// that supports them before the option is turned on by the master.
+	nbGlobal := nbdb.NBGlobal{
+		Options: map[string]string{"use_logical_dp_groups": "true"},
+	}
+	if err := libovsdbops.UpdateNBGlobalSetOptions(cm.nbClient, &nbGlobal); err != nil {
+		return fmt.Errorf("failed to set NB global option to enable logical datapath groups: %v", err)
+	}
+
+	metrics.RunTimestamp(cm.defaultStopChan, cm.sbClient, cm.nbClient)
+	metrics.MonitorIPSec(cm.nbClient)
+	if config.Metrics.EnableConfigDuration {
+		// with k=10,
+		//  for a cluster with 10 nodes, measurement of 1 in every 100 requests
+		//  for a cluster with 100 nodes, measurement of 1 in every 1000 requests
+		metrics.GetConfigDurationRecorder().Run(cm.nbClient, cm.kube, 10, time.Second*5, cm.defaultStopChan)
+	}
+
+	cm.podRecorder.Run(cm.sbClient, cm.defaultStopChan)
+
+	// Start and sync the watch factory to begin listening for events
+	if err := cm.watchFactory.Start(); err != nil {
+		return err
+	}
+	return nil
+}
+
 // NewOvnController creates a new OVN controller for creating logical network
 // infrastructure and policy
-func NewOvnController(ovnClient *util.OVNClientset, wf *factory.WatchFactory, stopChan <-chan struct{}, addressSetFactory addressset.AddressSetFactory,
-	libovsdbOvnNBClient libovsdbclient.Client, libovsdbOvnSBClient libovsdbclient.Client,
-	recorder record.EventRecorder) *Controller {
-	if addressSetFactory == nil {
-		addressSetFactory = addressset.NewOvnAddressSetFactory(libovsdbOvnNBClient)
+func (cm *ControllerManager) NewOvnController(nadInfo *util.NetAttachDefInfo,
+	addressSetFactory addressset.AddressSetFactory) (*Controller, error) {
+	clusterIPNet, err := config.ParseClusterSubnetEntries(nadInfo.NetCidr)
+	if err != nil {
+		return nil, fmt.Errorf("cluster subnet %s for network %s is invalid: %v", nadInfo.NetCidr, nadInfo.NetName, err)
 	}
-	svcController, svcFactory := newServiceController(ovnClient.KubeClient, libovsdbOvnNBClient, recorder)
-	egressSvcController := newEgressServiceController(ovnClient.KubeClient, libovsdbOvnNBClient, svcFactory, stopChan)
-	var hybridOverlaySubnetAllocator *subnetallocator.SubnetAllocator
-	if config.HybridOverlay.Enabled {
-		hybridOverlaySubnetAllocator = subnetallocator.NewSubnetAllocator()
+
+	stopChan := cm.defaultStopChan
+	if nadInfo.IsSecondary {
+		stopChan = make(chan struct{})
 	}
-	return &Controller{
-		client: ovnClient.KubeClient,
-		kube: &kube.Kube{
-			KClient:              ovnClient.KubeClient,
-			EIPClient:            ovnClient.EgressIPClient,
-			EgressFirewallClient: ovnClient.EgressFirewallClient,
-			CloudNetworkClient:   ovnClient.CloudNetworkClient,
-		},
-		watchFactory:                 wf,
-		stopChan:                     stopChan,
-		masterSubnetAllocator:        subnetallocator.NewSubnetAllocator(),
-		hybridOverlaySubnetAllocator: hybridOverlaySubnetAllocator,
-		lsManager:                    lsm.NewLogicalSwitchManager(),
-		logicalPortCache:             newPortCache(stopChan),
-		namespaces:                   make(map[string]*namespaceInfo),
-		namespacesMutex:              sync.Mutex{},
-		externalGWCache:              make(map[ktypes.NamespacedName]*externalRouteInfo),
-		exGWCacheMutex:               sync.RWMutex{},
-		addressSetFactory:            addressSetFactory,
-		networkPolicies:              syncmap.NewSyncMap[*networkPolicy](),
-		sharedNetpolPortGroups:       syncmap.NewSyncMap[*defaultDenyPortGroups](),
-		eIPC: egressIPController{
+	oc := &Controller{
+		GenericController:     cm.GenericController,
+		nadInfo:               nadInfo,
+		stopChan:              stopChan,
+		clusterSubnets:        clusterIPNet,
+		masterSubnetAllocator: subnetallocator.NewSubnetAllocator(),
+		logicalPortCache:      newPortCache(stopChan),
+		lsManager:             lsm.NewLogicalSwitchManager(),
+		loadBalancerGroupUUID: "",
+		aclLoggingEnabled:     true,
+		joinSwIPManager:       nil,
+		retryPods:             NewRetryObjs(factory.PodType, "", nil, nil, nil),
+		retryNodes:            NewRetryObjs(factory.NodeType, "", nil, nil, nil),
+	}
+	if !nadInfo.IsSecondary {
+		svcController, svcFactory := newServiceController(cm.client, cm.nbClient, cm.recorder)
+		oc.svcController = svcController
+		oc.svcFactory = svcFactory
+		oc.egressSvcController = newEgressServiceController(cm.client, cm.nbClient, svcFactory, cm.defaultStopChan)
+		if config.HybridOverlay.Enabled {
+			oc.hybridOverlaySubnetAllocator = subnetallocator.NewSubnetAllocator()
+		}
+		oc.eIPC = &egressIPController{
 			egressIPAssignmentMutex:           &sync.Mutex{},
 			podAssignmentMutex:                &sync.Mutex{},
 			podAssignment:                     make(map[string]*podAssignmentState),
 			pendingCloudPrivateIPConfigsMutex: &sync.Mutex{},
 			pendingCloudPrivateIPConfigsOps:   make(map[string]map[string]*cloudPrivateIPConfigOp),
 			allocator:                         allocator{&sync.Mutex{}, make(map[string]*egressNode)},
-			nbClient:                          libovsdbOvnNBClient,
-			watchFactory:                      wf,
+			nbClient:                          cm.nbClient,
+			watchFactory:                      cm.watchFactory,
 			egressIPTotalTimeout:              config.OVNKubernetesFeature.EgressIPReachabiltyTotalTimeout,
 			egressIPNodeHealthCheckPort:       config.OVNKubernetesFeature.EgressIPNodeHealthCheckPort,
-		},
-		loadbalancerClusterCache:  make(map[kapi.Protocol]string),
-		multicastSupport:          config.EnableMulticast,
-		loadBalancerGroupUUID:     "",
-		aclLoggingEnabled:         true,
-		joinSwIPManager:           nil,
-		retryPods:                 NewRetryObjs(factory.PodType, "", nil, nil, nil),
-		retryNetworkPolicies:      NewRetryObjs(factory.PolicyType, "", nil, nil, nil),
-		retryNodes:                NewRetryObjs(factory.NodeType, "", nil, nil, nil),
-		retryEgressFirewalls:      NewRetryObjs(factory.EgressFirewallType, "", nil, nil, nil),
-		retryEgressIPs:            NewRetryObjs(factory.EgressIPType, "", nil, nil, nil),
-		retryEgressIPNamespaces:   NewRetryObjs(factory.EgressIPNamespaceType, "", nil, nil, nil),
-		retryEgressIPPods:         NewRetryObjs(factory.EgressIPPodType, "", nil, nil, nil),
-		retryEgressNodes:          NewRetryObjs(factory.EgressNodeType, "", nil, nil, nil),
-		retryCloudPrivateIPConfig: NewRetryObjs(factory.CloudPrivateIPConfigType, "", nil, nil, nil),
-		retryNamespaces:           NewRetryObjs(factory.NamespaceType, "", nil, nil, nil),
-		recorder:                  recorder,
-		nbClient:                  libovsdbOvnNBClient,
-		sbClient:                  libovsdbOvnSBClient,
-		svcController:             svcController,
-		svcFactory:                svcFactory,
-		egressSvcController:       egressSvcController,
-		podRecorder:               metrics.NewPodRecorder(),
+		}
+		oc.externalGWCache = make(map[ktypes.NamespacedName]*externalRouteInfo)
+		oc.exGWCacheMutex = sync.RWMutex{}
+
+		oc.retryEgressFirewalls = NewRetryObjs(factory.EgressFirewallType, "", nil, nil, nil)
+		oc.retryEgressIPs = NewRetryObjs(factory.EgressIPType, "", nil, nil, nil)
+		oc.retryEgressIPNamespaces = NewRetryObjs(factory.EgressIPNamespaceType, "", nil, nil, nil)
+		oc.retryEgressIPPods = NewRetryObjs(factory.EgressIPPodType, "", nil, nil, nil)
+		oc.retryEgressNodes = NewRetryObjs(factory.EgressNodeType, "", nil, nil, nil)
+		oc.retryCloudPrivateIPConfig = NewRetryObjs(factory.CloudPrivateIPConfigType, "", nil, nil, nil)
+
+		if addressSetFactory == nil {
+			addressSetFactory = addressset.NewOvnAddressSetFactory(cm.nbClient)
+		}
+		oc.addressSetFactory = addressSetFactory
+		oc.sharedNetpolPortGroups = syncmap.NewSyncMap[*defaultDenyPortGroups]()
+		oc.networkPolicies = syncmap.NewSyncMap[*networkPolicy]()
+		oc.namespaces = make(map[string]*namespaceInfo)
+		oc.namespacesMutex = sync.Mutex{}
+		oc.retryNamespaces = NewRetryObjs(factory.NamespaceType, "", nil, nil, nil)
+		oc.retryNetworkPolicies = NewRetryObjs(factory.PolicyType, "", nil, nil, nil)
+
+		oc.wg = cm.defaultWg
+		oc.multicastSupport = config.EnableMulticast
+		cm.defaultController = oc
+	} else {
+		oc.wg = &sync.WaitGroup{}
+		oc.multicastSupport = false // disable multicast support for now
 	}
+	_, loaded := cm.allOvnControllers.LoadOrStore(nadInfo.NetName, oc)
+	if loaded {
+		klog.Errorf("Network attachment definition %s already exists", nadInfo.NetName)
+	}
+	return oc, nil
 }
 
-// Run starts the actual watching.
-func (oc *Controller) Run(ctx context.Context, wg *sync.WaitGroup) error {
-	// Start and sync the watch factory to begin listening for events
-	if err := oc.watchFactory.Start(); err != nil {
+func (oc *Controller) Init(ctx context.Context) error {
+	if err := oc.StartClusterMaster(); err != nil {
 		return err
 	}
 
+	return oc.Run(ctx)
+}
+
+// Run starts the actual watching.
+func (oc *Controller) Run(ctx context.Context) error {
 	oc.syncPeriodic()
 	klog.Infof("Starting all the Watchers...")
 	start := time.Now()
@@ -336,7 +472,7 @@ func (oc *Controller) Run(ctx context.Context, wg *sync.WaitGroup) error {
 	oc.svcFactory.Start(oc.stopChan)
 
 	// Services should be started after nodes to prevent LB churn
-	if err := oc.StartServiceController(wg, true); err != nil {
+	if err := oc.StartServiceController(oc.wg, true); err != nil {
 		return err
 	}
 
@@ -403,16 +539,16 @@ func (oc *Controller) Run(ctx context.Context, wg *sync.WaitGroup) error {
 			oc.watchFactory.EgressQoSInformer(),
 			oc.watchFactory.PodCoreInformer(),
 			oc.watchFactory.NodeCoreInformer())
-		wg.Add(1)
+		oc.wg.Add(1)
 		go func() {
-			defer wg.Done()
+			defer oc.wg.Done()
 			oc.runEgressQoSController(1, oc.stopChan)
 		}()
 	}
 
-	wg.Add(1)
+	oc.wg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer oc.wg.Done()
 		oc.egressSvcController.Run(1)
 	}()
 
@@ -428,9 +564,9 @@ func (oc *Controller) Run(ctx context.Context, wg *sync.WaitGroup) error {
 		if err != nil {
 			return err
 		}
-		wg.Add(1)
+		oc.wg.Add(1)
 		go func() {
-			defer wg.Done()
+			defer oc.wg.Done()
 			unidlingController.Run(oc.stopChan)
 		}()
 	}
