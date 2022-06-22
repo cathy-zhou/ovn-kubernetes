@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	"net"
 	"reflect"
 	"sync"
@@ -93,13 +95,39 @@ type namespaceInfo struct {
 	portGroupEgressDenyName  string // Port group Name for egress deny rule
 }
 
-// Controller structure is the object which holds the controls for starting
-// and reacting upon the watched resources (e.g. pods, endpoints)
-type Controller struct {
+// multihome controller, place holder for all fields shared among controllers.
+type OvnMHController struct {
+	wg           *sync.WaitGroup
 	client       clientset.Interface
 	kube         kube.Interface
 	watchFactory *factory.WatchFactory
-	stopChan     <-chan struct{}
+	stopChan     chan struct{}
+	identity     string
+	podRecorder  metrics.PodRecorder
+
+	// event recorder used to post events to k8s
+	recorder record.EventRecorder
+
+	// libovsdb northbound client interface
+	nbClient libovsdbclient.Client
+
+	// libovsdb southbound client interface
+	sbClient libovsdbclient.Client
+
+	// default network controller
+	ovnController *Controller
+}
+
+// Controller structure is the object which holds the controls for starting
+// and reacting upon the watched resources (e.g. pods, endpoints)
+type Controller struct {
+	mc *OvnMHController
+	// wg and stopChan is per-Controller
+	wg       *sync.WaitGroup
+	stopChan <-chan struct{}
+
+	// configured cluster subnets
+	clusterSubnets []config.CIDRNetworkEntry
 
 	// FIXME DUAL-STACK -  Make IP Allocators more dual-stack friendly
 	masterSubnetAllocator *subnetallocator.SubnetAllocator
@@ -183,16 +211,8 @@ type Controller struct {
 
 	joinSwIPManager *lsm.JoinSwitchIPManager
 
-	// event recorder used to post events to k8s
-	recorder record.EventRecorder
-
-	// libovsdb northbound client interface
-	nbClient libovsdbclient.Client
-
-	// libovsdb southbound client interface
-	sbClient libovsdbclient.Client
-
 	// v4HostSubnetsUsed keeps track of number of v4 subnets currently assigned to nodes
+	// TBD, need to determine if this metrics is per-controller or global
 	v4HostSubnetsUsed float64
 
 	// v6HostSubnetsUsed keeps track of number of v6 subnets currently assigned to nodes
@@ -226,8 +246,6 @@ type Controller struct {
 	mgmtPortFailed              sync.Map
 	addNodeFailed               sync.Map
 	nodeClusterRouterPortFailed sync.Map
-
-	podRecorder metrics.PodRecorder
 }
 
 const (
@@ -260,16 +278,10 @@ func getPodNamespacedName(pod *kapi.Pod) string {
 	return util.GetLogicalPortName(pod.Namespace, pod.Name)
 }
 
-// NewOvnController creates a new OVN controller for creating logical network
-// infrastructure and policy
-func NewOvnController(ovnClient *util.OVNClientset, wf *factory.WatchFactory, stopChan <-chan struct{}, addressSetFactory addressset.AddressSetFactory,
-	libovsdbOvnNBClient libovsdbclient.Client, libovsdbOvnSBClient libovsdbclient.Client,
-	recorder record.EventRecorder) *Controller {
-	if addressSetFactory == nil {
-		addressSetFactory = addressset.NewOvnAddressSetFactory(libovsdbOvnNBClient)
-	}
-	svcController, svcFactory := newServiceController(ovnClient.KubeClient, libovsdbOvnNBClient, recorder)
-	return &Controller{
+func NewOvnMHController(ovnClient *util.OVNClientset, identity string, wf *factory.WatchFactory,
+	stopChan chan struct{}, libovsdbOvnNBClient libovsdbclient.Client, libovsdbOvnSBClient libovsdbclient.Client,
+	recorder record.EventRecorder, wg *sync.WaitGroup) *OvnMHController {
+	return &OvnMHController{
 		client: ovnClient.KubeClient,
 		kube: &kube.Kube{
 			KClient:              ovnClient.KubeClient,
@@ -277,8 +289,72 @@ func NewOvnController(ovnClient *util.OVNClientset, wf *factory.WatchFactory, st
 			EgressFirewallClient: ovnClient.EgressFirewallClient,
 			CloudNetworkClient:   ovnClient.CloudNetworkClient,
 		},
-		watchFactory:          wf,
+		watchFactory: wf,
+		wg:           wg,
+		stopChan:     stopChan,
+		recorder:     recorder,
+		nbClient:     libovsdbOvnNBClient,
+		sbClient:     libovsdbOvnSBClient,
+		identity:     identity,
+		podRecorder:  metrics.NewPodRecorder(),
+	}
+}
+
+// Initilize the default Controller
+func (mc *OvnMHController) Init(addressSetFactory addressset.AddressSetFactory) error {
+	// create the default controller
+	_, err := mc.NewOvnController(addressSetFactory)
+	if err != nil {
+		return err
+	}
+
+	// enableOVNLogicalDataPathGroups sets an OVN flag to enable logical datapath
+	// groups on OVN 20.12 and later. The option is ignored if OVN doesn't
+	// understand it. Logical datapath groups reduce the size of the southbound
+	// database in large clusters. ovn-controllers should be upgraded to a version
+	// that supports them before the option is turned on by the master.
+	nbGlobal := nbdb.NBGlobal{
+		Options: map[string]string{"use_logical_dp_groups": "true"},
+	}
+	if err := libovsdbops.UpdateNBGlobalSetOptions(mc.nbClient, &nbGlobal); err != nil {
+		return fmt.Errorf("failed to set NB global option to enable logical datapath groups: %v", err)
+	}
+
+	// Start and sync the watch factory to begin listening for events
+	if err := mc.watchFactory.Start(); err != nil {
+		return err
+	}
+
+	metrics.RunTimestamp(mc.stopChan, mc.sbClient, mc.nbClient)
+	metrics.MonitorIPSec(mc.nbClient)
+	if config.Metrics.EnableConfigDuration {
+		// with k=10,
+		//  for a cluster with 10 nodes, measurement of 1 in every 100 requests
+		//  for a cluster with 100 nodes, measurement of 1 in every 1000 requests
+		metrics.GetConfigDurationRecorder().Run(mc.nbClient, mc.kube, 10, time.Second*5, mc.stopChan)
+	}
+
+	mc.podRecorder.Run(mc.sbClient, mc.stopChan)
+	return nil
+}
+
+// NewOvnController creates a new OVN controller for creating logical network
+// infrastructure and policy
+func (mc *OvnMHController) NewOvnController(addressSetFactory addressset.AddressSetFactory) (*Controller, error) {
+	if addressSetFactory == nil {
+		addressSetFactory = addressset.NewOvnAddressSetFactory(mc.nbClient)
+	}
+
+	clusterIPNet, err := config.ParseClusterSubnetEntries(config.Default.RawClusterSubnets)
+	if err != nil {
+		return nil, fmt.Errorf("cluster subnet %s is invalid: %v", config.Default.RawClusterSubnets, err)
+	}
+
+	stopChan := mc.stopChan
+	oc := &Controller{
+		mc:                    mc,
 		stopChan:              stopChan,
+		clusterSubnets:        clusterIPNet,
 		masterSubnetAllocator: subnetallocator.NewSubnetAllocator(),
 		lsManager:             lsm.NewLogicalSwitchManager(),
 		logicalPortCache:      newPortCache(stopChan),
@@ -297,8 +373,8 @@ func NewOvnController(ovnClient *util.OVNClientset, wf *factory.WatchFactory, st
 			pendingCloudPrivateIPConfigsMutex: &sync.Mutex{},
 			pendingCloudPrivateIPConfigsOps:   make(map[string]map[string]*cloudPrivateIPConfigOp),
 			allocator:                         allocator{&sync.Mutex{}, make(map[string]*egressNode)},
-			nbClient:                          libovsdbOvnNBClient,
-			watchFactory:                      wf,
+			nbClient:                          mc.nbClient,
+			watchFactory:                      mc.watchFactory,
 			egressIPTotalTimeout:              config.OVNKubernetesFeature.EgressIPReachabiltyTotalTimeout,
 		},
 		loadbalancerClusterCache:  make(map[kapi.Protocol]string),
@@ -315,22 +391,23 @@ func NewOvnController(ovnClient *util.OVNClientset, wf *factory.WatchFactory, st
 		retryEgressIPPods:         NewRetryObjs(factory.EgressIPPodType, "", nil, nil, nil),
 		retryEgressNodes:          NewRetryObjs(factory.EgressNodeType, "", nil, nil, nil),
 		retryCloudPrivateIPConfig: NewRetryObjs(factory.CloudPrivateIPConfigType, "", nil, nil, nil),
-		recorder:                  recorder,
-		nbClient:                  libovsdbOvnNBClient,
-		sbClient:                  libovsdbOvnSBClient,
-		svcController:             svcController,
-		svcFactory:                svcFactory,
-		podRecorder:               metrics.NewPodRecorder(),
 	}
+	oc.wg = mc.wg
+	mc.ovnController = oc
+	oc.svcController, oc.svcFactory = newServiceController(mc.client, mc.nbClient, mc.recorder)
+	return oc, nil
 }
 
-// Run starts the actual watching.
-func (oc *Controller) Run(ctx context.Context, wg *sync.WaitGroup) error {
-	// Start and sync the watch factory to begin listening for events
-	if err := oc.watchFactory.Start(); err != nil {
+func (oc *Controller) Init(ctx context.Context) error {
+	if err := oc.StartClusterMaster(); err != nil {
 		return err
 	}
 
+	return oc.Run(ctx)
+}
+
+// Run starts the actual watching.
+func (oc *Controller) Run(ctx context.Context) error {
 	oc.syncPeriodic()
 	klog.Infof("Starting all the Watchers...")
 	start := time.Now()
@@ -356,7 +433,7 @@ func (oc *Controller) Run(ctx context.Context, wg *sync.WaitGroup) error {
 	oc.svcFactory.Start(oc.stopChan)
 
 	// Services should be started after nodes to prevent LB churn
-	if err := oc.StartServiceController(wg, true); err != nil {
+	if err := oc.StartServiceController(oc.wg, true); err != nil {
 		return err
 	}
 
@@ -417,12 +494,12 @@ func (oc *Controller) Run(ctx context.Context, wg *sync.WaitGroup) error {
 
 	if config.OVNKubernetesFeature.EnableEgressQoS {
 		oc.initEgressQoSController(
-			oc.watchFactory.EgressQoSInformer(),
-			oc.watchFactory.PodCoreInformer(),
-			oc.watchFactory.NodeCoreInformer())
-		wg.Add(1)
+			oc.mc.watchFactory.EgressQoSInformer(),
+			oc.mc.watchFactory.PodCoreInformer(),
+			oc.mc.watchFactory.NodeCoreInformer())
+		oc.wg.Add(1)
 		go func() {
-			defer wg.Done()
+			defer oc.wg.Done()
 			oc.runEgressQoSController(1, oc.stopChan)
 		}()
 	}
@@ -432,24 +509,24 @@ func (oc *Controller) Run(ctx context.Context, wg *sync.WaitGroup) error {
 	if config.Kubernetes.OVNEmptyLbEvents {
 		klog.Infof("Starting unidling controller")
 		unidlingController, err := unidling.NewController(
-			oc.recorder,
-			oc.watchFactory.ServiceInformer(),
-			oc.sbClient,
+			oc.mc.recorder,
+			oc.mc.watchFactory.ServiceInformer(),
+			oc.mc.sbClient,
 		)
 		if err != nil {
 			return err
 		}
-		wg.Add(1)
+		oc.wg.Add(1)
 		go func() {
-			defer wg.Done()
+			defer oc.wg.Done()
 			unidlingController.Run(oc.stopChan)
 		}()
 	}
 
 	if oc.hoMaster != nil {
-		wg.Add(1)
+		oc.wg.Add(1)
 		go func() {
-			defer wg.Done()
+			defer oc.wg.Done()
 			oc.hoMaster.Run(oc.stopChan)
 		}()
 	}
@@ -496,7 +573,7 @@ func (oc *Controller) recordPodEvent(addErr error, pod *kapi.Pod) {
 			pod.Namespace, pod.Name, err)
 	} else {
 		klog.V(5).Infof("Posting a %s event for Pod %s/%s", kapi.EventTypeWarning, pod.Namespace, pod.Name)
-		oc.recorder.Eventf(podRef, kapi.EventTypeWarning, "ErrorAddingLogicalPort", addErr.Error())
+		oc.mc.recorder.Eventf(podRef, kapi.EventTypeWarning, "ErrorAddingLogicalPort", addErr.Error())
 	}
 }
 
@@ -616,7 +693,7 @@ func (oc *Controller) WatchEgressIPPods() error {
 // back the appropriate handler logic
 func (oc *Controller) WatchNamespaces() error {
 	start := time.Now()
-	_, err := oc.watchFactory.AddNamespaceHandler(cache.ResourceEventHandlerFuncs{
+	_, err := oc.mc.watchFactory.AddNamespaceHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			ns := obj.(*kapi.Namespace)
 			oc.AddNamespace(ns)

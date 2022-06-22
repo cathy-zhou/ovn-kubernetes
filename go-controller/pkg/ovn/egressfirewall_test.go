@@ -809,9 +809,9 @@ var _ = ginkgo.Describe("OVN EgressFirewall Operations for local gateway mode", 
 
 				ginkgo.By("Bringing down NBDB")
 				// inject transient problem, nbdb is down
-				fakeOVN.controller.nbClient.Close()
+				fakeOVN.nbClient.Close()
 				gomega.Eventually(func() bool {
-					return fakeOVN.controller.nbClient.Connected()
+					return fakeOVN.nbClient.Connected()
 				}).Should(gomega.BeFalse())
 
 				err := fakeOVN.fakeClient.EgressFirewallClient.K8sV1().EgressFirewalls(egressFirewall.Namespace).Delete(context.TODO(), egressFirewall.Name, *metav1.NewDeleteOptions(0))
@@ -831,7 +831,7 @@ var _ = ginkgo.Describe("OVN EgressFirewall Operations for local gateway mode", 
 
 				connCtx, cancel := context.WithTimeout(context.Background(), t.OVSDBTimeout)
 				defer cancel()
-				resetNBClient(connCtx, fakeOVN.controller.nbClient)
+				resetNBClient(connCtx, fakeOVN.nbClient)
 				fakeOVN.controller.retryPods.setRetryObjWithNoBackoff(key)
 				fakeOVN.controller.retryEgressFirewalls.requestRetryObjs()
 
@@ -948,9 +948,9 @@ var _ = ginkgo.Describe("OVN EgressFirewall Operations for local gateway mode", 
 				gomega.Expect(fakeOVN.nbClient).To(libovsdbtest.HaveData(expectedDatabaseState))
 				ginkgo.By("Bringing down NBDB")
 				// inject transient problem, nbdb is down
-				fakeOVN.controller.nbClient.Close()
+				fakeOVN.nbClient.Close()
 				gomega.Eventually(func() bool {
-					return fakeOVN.controller.nbClient.Connected()
+					return fakeOVN.nbClient.Connected()
 				}).Should(gomega.BeFalse())
 
 				_, err := fakeOVN.fakeClient.EgressFirewallClient.K8sV1().EgressFirewalls(egressFirewall.Namespace).Get(context.TODO(), egressFirewall.Name, metav1.GetOptions{})
@@ -973,7 +973,7 @@ var _ = ginkgo.Describe("OVN EgressFirewall Operations for local gateway mode", 
 				connCtx, cancel := context.WithTimeout(context.Background(), t.OVSDBTimeout)
 				defer cancel()
 				ginkgo.By("bringing up NBDB and requesting retry of entry")
-				resetNBClient(connCtx, fakeOVN.controller.nbClient)
+				resetNBClient(connCtx, fakeOVN.nbClient)
 				fakeOVN.controller.retryEgressFirewalls.setRetryObjWithNoBackoff(key)
 				fakeOVN.controller.retryEgressFirewalls.requestRetryObjs()
 				// check the cache no longer has the entry
