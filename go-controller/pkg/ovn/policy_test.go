@@ -177,6 +177,7 @@ func (n kNetworkPolicy) getDefaultDenyData(networkPolicy *knet.NetworkPolicy, po
 		lsps,
 		[]*nbdb.ACL{egressDenyACL, egressAllowACL},
 	)
+	egressDenyPG.ExternalIDs["support_shared_port_group"] = "yes"
 	egressDenyPG.UUID = egressDenyPG.Name + "-UUID"
 
 	ingressDenyPG := libovsdbops.BuildPortGroup(
@@ -185,6 +186,7 @@ func (n kNetworkPolicy) getDefaultDenyData(networkPolicy *knet.NetworkPolicy, po
 		lsps,
 		[]*nbdb.ACL{ingressDenyACL, ingressAllowACL},
 	)
+	ingressDenyPG.ExternalIDs["support_shared_port_group"] = "yes"
 	ingressDenyPG.UUID = ingressDenyPG.Name + "-UUID"
 
 	return []libovsdb.TestData{
@@ -2076,6 +2078,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 					nil,
 					[]*nbdb.ACL{leftOverACL1FromUpgrade},
 				)
+				testOnlyEgressDenyPG.ExternalIDs["support_shared_port_group"] = "yes"
 				testOnlyEgressDenyPG.UUID = testOnlyEgressDenyPG.Name + "-UUID"
 				// ACL2: leftover arp allow ACL ingress with old match (arp)
 				leftOverACL2FromUpgrade := libovsdbops.BuildACL(
@@ -2099,6 +2102,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 					nil,
 					[]*nbdb.ACL{leftOverACL2FromUpgrade},
 				)
+				testOnlyIngressDenyPG.ExternalIDs["support_shared_port_group"] = "yes"
 				testOnlyIngressDenyPG.UUID = testOnlyIngressDenyPG.Name + "-UUID"
 
 				// ACL3: leftover default deny ACL egress with old name (namespace_policyname)

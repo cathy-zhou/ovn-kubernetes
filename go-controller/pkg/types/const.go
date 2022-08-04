@@ -119,8 +119,7 @@ const (
 	OvnHostToSvcOFTopoVersion      = 3
 	OvnPortBindingTopoVersion      = 4
 	OvnRoutingViaHostTopoVersion   = 5
-	OvnSharePortGroupPolicyVersion = 6
-	OvnCurrentTopologyVersion      = OvnSharePortGroupPolicyVersion
+	OvnCurrentTopologyVersion      = OvnRoutingViaHostTopoVersion
 
 	// OVN-K8S annotation & taint constants
 	OvnK8sPrefix = "k8s.ovn.org"

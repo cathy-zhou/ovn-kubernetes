@@ -180,14 +180,18 @@ func (oc *Controller) updateStaleDefaultDenyACLNames(npType knet.PolicyType, gre
 }
 
 func (oc *Controller) syncNetworkPolicies(networkPolicies []interface{}) error {
-	cleanupSharePortGroupPolicy := false
-	// If version is less than OvnSharePortGroupPolicyVersion, we need to remove
-	// related Acls/PortGroup and let the policy handler add the correct ones back
-	ver, err := oc.determineOVNTopoVersionFromOVN()
+	// first see if this is post "support shared port group" by trying to find there
+	// is any default deny port group created the expected external_ids
+	pgp := func(item *nbdb.PortGroup) bool {
+		return item.ExternalIDs["support_shared_port_group"] == "yes"
+	}
+	spgDefaultDenyPGs, err := libovsdbops.FindPortGroupsWithPredicate(oc.nbClient, pgp)
 	if err != nil {
-		klog.Errorf("Failed to get current OVN topology ver: %v", err)
-	} else if ver < types.OvnSharePortGroupPolicyVersion {
-		cleanupSharePortGroupPolicy = true
+		return fmt.Errorf("failed to get default deny port groups that created with shared port group support: %v", err)
+	}
+	defaultDenyPGMap := map[string]bool{}
+	for _, pg := range spgDefaultDenyPGs {
+		defaultDenyPGMap[pg.Name] = true
 	}
 	stalePGs := sets.NewString()
 	expectedPolicies := make(map[string]map[string]bool)
@@ -197,18 +201,17 @@ func (oc *Controller) syncNetworkPolicies(networkPolicies []interface{}) error {
 			return fmt.Errorf("spurious object in syncNetworkPolicies: %v", npInterface)
 		}
 
-		if cleanupSharePortGroupPolicy {
-			if getSharedPortGroupName(policy) != "" {
-				// this policy needs to use shared group PortGroup, as the result, the per-namespace defaultDenyPort
-				// group's ports might also change, delete those and they will be created later.
+		// If the current port groups were created before shared group support, we need to remove
+		// related Acls/PortGroup and let the policy handler add the correct ones back
+		if getSharedPortGroupName(policy) != "" {
+			if _, ok := defaultDenyPGMap[defaultDenyPortGroup(policy.Namespace, ingressDefaultDenySuffix)]; !ok {
 				stalePGs.Insert(defaultDenyPortGroup(policy.Namespace, ingressDefaultDenySuffix))
-				stalePGs.Insert(defaultDenyPortGroup(policy.Namespace, egressDefaultDenySuffix))
-				stalePGs.Insert(hashedPortGroup(fmt.Sprintf("%s_%s", policy.Namespace, policy.Name)))
-
-				// this policy's is going to be changed to use shared portGroup. Simply not to add it to
-				//  expectedPolicies, and its associated logical entities will be added later in the policy handler
-				continue
 			}
+			if _, ok := defaultDenyPGMap[defaultDenyPortGroup(policy.Namespace, egressDefaultDenySuffix)]; !ok {
+				stalePGs.Insert(defaultDenyPortGroup(policy.Namespace, egressDefaultDenySuffix))
+			}
+			stalePGs.Insert(hashedPortGroup(fmt.Sprintf("%s_%s", policy.Namespace, policy.Name)))
+			continue
 		}
 
 		if nsMap, ok := expectedPolicies[policy.Namespace]; ok {
@@ -434,6 +437,10 @@ func (oc *Controller) createDefaultDenyPGAndACLs(namespace, policy string, nsInf
 
 	ingressPG := libovsdbops.BuildPortGroup(ingressPGName, ingressPGName, nil, []*nbdb.ACL{ingressDenyACL, ingressAllowACL})
 	egressPG := libovsdbops.BuildPortGroup(egressPGName, egressPGName, nil, []*nbdb.ACL{egressDenyACL, egressAllowACL})
+	// set "support_shared_port_group" external_ids of the default deny port group so that we know when to upgrade the port group
+	// to post "support_shared_port_group" topology
+	ingressPG.ExternalIDs["support_shared_port_group"] = "yes"
+	egressPG.ExternalIDs["support_shared_port_group"] = "yes"
 	ops, err = libovsdbops.CreateOrUpdatePortGroupsOps(oc.nbClient, ops, ingressPG, egressPG)
 	if err != nil {
 		return err
