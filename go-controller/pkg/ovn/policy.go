@@ -1288,7 +1288,7 @@ func (oc *Controller) createSharedNMPortGroup(policy *knet.NetworkPolicy, np *ne
 	// create shared portGroup
 	pgName := np.sharePortGroupName
 	pgHashName := hashedPortGroup(pgName)
-	ingressPG := libovsdbops.BuildPortGroup(pgHashName, pgName, nil, nil)
+	sharedPG := libovsdbops.BuildPortGroup(pgHashName, pgName, nil, nil)
 
 	spgInfo := &sharedPortGroupInfo{
 		pgName:           pgHashName,
@@ -1302,10 +1302,10 @@ func (oc *Controller) createSharedNMPortGroup(policy *knet.NetworkPolicy, np *ne
 	handleSharedPortGroupInitialSelectedPods := func(objs []interface{}) error {
 		selectedPods = objs
 		policyPorts := oc.processSharedPortGroupLocalPodSelectorSetPods(spgInfo, selectedPods...)
-		ingressPG.Ports = policyPorts
-		err := libovsdbops.CreateOrUpdatePortGroups(oc.nbClient, ingressPG)
+		sharedPG.Ports = policyPorts
+		err := libovsdbops.CreateOrUpdatePortGroups(oc.nbClient, sharedPG)
 		if err != nil {
-			return fmt.Errorf("failed to create port group %s: %v", ingressPG.Name, err)
+			return fmt.Errorf("failed to create port group %s: %v", sharedPG.Name, err)
 		}
 		return nil
 	}
