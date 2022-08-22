@@ -45,7 +45,7 @@ func initFakeNodePortWatcher(iptV4, iptV6 util.IPTablesHelper) *nodePortWatcher 
 		ofportPatch: "patch-breth0_ov",
 		gatewayIPv4: v4localnetGatewayIP,
 		gatewayIPv6: v6localnetGatewayIP,
-		serviceInfo: make(map[k8stypes.NamespacedName]*serviceConfig),
+		SvcInfo:     SvcInfo{serviceInfo: make(map[k8stypes.NamespacedName]*serviceConfig)},
 		ofm: &openflowManager{
 			flowCache: map[string][]string{},
 		},
@@ -59,7 +59,7 @@ func startNodePortWatcher(n *nodePortWatcher, fakeClient *util.OVNClientset, fak
 	}
 
 	k := &kube.Kube{fakeClient.KubeClient, nil, nil, nil}
-	n.nodeIPManager = newAddressManager(fakeNodeName, k, fakeMgmtPortConfig, n.watchFactory)
+	n.nodeIPManager, _ = newAddressManager(fakeNodeName, k, fakeMgmtPortConfig, n.watchFactory)
 	localHostNetEp := "192.168.18.15/32"
 	ip, _, _ := net.ParseCIDR(localHostNetEp)
 	n.nodeIPManager.addAddr(ip)

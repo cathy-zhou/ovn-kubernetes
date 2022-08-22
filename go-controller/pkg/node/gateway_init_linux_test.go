@@ -535,6 +535,7 @@ func shareGatewayInterfaceDPUHostTest(app *cli.App, testNS ns.NetNS, uplinkName,
 		clusterCIDR string = "10.1.0.0/16"
 		svcCIDR     string = "172.16.1.0/24"
 		nodeName    string = "node1"
+		nodeSubnet  string = "10.1.1.0/24"
 	)
 
 	app.Action = func(ctx *cli.Context) error {
@@ -558,6 +559,25 @@ func shareGatewayInterfaceDPUHostTest(app *cli.App, testNS ns.NetNS, uplinkName,
 			EgressFirewallClient: egressFirewallFakeClient,
 		}
 
+		_, nodeNet, err := net.ParseCIDR(nodeSubnet)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Make a fake MgmtPortConfig with only the fields we care about
+		fakeMgmtPortIPFamilyConfig := managementPortIPFamilyConfig{
+			ipt:        nil,
+			allSubnets: nil,
+			ifAddr:     nodeNet,
+			gwIP:       nodeNet.IP,
+		}
+
+		fakeMgmtPortConfig := managementPortConfig{
+			ifName:    nodeName,
+			link:      nil,
+			routerMAC: nil,
+			ipv4:      &fakeMgmtPortIPFamilyConfig,
+			ipv6:      nil,
+		}
+
 		stop := make(chan struct{})
 		wf, err := factory.NewNodeWatchFactory(fakeClient, nodeName)
 		Expect(err).NotTo(HaveOccurred())
@@ -573,7 +593,7 @@ func shareGatewayInterfaceDPUHostTest(app *cli.App, testNS ns.NetNS, uplinkName,
 		err = testNS.Do(func(ns.NetNS) error {
 			defer GinkgoRecover()
 
-			err := n.initGatewayDPUHost(net.ParseIP(hostIP))
+			err := n.initGatewayDPUHost(&fakeMgmtPortConfig, net.ParseIP(hostIP))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Check svc and masquerade routes added towards eth0GWIP

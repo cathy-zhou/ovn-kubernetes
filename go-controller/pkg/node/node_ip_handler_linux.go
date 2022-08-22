@@ -4,16 +4,21 @@
 package node
 
 import (
+	"fmt"
 	"net"
 	"sync"
 	"time"
 
+	ovnconfig "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	"github.com/vishvananda/netlink"
+	kapi "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 	utilnet "k8s.io/utils/net"
 )
@@ -30,7 +35,7 @@ type addressManager struct {
 }
 
 // initializes a new address manager which will hold all the IPs on a node
-func newAddressManager(nodeName string, k kube.Interface, config *managementPortConfig, watchFactory factory.NodeWatchFactory) *addressManager {
+func newAddressManager(nodeName string, k kube.Interface, config *managementPortConfig, watchFactory factory.NodeWatchFactory) (*addressManager, error) {
 	mgr := &addressManager{
 		nodeName:       nodeName,
 		watchFactory:   watchFactory,
@@ -38,9 +43,22 @@ func newAddressManager(nodeName string, k kube.Interface, config *managementPort
 		mgmtPortConfig: config,
 		OnChanged:      func() {},
 	}
-	mgr.nodeAnnotator = kube.NewNodeAnnotator(k, nodeName)
-	mgr.sync()
-	return mgr
+	if ovnconfig.OvnKubeNode.Mode != types.NodeModeDPU {
+		mgr.nodeAnnotator = kube.NewNodeAnnotator(k, nodeName)
+		mgr.sync()
+	} else {
+		node, err := mgr.watchFactory.GetNode(nodeName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to node %s: %v", nodeName, err)
+		}
+		currAddresses, err := util.ParseNodeHostAddresses(node)
+		if err != nil && !util.IsAnnotationNotSetError(err) {
+			return nil, fmt.Errorf("failed to get host addresses for node: %s: %v", nodeName, err)
+		} else {
+			mgr.assignAddresses(currAddresses)
+		}
+	}
+	return mgr, nil
 }
 
 // updates the address manager with a new IP
@@ -87,8 +105,54 @@ func (c *addressManager) ListAddresses() []net.IP {
 	return out
 }
 
-func (c *addressManager) Run(stopChan <-chan struct{}, doneWg *sync.WaitGroup) {
+func (c *addressManager) syncHostAddr() error {
+	_, err := c.watchFactory.AddNodeHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			node := obj.(*kapi.Node)
+			if node.Name != c.nodeName {
+				return
+			}
+
+			klog.V(5).Infof("Added event for Node %q", node.Name)
+			currAddresses, err := util.ParseNodeHostAddresses(node)
+			if err != nil && !util.IsAnnotationNotSetError(err) {
+				klog.Errorf("Failed to get host addresses for node: %s: %v", node.Name, err)
+				return
+			}
+			addrChanged := c.assignAddresses(currAddresses)
+			if addrChanged {
+				c.OnChanged()
+			}
+		},
+		UpdateFunc: func(old, new interface{}) {
+			node := new.(*kapi.Node)
+			if node.Name != c.nodeName {
+				return
+			}
+
+			currAddresses, err := util.ParseNodeHostAddresses(node)
+			if err != nil && !util.IsAnnotationNotSetError(err) {
+				klog.Errorf("Failed to get host addresses for node: %s: %v", node.Name, err)
+				return
+			}
+			addrChanged := c.assignAddresses(currAddresses)
+			if addrChanged {
+				c.OnChanged()
+			}
+		},
+		DeleteFunc: func(obj interface{}) {
+		},
+	}, nil)
+	return err
+}
+
+func (c *addressManager) Run(stopChan <-chan struct{}, doneWg *sync.WaitGroup) error {
 	var addrChan chan netlink.AddrUpdate
+
+	if ovnconfig.OvnKubeNode.Mode == types.NodeModeDPU {
+		return c.syncHostAddr()
+	}
+
 	addrSubscribeOptions := netlink.AddrSubscribeOptions{
 		ErrorCallback: func(err error) {
 			klog.Errorf("Failed during AddrSubscribe callback: %v", err)
@@ -161,6 +225,7 @@ func (c *addressManager) Run(stopChan <-chan struct{}, doneWg *sync.WaitGroup) {
 	}()
 
 	klog.Info("Node IP manager is running")
+	return nil
 }
 
 func (c *addressManager) assignAddresses(nodeHostAddresses sets.String) bool {
