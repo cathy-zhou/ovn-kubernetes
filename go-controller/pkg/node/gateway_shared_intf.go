@@ -50,30 +50,41 @@ var (
 	HostNodePortCTZone = config.Default.ConntrackZone + 3 //64003
 )
 
+type SvcInfo struct {
+	// Map of service name to programmed iptables/OF rules
+	serviceInfo     map[ktypes.NamespacedName]*serviceConfig
+	serviceInfoLock sync.Mutex
+}
+
 // nodePortWatcherIptables manages iptables rules for shared gateway
 // to ensure that services using NodePorts are accessible.
 type nodePortWatcherIptables struct {
+	SvcInfo
+	nodeIPManager *addressManager
+	watchFactory  factory.NodeWatchFactory
 }
 
-func newNodePortWatcherIptables() *nodePortWatcherIptables {
-	return &nodePortWatcherIptables{}
+func newNodePortWatcherIptables(watchFactory factory.NodeWatchFactory, nodeIPManager *addressManager) *nodePortWatcherIptables {
+	return &nodePortWatcherIptables{
+		SvcInfo:       SvcInfo{serviceInfo: make(map[ktypes.NamespacedName]*serviceConfig)},
+		nodeIPManager: nodeIPManager,
+		watchFactory:  watchFactory,
+	}
 }
 
 // nodePortWatcher manages OpenFlow and iptables rules
 // to ensure that services using NodePorts are accessible
 type nodePortWatcher struct {
-	dpuMode     bool
-	gatewayIPv4 string
-	gatewayIPv6 string
-	ofportPhys  string
-	ofportPatch string
-	gwBridge    string
-	// Map of service name to programmed iptables/OF rules
-	serviceInfo     map[ktypes.NamespacedName]*serviceConfig
-	serviceInfoLock sync.Mutex
-	ofm             *openflowManager
-	nodeIPManager   *addressManager
-	watchFactory    factory.NodeWatchFactory
+	SvcInfo
+	dpuMode       bool
+	gatewayIPv4   string
+	gatewayIPv6   string
+	ofportPhys    string
+	ofportPatch   string
+	gwBridge      string
+	ofm           *openflowManager
+	nodeIPManager *addressManager
+	watchFactory  factory.NodeWatchFactory
 }
 
 type serviceConfig struct {
@@ -343,40 +354,40 @@ func (npw *nodePortWatcher) generateArpBypassFlow(protocol string, ipAddr string
 }
 
 // getAndDeleteServiceInfo returns the serviceConfig for a service and if it exists and then deletes the entry
-func (npw *nodePortWatcher) getAndDeleteServiceInfo(index ktypes.NamespacedName) (out *serviceConfig, exists bool) {
-	npw.serviceInfoLock.Lock()
-	defer npw.serviceInfoLock.Unlock()
-	out, exists = npw.serviceInfo[index]
-	delete(npw.serviceInfo, index)
+func (svcInfo *SvcInfo) getAndDeleteServiceInfo(index ktypes.NamespacedName) (out *serviceConfig, exists bool) {
+	svcInfo.serviceInfoLock.Lock()
+	defer svcInfo.serviceInfoLock.Unlock()
+	out, exists = svcInfo.serviceInfo[index]
+	delete(svcInfo.serviceInfo, index)
 	return out, exists
 }
 
 // getServiceInfo returns the serviceConfig for a service and if it exists
-func (npw *nodePortWatcher) getServiceInfo(index ktypes.NamespacedName) (out *serviceConfig, exists bool) {
-	npw.serviceInfoLock.Lock()
-	defer npw.serviceInfoLock.Unlock()
-	out, exists = npw.serviceInfo[index]
+func (svcInfo *SvcInfo) getServiceInfo(index ktypes.NamespacedName) (out *serviceConfig, exists bool) {
+	svcInfo.serviceInfoLock.Lock()
+	defer svcInfo.serviceInfoLock.Unlock()
+	out, exists = svcInfo.serviceInfo[index]
 	return out, exists
 }
 
 // getAndSetServiceInfo creates and sets the serviceConfig, returns if it existed and whatever was there
-func (npw *nodePortWatcher) getAndSetServiceInfo(index ktypes.NamespacedName, service *kapi.Service, hasLocalHostNetworkEp bool) (old *serviceConfig, exists bool) {
-	npw.serviceInfoLock.Lock()
-	defer npw.serviceInfoLock.Unlock()
+func (svcInfo *SvcInfo) getAndSetServiceInfo(index ktypes.NamespacedName, service *kapi.Service, hasLocalHostNetworkEp bool) (old *serviceConfig, exists bool) {
+	svcInfo.serviceInfoLock.Lock()
+	defer svcInfo.serviceInfoLock.Unlock()
 
-	old, exists = npw.serviceInfo[index]
-	npw.serviceInfo[index] = &serviceConfig{service: service, hasLocalHostNetworkEp: hasLocalHostNetworkEp}
+	old, exists = svcInfo.serviceInfo[index]
+	svcInfo.serviceInfo[index] = &serviceConfig{service: service, hasLocalHostNetworkEp: hasLocalHostNetworkEp}
 	return old, exists
 }
 
 // addOrSetServiceInfo creates and sets the serviceConfig if it doesn't exist
-func (npw *nodePortWatcher) addOrSetServiceInfo(index ktypes.NamespacedName, service *kapi.Service, hasLocalHostNetworkEp bool) (exists bool) {
-	npw.serviceInfoLock.Lock()
-	defer npw.serviceInfoLock.Unlock()
+func (svcInfo *SvcInfo) addOrSetServiceInfo(index ktypes.NamespacedName, service *kapi.Service, hasLocalHostNetworkEp bool) (exists bool) {
+	svcInfo.serviceInfoLock.Lock()
+	defer svcInfo.serviceInfoLock.Unlock()
 
-	if _, exists := npw.serviceInfo[index]; !exists {
+	if _, exists := svcInfo.serviceInfo[index]; !exists {
 		// Only set this if it doesn't exist
-		npw.serviceInfo[index] = &serviceConfig{service: service, hasLocalHostNetworkEp: hasLocalHostNetworkEp}
+		svcInfo.serviceInfo[index] = &serviceConfig{service: service, hasLocalHostNetworkEp: hasLocalHostNetworkEp}
 		return false
 	}
 	return true
@@ -385,22 +396,22 @@ func (npw *nodePortWatcher) addOrSetServiceInfo(index ktypes.NamespacedName, ser
 
 // updateServiceInfo sets the serviceConfig for a service and returns the existing serviceConfig, if inputs are nil
 // do not update those fields, if it does not exist return nil.
-func (npw *nodePortWatcher) updateServiceInfo(index ktypes.NamespacedName, service *kapi.Service, hasLocalHostNetworkEp *bool) (old *serviceConfig, exists bool) {
+func (svcInfo *SvcInfo) updateServiceInfo(index ktypes.NamespacedName, service *kapi.Service, hasLocalHostNetworkEp *bool) (old *serviceConfig, exists bool) {
 
-	npw.serviceInfoLock.Lock()
-	defer npw.serviceInfoLock.Unlock()
+	svcInfo.serviceInfoLock.Lock()
+	defer svcInfo.serviceInfoLock.Unlock()
 
-	if old, exists = npw.serviceInfo[index]; !exists {
+	if old, exists = svcInfo.serviceInfo[index]; !exists {
 		klog.V(5).Infof("No serviceConfig found for service %s in namespace %s", index.Name, index.Namespace)
 		return nil, exists
 	}
 
 	if service != nil {
-		npw.serviceInfo[index].service = service
+		svcInfo.serviceInfo[index].service = service
 	}
 
 	if hasLocalHostNetworkEp != nil {
-		npw.serviceInfo[index].hasLocalHostNetworkEp = *hasLocalHostNetworkEp
+		svcInfo.serviceInfo[index].hasLocalHostNetworkEp = *hasLocalHostNetworkEp
 	}
 
 	return old, exists
@@ -725,17 +736,46 @@ func (npw *nodePortWatcher) UpdateEndpoints(old *kapi.Endpoints, new *kapi.Endpo
 }
 
 func (npwipt *nodePortWatcherIptables) AddService(service *kapi.Service) {
+	var hasLocalHostNetworkEp bool
 	// don't process headless service or services that doesn't have NodePorts or ExternalIPs
 	if !util.ServiceTypeHasClusterIP(service) || !util.IsClusterIPSet(service) {
 		return
 	}
-	addServiceRules(service, false, nil)
+	klog.V(5).Infof("Adding service %s in namespace %s", service.Name, service.Namespace)
+	name := ktypes.NamespacedName{Namespace: service.Namespace, Name: service.Name}
+	ep, err := npwipt.watchFactory.GetEndpoint(service.Namespace, service.Name)
+	if err != nil {
+		klog.V(5).Infof("No endpoint found for service %s in namespace %s during service Add", service.Name, service.Namespace)
+		// No endpoint object exists yet so default to false
+		hasLocalHostNetworkEp = false
+	} else {
+		nodeIPs := npwipt.nodeIPManager.ListAddresses()
+		hasLocalHostNetworkEp = hasLocalHostNetworkEndpoints(ep, nodeIPs)
+	}
+
+	// If something didn't already do it add correct Service rules
+	if exists := npwipt.addOrSetServiceInfo(name, service, hasLocalHostNetworkEp); !exists {
+		klog.V(5).Infof("Service Add %s event in namespace %s came before endpoint event setting svcConfig", service.Name, service.Namespace)
+		addServiceRules(service, hasLocalHostNetworkEp, nil)
+	} else {
+		klog.V(5).Infof("Rules already programmed for %s in namespace %s", service.Name, service.Namespace)
+	}
 }
 
 func (npwipt *nodePortWatcherIptables) UpdateService(old, new *kapi.Service) {
+	name := ktypes.NamespacedName{Namespace: old.Namespace, Name: old.Name}
+
 	if serviceUpdateNotNeeded(old, new) {
 		klog.V(5).Infof("Skipping service update for: %s as change does not apply to any of .Spec.Ports, "+
 			".Spec.ExternalIP, .Spec.ClusterIP, .Spec.ClusterIPs, .Spec.Type, .Status.LoadBalancer.Ingress", new.Name)
+		return
+	}
+
+	// Update the service in svcConfig if we need to so that other handler
+	// threads do the correct thing, leave hasLocalHostNetworkEp alone in the cache
+	svcConfig, exists := npwipt.updateServiceInfo(name, new, nil)
+	if !exists {
+		klog.V(5).Infof("Service %s in namespace %s was deleted during service Update", old.Name, old.Namespace)
 		return
 	}
 
@@ -744,7 +784,7 @@ func (npwipt *nodePortWatcherIptables) UpdateService(old, new *kapi.Service) {
 	}
 
 	if util.ServiceTypeHasClusterIP(new) && util.IsClusterIPSet(new) {
-		addServiceRules(new, false, nil)
+		addServiceRules(new, svcConfig.hasLocalHostNetworkEp, nil)
 	}
 }
 
@@ -753,21 +793,39 @@ func (npwipt *nodePortWatcherIptables) DeleteService(service *kapi.Service) {
 	if !util.ServiceTypeHasClusterIP(service) || !util.IsClusterIPSet(service) {
 		return
 	}
-	delServiceRules(service, nil)
+	klog.V(5).Infof("Deleting service %s in namespace %s", service.Name, service.Namespace)
+	name := ktypes.NamespacedName{Namespace: service.Namespace, Name: service.Name}
+	if svcConfig, exists := npwipt.getAndDeleteServiceInfo(name); exists {
+		delServiceRules(svcConfig.service, nil)
+	} else {
+		klog.Warningf("Deletion failed No service found in cache for endpoint %s in namespace %s", service.Name, service.Namespace)
+	}
 }
 
 func (npwipt *nodePortWatcherIptables) SyncServices(services []interface{}) error {
 	keepIPTRules := []iptRule{}
 	for _, serviceInterface := range services {
+		name := ktypes.NamespacedName{Namespace: serviceInterface.(*kapi.Service).Namespace, Name: serviceInterface.(*kapi.Service).Name}
+
 		service, ok := serviceInterface.(*kapi.Service)
 		if !ok {
 			klog.Errorf("Spurious object in syncServices: %v",
 				serviceInterface)
 			continue
 		}
+
+		ep, err := npwipt.watchFactory.GetEndpoint(service.Namespace, service.Name)
+		if err != nil {
+			klog.V(5).Infof("No endpoint found for service %s in namespace %s during sync", service.Name, service.Namespace)
+			continue
+		}
+		nodeIPs := npwipt.nodeIPManager.ListAddresses()
+		hasLocalHostNetworkEp := hasLocalHostNetworkEndpoints(ep, nodeIPs)
+		npwipt.getAndSetServiceInfo(name, service, hasLocalHostNetworkEp)
+
 		// Add correct iptables rules.
 		// TODO: ETP and ITP is not implemented for smart NIC mode.
-		keepIPTRules = append(keepIPTRules, getGatewayIPTRules(service, false)...)
+		keepIPTRules = append(keepIPTRules, getGatewayIPTRules(service, hasLocalHostNetworkEp)...)
 	}
 
 	// sync IPtables rules once
@@ -1313,6 +1371,14 @@ func newSharedGateway(nodeName string, subnets []*net.IPNet, gwNextHops []net.IP
 		}
 	}
 
+	addrAnnotReady := true
+	if config.OvnKubeNode.Mode == types.NodeModeDPU {
+		addrAnnotReady, err = hostAddressAnnotationReady(watchFactory, nodeName)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	if exGwBridge != nil {
 		gw.readyFunc = func() (bool, error) {
 			ready, err := gatewayReady(gwBridge.patchPort)
@@ -1323,11 +1389,15 @@ func newSharedGateway(nodeName string, subnets []*net.IPNet, gwNextHops []net.IP
 			if err != nil {
 				return false, err
 			}
-			return ready && exGWReady, nil
+			return ready && exGWReady && addrAnnotReady, nil
 		}
 	} else {
 		gw.readyFunc = func() (bool, error) {
-			return gatewayReady(gwBridge.patchPort)
+			gwReady, err := gatewayReady(gwBridge.patchPort)
+			if err != nil {
+				return false, err
+			}
+			return gwReady && addrAnnotReady, nil
 		}
 	}
 
@@ -1345,7 +1415,12 @@ func newSharedGateway(nodeName string, subnets []*net.IPNet, gwNextHops []net.IP
 				return err
 			}
 		}
-		gw.nodeIPManager = newAddressManager(nodeName, kube, cfg, watchFactory)
+
+		gw.nodeIPManager, err = newAddressManager(nodeName, kube, cfg, watchFactory)
+		if err != nil {
+			return err
+		}
+
 		nodeIPs := gw.nodeIPManager.ListAddresses()
 
 		gw.openflowManager, err = newGatewayOpenFlowManager(gwBridge, exGwBridge, nodeIPs)
@@ -1438,7 +1513,7 @@ func newNodePortWatcher(patchPort, gwBridge, gwIntf string, ips []*net.IPNet, of
 		ofportPhys:    ofportPhys,
 		ofportPatch:   ofportPatch,
 		gwBridge:      gwBridge,
-		serviceInfo:   make(map[ktypes.NamespacedName]*serviceConfig),
+		SvcInfo:       SvcInfo{serviceInfo: make(map[ktypes.NamespacedName]*serviceConfig)},
 		nodeIPManager: nodeIPManager,
 		ofm:           ofm,
 		watchFactory:  watchFactory,

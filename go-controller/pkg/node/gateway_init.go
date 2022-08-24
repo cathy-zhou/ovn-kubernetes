@@ -382,7 +382,7 @@ func interfaceForEXGW(intfName string) string {
 	return intfName
 }
 
-func (n *OvnNode) initGatewayDPUHost(kubeNodeIP net.IP) error {
+func (n *OvnNode) initGatewayDPUHost(cfg *managementPortConfig, kubeNodeIP net.IP) error {
 	// A DPU host gateway is complementary to the shared gateway running
 	// on the DPU embedded CPU. it performs some initializations and
 	// watch on services for iptable rule updates and run a loadBalancerHealth checker
@@ -423,7 +423,12 @@ func (n *OvnNode) initGatewayDPUHost(kubeNodeIP net.IP) error {
 		if err := initSharedGatewayIPTables(); err != nil {
 			return err
 		}
-		gw.nodePortWatcherIptables = newNodePortWatcherIptables()
+		gw.nodeIPManager, err = newAddressManager(n.name, n.Kube, cfg, n.watchFactory)
+		if err != nil {
+			return err
+		}
+
+		gw.nodePortWatcherIptables = newNodePortWatcherIptables(n.watchFactory, gw.nodeIPManager)
 		gw.loadBalancerHealthChecker = newLoadBalancerHealthChecker(n.name)
 		portClaimWatcher, err := newPortClaimWatcher(n.recorder)
 		if err != nil {

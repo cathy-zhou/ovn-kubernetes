@@ -55,6 +55,14 @@ func newLocalGateway(nodeName string, hostSubnets []*net.IPNet, gwNextHops []net
 		}
 	}
 
+	addrAnnotReady := true
+	if config.OvnKubeNode.Mode == types.NodeModeDPU {
+		addrAnnotReady, err = hostAddressAnnotationReady(watchFactory, nodeName)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	if exGwBridge != nil {
 		gw.readyFunc = func() (bool, error) {
 			ready, err := gatewayReady(gwBridge.patchPort)
@@ -65,11 +73,15 @@ func newLocalGateway(nodeName string, hostSubnets []*net.IPNet, gwNextHops []net
 			if err != nil {
 				return false, err
 			}
-			return ready && exGWReady, nil
+			return ready && exGWReady && addrAnnotReady, nil
 		}
 	} else {
 		gw.readyFunc = func() (bool, error) {
-			return gatewayReady(gwBridge.patchPort)
+			gwReady, err := gatewayReady(gwBridge.patchPort)
+			if err != nil {
+				return false, err
+			}
+			return gwReady && addrAnnotReady, nil
 		}
 	}
 
@@ -86,8 +98,10 @@ func newLocalGateway(nodeName string, hostSubnets []*net.IPNet, gwNextHops []net
 			}
 		}
 
-		gw.nodeIPManager = newAddressManager(nodeName, kube, cfg, watchFactory)
-
+		gw.nodeIPManager, err = newAddressManager(nodeName, kube, cfg, watchFactory)
+		if err != nil {
+			return err
+		}
 		gw.openflowManager, err = newGatewayOpenFlowManager(gwBridge, exGwBridge, gw.nodeIPManager.ListAddresses())
 		if err != nil {
 			return err

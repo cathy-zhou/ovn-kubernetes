@@ -1,6 +1,6 @@
 module github.com/ovn-org/ovn-kubernetes/go-controller
 
-go 1.17
+go 1.18
 
 require (
 	github.com/Mellanox/sriovnet v1.0.3
@@ -22,7 +22,7 @@ require (
 	github.com/onsi/gomega v1.14.0
 	github.com/openshift/api v0.0.0-20220525145417-ee5b62754c68
 	github.com/openshift/client-go v0.0.0-20220525160904-9e1acff93e4a
-	github.com/ovn-org/libovsdb v0.6.1-0.20220603151050-98c0bad3cff1
+	github.com/ovn-org/libovsdb v0.6.1-0.20220809122511-83fdc64a4613
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.12.1
 	github.com/prometheus/client_model v0.2.0

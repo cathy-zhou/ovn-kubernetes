@@ -25,7 +25,7 @@ import (
 type Gateway interface {
 	informer.ServiceAndEndpointsEventHandler
 	Init(factory.NodeWatchFactory) error
-	Start(<-chan struct{}, *sync.WaitGroup)
+	Start(<-chan struct{}, *sync.WaitGroup) error
 	GetGatewayBridgeIface() string
 }
 
@@ -183,15 +183,18 @@ func (g *gateway) Init(wf factory.NodeWatchFactory) error {
 	return nil
 }
 
-func (g *gateway) Start(stopChan <-chan struct{}, wg *sync.WaitGroup) {
+func (g *gateway) Start(stopChan <-chan struct{}, wg *sync.WaitGroup) error {
 	if g.nodeIPManager != nil {
-		g.nodeIPManager.Run(stopChan, wg)
+		if err := g.nodeIPManager.Run(stopChan, wg); err != nil {
+			return err
+		}
 	}
 
 	if g.openflowManager != nil {
 		klog.Info("Spawning Conntrack Rule Check Thread")
 		g.openflowManager.Run(stopChan, wg)
 	}
+	return nil
 }
 
 // sets up an uplink interface for UDP Generic Receive Offload forwarding as part of
@@ -284,6 +287,21 @@ func gatewayReady(patchPort string) (bool, error) {
 		return false, nil
 	}
 	klog.Info("Gateway is ready")
+	return true, nil
+}
+
+func hostAddressAnnotationReady(watchFactory factory.NodeWatchFactory, nodeName string) (bool, error) {
+	node, err := watchFactory.GetNode(nodeName)
+	if err != nil {
+		return false, fmt.Errorf("failed to node %s: %v", nodeName, err)
+	}
+	_, err = util.ParseNodeHostAddresses(node)
+	if err != nil {
+		if !util.IsAnnotationNotSetError(err) {
+			return false, fmt.Errorf("failed to get host addresses for node: %s: %v", nodeName, err)
+		}
+		return false, nil
+	}
 	return true, nil
 }
 

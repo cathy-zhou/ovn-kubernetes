@@ -998,34 +998,34 @@ func (oc *Controller) addNode(node *kapi.Node) ([]*net.IPNet, error) {
 }
 
 // check if any existing chassis entries in the SBDB mismatches with node's chassisID annotation
-func (oc *Controller) checkNodeChassisMismatch(node *kapi.Node) (bool, error) {
+func (oc *Controller) checkNodeChassisMismatch(node *kapi.Node) (string, error) {
 	chassisID, err := util.ParseNodeChassisIDAnnotation(node)
 	if err != nil {
-		return false, nil
+		return "", nil
 	}
 
 	chassisList, err := libovsdbops.ListChassis(oc.sbClient)
 	if err != nil {
-		return false, fmt.Errorf("failed to get chassis list for node %s: error: %v", node.Name, err)
+		return "", fmt.Errorf("failed to get chassis list for node %s: error: %v", node.Name, err)
 	}
 
 	for _, chassis := range chassisList {
-		if chassis.Name == chassisID {
-			return false, nil
+		if chassis.Hostname == node.Name && chassis.Name != chassisID {
+			return chassis.Name, nil
 		}
 	}
-	return true, nil
+	return "", nil
 }
 
 // delete stale chassis in SBDB if system-id of the specific node has changed.
 func (oc *Controller) deleteStaleNodeChassis(node *kapi.Node) error {
-	mismatch, err := oc.checkNodeChassisMismatch(node)
+	staleChassis, err := oc.checkNodeChassisMismatch(node)
 	if err != nil {
 		return fmt.Errorf("failed to check if there is any stale chassis for node %s in SBDB: %v", node.Name, err)
-	} else if mismatch {
-		klog.V(5).Infof("Node %s now has a new chassis ID, delete its stale chassis in SBDB", node.Name)
+	} else if staleChassis != "" {
+		klog.V(5).Infof("Node %s now has a new chassis ID, delete its stale chassis %s in SBDB", node.Name, staleChassis)
 		p := func(item *sbdb.Chassis) bool {
-			return item.Hostname == node.Name
+			return item.Name == staleChassis
 		}
 		if err = libovsdbops.DeleteChassisWithPredicate(oc.sbClient, p); err != nil {
 			// Send an event and Log on failure
@@ -1390,11 +1390,15 @@ func (oc *Controller) addUpdateNodeEvent(node *kapi.Node, nSyncs *nodeSyncs) err
 	// if per pod SNAT is being used, then l3 gateway config is required to be able to add pods
 	if _, gwFailed := oc.gatewaysFailed.Load(node.Name); !gwFailed || !config.Gateway.DisableSNATMultipleGWs {
 		if nSyncs.syncNode || nSyncs.syncGw { // do this only if it is a new node add or a gateway sync happened
-			options := metav1.ListOptions{FieldSelector: fields.OneTermEqualSelector("spec.nodeName", node.Name).String()}
+			options := metav1.ListOptions{
+				FieldSelector:   fields.OneTermEqualSelector("spec.nodeName", node.Name).String(),
+				ResourceVersion: "0",
+			}
 			pods, err := oc.client.CoreV1().Pods(metav1.NamespaceAll).List(context.TODO(), options)
 			if err != nil {
 				errs = append(errs, err)
-				klog.Errorf("Unable to list existing pods on node: %s, existing pods on this node may not function")
+				klog.Errorf("Unable to list existing pods on node: %s, existing pods on this node may not function",
+					node.Name)
 			} else {
 				klog.V(5).Infof("When adding node %s, found %d pods to add to retryPods", node.Name, len(pods.Items))
 				for _, pod := range pods.Items {
@@ -1403,10 +1407,14 @@ func (oc *Controller) addUpdateNodeEvent(node *kapi.Node, nSyncs *nodeSyncs) err
 						continue
 					}
 					klog.V(5).Infof("Adding pod %s/%s to retryPods", pod.Namespace, pod.Name)
-					oc.retryPods.addRetryObjWithAddNoBackoff(&pod)
+					err = oc.retryPods.AddRetryObjWithAddNoBackoff(&pod)
+					if err != nil {
+						errs = append(errs, err)
+						klog.Errorf("Failed to add pod %s/%s to retryPods: %v", pod.Namespace, pod.Name, err)
+					}
 				}
 			}
-			oc.retryPods.requestRetryObjs()
+			oc.retryPods.RequestRetryObjs()
 		}
 	}
 

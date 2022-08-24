@@ -996,16 +996,15 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 			subnet := ovntest.MustParseIPNet(node1.NodeSubnet)
 			err = clusterController.syncGatewayLogicalNetwork(updatedNode, l3GatewayConfig, []*net.IPNet{subnet}, hostAddrs)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			clusterController.retryNodes.initRetryObjWithAdd(testNode, testNode.Name)
-			gomega.Expect(len(clusterController.retryNodes.entries)).To(gomega.Equal(1))
-			if retryEntry := clusterController.retryNodes.getObjRetryEntry(testNode.Name); retryEntry != nil {
+			initRetryObjWithAdd(testNode, testNode.Name, clusterController.retryNodes)
+			gomega.Expect(retryObjsLen(clusterController.retryNodes)).To(gomega.Equal(1))
+			if retryEntry, found := getRetryObj(testNode.Name, clusterController.retryNodes); found {
 				gomega.Expect(retryEntry).ToNot(gomega.BeNil())
 				gomega.Expect(retryEntry.newObj).ToNot(gomega.BeNil())
 				gomega.Expect(retryEntry.oldObj).To(gomega.BeNil())
-				gomega.Expect(retryEntry.ignore).To(gomega.BeTrue())
 			}
-			clusterController.retryNodes.deleteRetryObj(testNode.Name, true)
-			gomega.Expect(clusterController.retryNodes.entries[testNode.Name]).To(gomega.BeNil())
+			deleteRetryObj(testNode.Name, clusterController.retryNodes)
+			gomega.Expect(checkRetryObj(testNode.Name, clusterController.retryNodes)).To(gomega.BeFalse())
 			var clusterSubnets []*net.IPNet
 			for _, clusterSubnet := range config.Default.ClusterSubnets {
 				clusterSubnets = append(clusterSubnets, clusterSubnet.CIDR)
@@ -1418,10 +1417,9 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			ginkgo.By("update should have failed with a retry present")
 			// check to see if the retry cache has an entry for this node
-			gomega.Eventually(func() *retryObjEntry {
-				return clusterController.retryNodes.getObjRetryEntry(testNode.Name)
-			}, "60s").ShouldNot(gomega.BeNil())
-			retryEntry := clusterController.retryNodes.getObjRetryEntry(testNode.Name)
+			checkRetryObjectEventually(testNode.Name, true, clusterController.retryNodes)
+			retryEntry, found := getRetryObj(testNode.Name, clusterController.retryNodes)
+			gomega.Expect(found).To(gomega.BeTrue())
 			ginkgo.By("retry entry new obj should not be nil")
 			gomega.Expect(retryEntry.newObj).NotTo(gomega.BeNil())
 			ginkgo.By("retry entry old obj should be nil")
@@ -1431,12 +1429,10 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 			defer cancel()
 			ginkgo.By("bring up NBDB")
 			resetNBClient(connCtx, clusterController.nbClient)
-			clusterController.retryNodes.setRetryObjWithNoBackoff(node1.Name)
-			clusterController.retryNodes.requestRetryObjs() // retry the failed entry
+			setRetryObjWithNoBackoff(node1.Name, clusterController.retryNodes)
+			clusterController.retryNodes.RequestRetryObjs() // retry the failed entry
 			ginkgo.By("should be no retry entry after update completes")
-			gomega.Eventually(func() *retryObjEntry {
-				return clusterController.retryNodes.getObjRetryEntry(testNode.Name)
-			}).Should(gomega.BeNil())
+			checkRetryObjectEventually(testNode.Name, false, clusterController.retryNodes)
 			for _, data := range expectedDatabaseState {
 				if route, ok := data.(*nbdb.LogicalRouterStaticRoute); ok {
 					if route.Nexthop == "172.16.16.1" {
@@ -1569,23 +1565,19 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			// check to see if the retry cache has an entry for this node
-			clusterController.retryNodes.getObjRetryEntry(testNode.Name)
-			gomega.Eventually(func() *retryObjEntry {
-				return clusterController.retryNodes.getObjRetryEntry(testNode.Name)
-			}).ShouldNot(gomega.BeNil())
-			retryEntry := clusterController.retryNodes.getObjRetryEntry(testNode.Name)
+			checkRetryObjectEventually(testNode.Name, true, clusterController.retryNodes)
+			retryEntry, found := getRetryObj(testNode.Name, clusterController.retryNodes)
+			gomega.Expect(found).To(gomega.BeTrue())
 			ginkgo.By("retry entry new obj should be nil")
 			gomega.Expect(retryEntry.newObj).To(gomega.BeNil())
 			ginkgo.By("retry entry old obj should not be nil")
 			gomega.Expect(retryEntry.oldObj).NotTo(gomega.BeNil())
 			// allocate subnet to allow delete to continue
 			gomega.Expect(clusterController.masterSubnetAllocator.AddNetworkRange(subnet, 24)).To(gomega.Succeed())
-			clusterController.retryNodes.setRetryObjWithNoBackoff(node1.Name)
-			clusterController.retryNodes.requestRetryObjs() // retry the failed entry
+			setRetryObjWithNoBackoff(node1.Name, clusterController.retryNodes)
+			clusterController.retryNodes.RequestRetryObjs() // retry the failed entry
 
-			gomega.Eventually(func() *retryObjEntry {
-				return clusterController.retryNodes.getObjRetryEntry(testNode.Name)
-			}).Should(gomega.BeNil())
+			checkRetryObjectEventually(testNode.Name, false, clusterController.retryNodes)
 			return nil
 		}
 
@@ -2124,6 +2116,93 @@ func TestController_syncNodesRetriable(t *testing.T) {
 			}
 
 			err = controller.syncNodesRetriable([]interface{}{&testNode})
+			if err != nil {
+				t.Fatalf("%s: Error on syncNodesRetriable: %v", tt.name, err)
+			}
+
+			matcher := libovsdbtest.HaveDataIgnoringUUIDs(tt.expectedSBDB)
+			match, err := matcher.Match(sbClient)
+			if err != nil {
+				t.Fatalf("%s: matcher error: %v", tt.name, err)
+			}
+			if !match {
+				t.Fatalf("%s: DB state did not match: %s", tt.name, matcher.FailureMessage(sbClient))
+			}
+		})
+	}
+}
+
+func TestController_deleteStaleNodeChassis(t *testing.T) {
+	tests := []struct {
+		name         string
+		node         v1.Node
+		initialSBDB  []libovsdbtest.TestData
+		expectedSBDB []libovsdbtest.TestData
+	}{
+		{
+			node: v1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node1",
+					Annotations: map[string]string{
+						"k8s.ovn.org/node-chassis-id": "chassis-node1-dpu",
+					},
+				},
+			},
+			name: "removes stale chassis when ovn running on DPU",
+			initialSBDB: []libovsdbtest.TestData{
+				&sbdb.Chassis{Name: "chassis-node1-dpu", Hostname: "node1"},
+				&sbdb.ChassisPrivate{Name: "chassis-node1-dpu"},
+				&sbdb.Chassis{Name: "chassis-node1", Hostname: "node1"},
+				&sbdb.ChassisPrivate{Name: "chassis-node1"},
+			},
+			expectedSBDB: []libovsdbtest.TestData{
+				&sbdb.Chassis{Name: "chassis-node1-dpu", Hostname: "node1"},
+				&sbdb.ChassisPrivate{Name: "chassis-node1-dpu"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stopChan := make(chan struct{})
+			defer close(stopChan)
+
+			kubeFakeClient := fake.NewSimpleClientset()
+			egressFirewallFakeClient := &egressfirewallfake.Clientset{}
+			egressIPFakeClient := &egressipfake.Clientset{}
+			fakeClient := &util.OVNClientset{
+				KubeClient:           kubeFakeClient,
+				EgressIPClient:       egressIPFakeClient,
+				EgressFirewallClient: egressFirewallFakeClient,
+			}
+			f, err := factory.NewMasterWatchFactory(fakeClient)
+			if err != nil {
+				t.Fatalf("%s: Error creating master watch factory: %v", tt.name, err)
+			}
+
+			dbSetup := libovsdbtest.TestSetup{
+				SBData: tt.initialSBDB,
+			}
+			nbClient, sbClient, libovsdbCleanup, err := libovsdbtest.NewNBSBTestHarness(dbSetup)
+			if err != nil {
+				t.Fatalf("Error creating libovsdb test harness: %v", err)
+			}
+			t.Cleanup(libovsdbCleanup.Cleanup)
+
+			controller := NewOvnController(
+				fakeClient,
+				f,
+				stopChan,
+				addressset.NewFakeAddressSetFactory(),
+				nbClient,
+				sbClient,
+				record.NewFakeRecorder(0))
+
+			controller.joinSwIPManager, err = lsm.NewJoinLogicalSwitchIPManager(nbClient, "", []string{})
+			if err != nil {
+				t.Fatalf("%s: Error creating joinSwIPManager: %v", tt.name, err)
+			}
+
+			err = controller.deleteStaleNodeChassis(&tt.node)
 			if err != nil {
 				t.Fatalf("%s: Error on syncNodesRetriable: %v", tt.name, err)
 			}

@@ -45,6 +45,9 @@ type NodeWatchFactory interface {
 	AddNamespaceHandler(handlerFuncs cache.ResourceEventHandler, processExisting func([]interface{}) error) (*Handler, error)
 	RemoveNamespaceHandler(handler *Handler)
 
+	AddNodeHandler(handlerFuncs cache.ResourceEventHandler, processExisting func([]interface{}) error) (*Handler, error)
+	RemoveNodeHandler(handler *Handler)
+
 	NodeInformer() cache.SharedIndexInformer
 	LocalPodInformer() cache.SharedIndexInformer
 

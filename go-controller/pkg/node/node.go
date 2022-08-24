@@ -411,7 +411,7 @@ func (n *OvnNode) Start(ctx context.Context, wg *sync.WaitGroup) error {
 
 	// Initialize gateway
 	if config.OvnKubeNode.Mode == types.NodeModeDPUHost {
-		err = n.initGatewayDPUHost(nodeAddr)
+		err = n.initGatewayDPUHost(mgmtPortConfig, nodeAddr)
 		if err != nil {
 			return err
 		}
@@ -431,7 +431,9 @@ func (n *OvnNode) Start(ctx context.Context, wg *sync.WaitGroup) error {
 	if err := waiter.Wait(); err != nil {
 		return err
 	}
-	n.gateway.Start(n.stopChan, wg)
+	if err = n.gateway.Start(n.stopChan, wg); err != nil {
+		return err
+	}
 	klog.Infof("Gateway and management port readiness took %v", time.Since(start))
 
 	// Note(adrianc): DPU deployments are expected to support the new shared gateway changes, upgrade flow
