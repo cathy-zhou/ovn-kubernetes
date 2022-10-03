@@ -159,6 +159,10 @@ var (
 	OvnKubeNode = OvnKubeNodeConfig{
 		Mode: types.NodeModeFull,
 	}
+
+	OvnTest = OvnTestConfig{
+		GeneratePredictableName: false,
+	}
 )
 
 const (
@@ -428,6 +432,13 @@ type OvnKubeNodeConfig struct {
 	DisableOVNIfaceIdVer bool   `gcfg:"disable-ovn-iface-id-ver"`
 }
 
+// OvnTestConfig holds testing related configurations
+type OvnTestConfig struct {
+	// generate predictable name to allow test case predicting the expected test results;
+	// By default, set this to be false to create random unique names; E.g. use uuid
+	GeneratePredictableName bool `gcfg:"ovn-generate-predictable-name"`
+}
+
 // OvnDBScheme describes the OVN database connection transport method
 type OvnDBScheme string
 
@@ -456,6 +467,7 @@ type config struct {
 	MasterHA             MasterHAConfig
 	HybridOverlay        HybridOverlayConfig
 	OvnKubeNode          OvnKubeNodeConfig
+	TestConfig           OvnTestConfig
 }
 
 var (
@@ -473,6 +485,7 @@ var (
 	savedMasterHA             MasterHAConfig
 	savedHybridOverlay        HybridOverlayConfig
 	savedOvnKubeNode          OvnKubeNodeConfig
+	savedOvnTest              OvnTestConfig
 	// legacy service-cluster-ip-range CLI option
 	serviceClusterIPRange string
 	// legacy cluster-subnet CLI option
@@ -499,6 +512,7 @@ func init() {
 	savedMasterHA = MasterHA
 	savedHybridOverlay = HybridOverlay
 	savedOvnKubeNode = OvnKubeNode
+	savedOvnTest = OvnTest
 	cli.VersionPrinter = func(c *cli.Context) {
 		fmt.Printf("Version: %s\n", Version)
 		fmt.Printf("Git commit: %s\n", Commit)
@@ -528,6 +542,7 @@ func PrepareTestConfig() error {
 	MasterHA = savedMasterHA
 	HybridOverlay = savedHybridOverlay
 	OvnKubeNode = savedOvnKubeNode
+	OvnTest = OvnTestConfig{GeneratePredictableName: true}
 
 	if err := completeConfig(); err != nil {
 		return err
@@ -1255,6 +1270,16 @@ var OvnKubeNodeFlags = []cli.Flag{
 	},
 }
 
+// OvnTestConfigFlag captures testing specific configurations
+var OvnTestConfigFlags = []cli.Flag{
+	&cli.BoolFlag{
+		Name:        "ovn-generate-predictable-name",
+		Usage:       "for testing purpose, set this flag to True to enable test suite to create expected outcome",
+		Value:       OvnTest.GeneratePredictableName,
+		Destination: &cliConfig.TestConfig.GeneratePredictableName,
+	},
+}
+
 // Flags are general command-line flags. Apps should add these flags to their
 // own urfave/cli flags and call InitConfig() early in the application.
 var Flags []cli.Flag
@@ -1275,6 +1300,7 @@ func GetFlags(customFlags []cli.Flag) []cli.Flag {
 	flags = append(flags, MonitoringFlags...)
 	flags = append(flags, IPFIXFlags...)
 	flags = append(flags, OvnKubeNodeFlags...)
+	flags = append(flags, OvnTestConfigFlags...)
 	flags = append(flags, customFlags...)
 	return flags
 }
@@ -1774,6 +1800,7 @@ func initConfigWithPath(ctx *cli.Context, exec kexec.Interface, saPath string, d
 		MasterHA:             savedMasterHA,
 		HybridOverlay:        savedHybridOverlay,
 		OvnKubeNode:          savedOvnKubeNode,
+		TestConfig:           savedOvnTest,
 	}
 
 	configFile, configFileIsDefault = getConfigFilePath(ctx)
@@ -1887,6 +1914,10 @@ func initConfigWithPath(ctx *cli.Context, exec kexec.Interface, saPath string, d
 		return "", err
 	}
 
+	if err = buildOvnTestConfig(ctx, &cliConfig, &cfg); err != nil {
+		return "", err
+	}
+
 	tmpAuth, err := buildOvnAuth(exec, true, &cliConfig.OvnNorth, &cfg.OvnNorth, defaults.OvnNorthAddress)
 	if err != nil {
 		return "", err
@@ -1914,6 +1945,7 @@ func initConfigWithPath(ctx *cli.Context, exec kexec.Interface, saPath string, d
 	klog.V(5).Infof("OVN South config: %+v", OvnSouth)
 	klog.V(5).Infof("Hybrid Overlay config: %+v", HybridOverlay)
 	klog.V(5).Infof("Ovnkube Node config: %+v", OvnKubeNode)
+	klog.V(5).Infof("Ovn Test config: %+v", OvnTest)
 
 	return retConfigFile, nil
 }
@@ -2231,5 +2263,20 @@ func buildOvnKubeNodeConfig(ctx *cli.Context, cli, file *config) error {
 				OvnKubeNode.Mode)
 		}
 	}
+	return nil
+}
+
+// buildOvnTestConfig updates OvnTest config from cli and config file
+func buildOvnTestConfig(ctx *cli.Context, cli, file *config) error {
+	// Copy config file values over default values
+	if err := overrideFields(&OvnTest, &file.TestConfig, &savedOvnTest); err != nil {
+		return err
+	}
+
+	// And CLI overrides over config file and default values
+	if err := overrideFields(&OvnTest, &cli.TestConfig, &savedOvnTest); err != nil {
+		return err
+	}
+
 	return nil
 }

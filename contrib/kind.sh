@@ -337,6 +337,7 @@ print_params() {
      echo "OVN_ENABLE_EX_GW_NETWORK_BRIDGE = $OVN_ENABLE_EX_GW_NETWORK_BRIDGE"
      echo "OVN_EX_GW_NETWORK_INTERFACE = $OVN_EX_GW_NETWORK_INTERFACE"
      echo "OVN_EGRESSIP_HEALTHCHECK_PORT = $OVN_EGRESSIP_HEALTHCHECK_PORT"
+     echo "OVN_GENERATE_PREDICTABLE_NAME = $OVN_GENERATE_PREDICTABLE_NAME"
      echo ""
 }
 
@@ -454,6 +455,7 @@ set_default_params() {
   OVN_HOST_NETWORK_NAMESPACE=${OVN_HOST_NETWORK_NAMESPACE:-ovn-host-network}
   OVN_EGRESSIP_HEALTHCHECK_PORT=${OVN_EGRESSIP_HEALTHCHECK_PORT:-9107}
   OCI_BIN=${KIND_EXPERIMENTAL_PROVIDER:-docker}
+  OVN_GENERATE_PREDICTABLE_NAME=true
 }
 
 detect_apiserver_url() {
@@ -655,6 +657,7 @@ create_ovn_kube_manifests() {
     --egress-qos-enable=true \
     --v4-join-subnet="${JOIN_SUBNET_IPV4}" \
     --v6-join-subnet="${JOIN_SUBNET_IPV6}" \
+    --ovn-generate-predictable-name="${OVN_GENERATE_PREDICTABLE_NAME}" \
     --ex-gw-network-interface="${OVN_EX_GW_NETWORK_INTERFACE}"
   popd
 }

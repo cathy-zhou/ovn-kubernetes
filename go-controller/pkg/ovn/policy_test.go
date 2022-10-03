@@ -385,8 +385,8 @@ func getPolicyData(pgArgMap map[string]*pgArgType) []libovsdb.TestData {
 
 func (n kNetworkPolicy) addPolicyData(networkPolicy *knet.NetworkPolicy, policyPorts []string, peerNamespaces []string, tcpPeerPorts []int32, denyLogSeverity, allowLogSeverity nbdb.ACLSeverity, pgArgMap map[string]*pgArgType) []libovsdb.TestData {
 	ginkgo.By(fmt.Sprintf("addPolicyData %s/%s", networkPolicy.Namespace, networkPolicy.Name))
-	pgName := getSharedPortGroupName(networkPolicy)
-	pgHash := hashedPortGroup(pgName)
+	pgName := getUniquePodSelectorString(networkPolicy)
+	pgHash := getSharedPortGroupName(pgName)
 	pgArg, ok := pgArgMap[pgHash]
 	if !ok {
 		egressAcls, ingressAcls := n.getSharedNMDefaultDenyAcls(pgName, denyLogSeverity)
@@ -533,8 +533,8 @@ func (n kNetworkPolicy) addPolicyData(networkPolicy *knet.NetworkPolicy, policyP
 }
 
 func (n kNetworkPolicy) delPolicyData(networkPolicy *knet.NetworkPolicy, pgArgMap map[string]*pgArgType) []libovsdb.TestData {
-	pgName := getSharedPortGroupName(networkPolicy)
-	pgHash := hashedPortGroup(pgName)
+	pgName := getUniquePodSelectorString(networkPolicy)
+	pgHash := getSharedPortGroupName(pgName)
 	pgArg, ok := pgArgMap[pgHash]
 	if ok {
 		if _, ok := pgArg.policies[networkPolicy.Namespace+"_"+networkPolicy.Name]; ok {
@@ -566,14 +566,14 @@ func aclsString(acls []*nbdb.ACL) string {
 	return string
 }
 
-func (n kNetworkPolicy) getSharedNMDefaultDenyAcls(readableSharedPortGroupName string, logSeverity nbdb.ACLSeverity) ([]*nbdb.ACL, []*nbdb.ACL) {
+func (n kNetworkPolicy) getSharedNMDefaultDenyAcls(uniquePodSelectorString string, logSeverity nbdb.ACLSeverity) ([]*nbdb.ACL, []*nbdb.ACL) {
 	direction := nbdb.ACLDirectionFromLport
 	options := map[string]string{
 		"apply-after-lb": "true",
 	}
 	egressAcls := []*nbdb.ACL{}
 	ingressAcls := []*nbdb.ACL{}
-	pgHashName := hashedPortGroup(readableSharedPortGroupName)
+	pgHashName := getSharedPortGroupName(uniquePodSelectorString)
 	shouldBeLogged := logSeverity != ""
 	egressDenyACL := libovsdbops.BuildACL(
 		pgHashName+"_"+"egressDefaultDeny",

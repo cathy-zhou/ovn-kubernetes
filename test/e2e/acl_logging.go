@@ -775,10 +775,9 @@ func setNamespaceACLLogSeverity(fr *framework.Framework, nsName string, desiredD
 	})
 }
 
-// now we only support portGroup sharing if the policy's local pod selector is empty.
 func getSharedPortGroupName(policy *knet.NetworkPolicy) string {
 	sel, _ := metav1.LabelSelectorAsSelector(&policy.Spec.PodSelector)
-	return HashForOVN(policy.Namespace + "_" + "shared_port_group" + "_" + sel.String())
+	return HashForOVN(policy.Namespace + "_" + sel.String())
 }
 
 // HashforOVN hashes the provided input to make it a valid addressSet or portGroup name.
