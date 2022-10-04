@@ -238,8 +238,6 @@ ovn_encap_ip=${OVN_ENCAP_IP:-}
 
 ovn_ex_gw_network_interface=${OVN_EX_GW_NETWORK_INTERFACE:-}
 
-ovn_generate_predictable_name=${OVN_GENERATE_PREDICTABLE_NAME:-false}
-
 # Determine the ovn rundir.
 if [[ -f /usr/bin/ovn-appctl ]]; then
   # ovn-appctl is present. Use new ovn run dir path.
@@ -984,11 +982,6 @@ ovn-master() {
   fi
   echo "ovnkube_config_duration_enable_flag: ${ovnkube_config_duration_enable_flag}"
 
-  generate_predictable_name_flag=
-  if [[ ${ovn_generate_predictable_name} == "true" ]]; then
-    generate_predictable_name_flag="--ovn-generate-predictable-name"
-  fi
-
   echo "=============== ovn-master ========== MASTER ONLY"
   /usr/bin/ovnkube \
     --init-master ${K8S_NODE} \
@@ -1015,7 +1008,6 @@ ovn-master() {
     ${egressfirewall_enabled_flag} \
     ${egressqos_enabled_flag} \
     ${ovnkube_config_duration_enable_flag} \
-    ${generate_predictable_name_flag} \
     --metrics-bind-address ${ovnkube_master_metrics_bind_address} \
     --host-network-namespace ${ovn_host_network_namespace} &
 

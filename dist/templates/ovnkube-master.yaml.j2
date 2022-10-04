@@ -219,8 +219,6 @@ spec:
           value: "{{ ovn_multicast_enable }}"
         - name: OVN_ACL_LOGGING_RATE_LIMIT
           value: "{{ ovn_acl_logging_rate_limit }}"
-        - name: OVN_GENERATE_PREDICTABLE_NAME
-          value: "{{ ovn_generate_predictable_name }}"
         - name: OVN_HOST_NETWORK_NAMESPACE
           valueFrom:
             configMapKeyRef:

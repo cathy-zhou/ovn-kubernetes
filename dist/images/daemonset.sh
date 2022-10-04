@@ -76,7 +76,6 @@ OVN_HOST_NETWORK_NAMESPACE=""
 OVN_EX_GW_NETWORK_INTERFACE=""
 OVNKUBE_NODE_MGMT_PORT_NETDEV=""
 OVNKUBE_CONFIG_DURATION_ENABLE=
-OVN_GENERATE_PREDICTABLE_NAME="false" # set to true in test suite only
 # IN_UPGRADE is true only if called by upgrade-ovn.sh during the upgrade test,
 # it will render only the parts in ovn-setup.yaml related to RBAC permissions.
 IN_UPGRADE=
@@ -257,9 +256,6 @@ while [ "$1" != "" ]; do
   --ovnkube-config-duration-enable)
     OVNKUBE_CONFIG_DURATION_ENABLE=$VALUE
     ;;
-  --ovn-generate-predictable-name)
-    OVN_GENERATE_PREDICTABLE_NAME=$VALUE
-    ;;
   --in-upgrade)
     IN_UPGRADE=true
     ;;
@@ -397,8 +393,6 @@ ovnkube_node_mgmt_port_netdev=${OVNKUBE_NODE_MGMT_PORT_NETDEV}
 echo "ovnkube_node_mgmt_port_netdev: ${ovnkube_node_mgmt_port_netdev}"
 ovnkube_config_duration_enable=${OVNKUBE_CONFIG_DURATION_ENABLE}
 echo "ovnkube_config_duration_enable: ${ovnkube_config_duration_enable}"
-ovn_generate_predictable_name=${OVN_GENERATE_PREDICTABLE_NAME}
-echo "ovn_generate_predictable_name: ${ovn_generate_predictable_name}"
 
 ovn_image=${image} \
   ovn_image_pull_policy=${image_pull_policy} \
@@ -495,7 +489,6 @@ ovn_image=${image} \
   ovn_master_count=${ovn_master_count} \
   ovn_gateway_mode=${ovn_gateway_mode} \
   ovn_ex_gw_networking_interface=${ovn_ex_gw_networking_interface} \
-  ovn_generate_predictable_name=${ovn_generate_predictable_name} \
   j2 ../templates/ovnkube-master.yaml.j2 -o ${output_dir}/ovnkube-master.yaml
 
 ovn_image=${image} \
