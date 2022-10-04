@@ -42,9 +42,14 @@ var _ = Describe("ACL Logging for NetworkPolicy", func() {
 	fr := wrappedTestFramework(namespacePrefix)
 
 	var (
-		nsName          string
-		pods            []v1.Pod
-		sharedPortGroup string
+		nsName                  string
+		pods                    []v1.Pod
+		clientPod               v1.Pod
+		pokedPod                v1.Pod
+		srcIP                   string
+		dstIP                   string
+		dstPort                 int
+		composedPolicyNameRegex string
 	)
 
 	BeforeEach(func() {
@@ -53,12 +58,12 @@ var _ = Describe("ACL Logging for NetworkPolicy", func() {
 		Expect(setNamespaceACLLogSeverity(fr, nsName, initialDenyACLSeverity, initialAllowACLSeverity, aclRemoveOptionDelete)).To(Succeed())
 
 		By("creating a \"default deny\" network policy")
-		policy, err := makeDenyAllPolicy(fr, nsName, denyAllPolicyName)
+		_, err := makeDenyAllPolicy(fr, nsName, denyAllPolicyName)
 		Expect(err).NotTo(HaveOccurred())
-		sharedPortGroup = getSharedPortGroupName(policy)
 
 		By("creating pods")
-		cmd := []string{"/bin/bash", "-c", "/agnhost netexec --http-port 8000"}
+		dstPort = 8000
+		cmd := []string{"/bin/bash", "-c", fmt.Sprintf("/agnhost netexec --http-port %d", dstPort)}
 		for i := 0; i < 2; i++ {
 			pod := newAgnhostPod(nsName, fmt.Sprintf("pod%d", i+1), cmd...)
 			pod = fr.PodClient().CreateSync(pod)
@@ -67,8 +72,12 @@ var _ = Describe("ACL Logging for NetworkPolicy", func() {
 		}
 
 		By("sending traffic between acl-logging test pods we trigger ACL logging")
-		clientPod := pods[pokerPodIndex]
-		pokedPod := pods[pokedPodIndex]
+		clientPod = pods[pokerPodIndex]
+		pokedPod = pods[pokedPodIndex]
+		srcIP = clientPod.Status.PodIP
+		dstIP = pokedPod.Status.PodIP
+		composedPolicyNameRegex = fmt.Sprintf("_%s", egressDefaultDenySuffix)
+
 		framework.Logf(
 			"Poke pod %s (on node %s) from pod %s (on node %s)",
 			pokedPod.GetName(),
@@ -76,7 +85,7 @@ var _ = Describe("ACL Logging for NetworkPolicy", func() {
 			clientPod.GetName(),
 			clientPod.Spec.NodeName)
 		Expect(
-			pokePod(fr, clientPod.GetName(), pokedPod.Status.PodIP)).To(HaveOccurred(),
+			pokePod(fr, clientPod.GetName(), dstIP, dstPort)).To(HaveOccurred(),
 			"traffic should be blocked since we only use a deny all traffic policy")
 	})
 
@@ -87,14 +96,13 @@ var _ = Describe("ACL Logging for NetworkPolicy", func() {
 	It("the logs have the expected log level", func() {
 		clientPodScheduledPodName := pods[pokerPodIndex].Spec.NodeName
 		// Retry here in the case where OVN acls have not been programmed yet
-		composedPolicyNameRegex := fmt.Sprintf("%s_%s", nsName, egressDefaultDenySuffix)
-		if sharedPortGroup != "" {
-			composedPolicyNameRegex = fmt.Sprintf("%s_%s", sharedPortGroup, egressDefaultDenySuffix)
-		}
 		Eventually(func() (bool, error) {
 			return assertACLLogs(
 				clientPodScheduledPodName,
 				composedPolicyNameRegex,
+				srcIP,
+				dstIP,
+				dstPort,
 				denyACLVerdict,
 				initialDenyACLSeverity)
 		}, maxPokeRetries*pokeInterval, pokeInterval).Should(BeTrue())
@@ -110,8 +118,6 @@ var _ = Describe("ACL Logging for NetworkPolicy", func() {
 
 		BeforeEach(func() {
 			By("poking some more...")
-			clientPod := pods[pokerPodIndex]
-			pokedPod := pods[pokedPodIndex]
 
 			framework.Logf(
 				"Poke pod %s (on node %s) from pod %s (on node %s)",
@@ -120,20 +126,19 @@ var _ = Describe("ACL Logging for NetworkPolicy", func() {
 				clientPod.GetName(),
 				clientPod.Spec.NodeName)
 			Expect(
-				pokePod(fr, clientPod.GetName(), pokedPod.Status.PodIP)).To(HaveOccurred(),
+				pokePod(fr, clientPod.GetName(), dstIP, dstPort)).To(HaveOccurred(),
 				"traffic should be blocked since we only use a deny all traffic policy")
 		})
 
 		It("the ACL logs are updated accordingly", func() {
 			clientPodScheduledPodName := pods[pokerPodIndex].Spec.NodeName
-			composedPolicyNameRegex := fmt.Sprintf("%s_%s", nsName, egressDefaultDenySuffix)
-			if sharedPortGroup != "" {
-				composedPolicyNameRegex = fmt.Sprintf("%s_%s", sharedPortGroup, egressDefaultDenySuffix)
-			}
 			Eventually(func() (bool, error) {
 				return assertACLLogs(
 					clientPodScheduledPodName,
 					composedPolicyNameRegex,
+					srcIP,
+					dstIP,
+					dstPort,
 					denyACLVerdict,
 					updatedAllowACLLogSeverity)
 			}, maxPokeRetries*pokeInterval, pokeInterval).Should(BeTrue())
@@ -147,11 +152,8 @@ var _ = Describe("ACL Logging for NetworkPolicy", func() {
 		})
 
 		It("ACL logging is disabled", func() {
-			clientPod := pods[pokerPodIndex]
-			pokedPod := pods[pokedPodIndex]
-			composedPolicyNameRegex := fmt.Sprintf("%s_%s", nsName, egressDefaultDenySuffix)
 			Consistently(func() (bool, error) {
-				return isCountUpdatedAfterPokePod(fr, &clientPod, &pokedPod, composedPolicyNameRegex, denyACLVerdict, "")
+				return isCountUpdatedAfterPokePod(fr, &clientPod, dstIP, dstPort, composedPolicyNameRegex, denyACLVerdict, "")
 			}, maxPokeRetries*pokeInterval, pokeInterval).Should(BeFalse())
 		})
 	})
@@ -163,11 +165,8 @@ var _ = Describe("ACL Logging for NetworkPolicy", func() {
 		})
 
 		It("ACL logging is disabled", func() {
-			clientPod := pods[pokerPodIndex]
-			pokedPod := pods[pokedPodIndex]
-			composedPolicyNameRegex := fmt.Sprintf("%s_%s", nsName, egressDefaultDenySuffix)
 			Consistently(func() (bool, error) {
-				return isCountUpdatedAfterPokePod(fr, &clientPod, &pokedPod, composedPolicyNameRegex, denyACLVerdict, "")
+				return isCountUpdatedAfterPokePod(fr, &clientPod, dstIP, dstPort, composedPolicyNameRegex, denyACLVerdict, "")
 			}, maxPokeRetries*pokeInterval, pokeInterval).Should(BeFalse())
 		})
 	})
@@ -672,6 +671,9 @@ func waitForACLLoggingPod(f *framework.Framework, namespace string, podName stri
 func isCountUpdatedAfterPokeExternalHost(fr *framework.Framework, pokePod *v1.Pod, nsName, dstIP string, dstPort int, aclVerdict, aclSeverity string) (bool, error) {
 	startCount, err := countACLLogs(
 		pokePod.Spec.NodeName,
+		pokePod.Status.PodIP,
+		dstIP,
+		dstPort,
 		generateEgressFwRegex(pokePod.Namespace),
 		aclVerdict,
 		aclSeverity)
@@ -681,6 +683,9 @@ func isCountUpdatedAfterPokeExternalHost(fr *framework.Framework, pokePod *v1.Po
 	pokeExternalHost(fr, pokePod, dstIP, dstPort)
 	endCount, _ := countACLLogs(
 		pokePod.Spec.NodeName,
+		pokePod.Status.PodIP,
+		dstIP,
+		dstPort,
 		generateEgressFwRegex(pokePod.Namespace),
 		aclVerdict,
 		aclSeverity)
@@ -690,18 +695,24 @@ func isCountUpdatedAfterPokeExternalHost(fr *framework.Framework, pokePod *v1.Po
 	return startCount < endCount, nil
 }
 
-func isCountUpdatedAfterPokePod(fr *framework.Framework, clientPod, pokedPod *v1.Pod, regex, aclVerdict, aclSeverity string) (bool, error) {
+func isCountUpdatedAfterPokePod(fr *framework.Framework, clientPod *v1.Pod, dstIP string, dstPort int, regex, aclVerdict, aclSeverity string) (bool, error) {
 	startCount, err := countACLLogs(
 		clientPod.Spec.NodeName,
+		clientPod.Status.PodIP,
+		dstIP,
+		dstPort,
 		regex,
 		aclVerdict,
 		aclSeverity)
 	if err != nil {
 		return false, err
 	}
-	pokePod(fr, clientPod.GetName(), pokedPod.Status.PodIP)
+	pokePod(fr, clientPod.GetName(), dstIP, dstPort)
 	endCount, _ := countACLLogs(
 		clientPod.Spec.NodeName,
+		clientPod.Status.PodIP,
+		dstIP,
+		dstPort,
 		regex,
 		aclVerdict,
 		aclSeverity)

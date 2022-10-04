@@ -670,10 +670,10 @@ func waitForDaemonSetUpdate(c clientset.Interface, ns string, dsName string, all
 	})
 }
 
-func pokePod(fr *framework.Framework, srcPodName string, dstPodIP string) error {
+func pokePod(fr *framework.Framework, srcPodName, dstPodIP string, dstPort int) error {
 	stdout, stderr, err := fr.ExecShellInPodWithFullOutput(
 		srcPodName,
-		fmt.Sprintf("curl --output /dev/stdout -m 1 -I %s:8000 | head -n1", dstPodIP))
+		fmt.Sprintf("curl --output /dev/stdout -m 1 -I %s:%d | head -n1", dstPodIP, dstPort))
 	if err == nil && stdout == "HTTP/1.1 200 OK" {
 		return nil
 	}
@@ -720,7 +720,7 @@ func ExecCommandInContainerWithFullOutput(f *framework.Framework, namespace, pod
 	return f.ExecWithOptions(options)
 }
 
-func assertACLLogs(targetNodeName string, policyNameRegex string, expectedACLVerdict string, expectedACLSeverity string) (bool, error) {
+func assertACLLogs(targetNodeName string, policyNameRegex, srcIP, dstIP string, dstPort int, expectedACLVerdict, expectedACLSeverity string) (bool, error) {
 	framework.Logf("collecting the ovn-controller logs for node: %s", targetNodeName)
 	targetNodeLog, err := runCommand([]string{containerRuntime, "exec", targetNodeName, "grep", "acl_log", ovnControllerLogPath}...)
 	if err != nil {
@@ -729,13 +729,20 @@ func assertACLLogs(targetNodeName string, policyNameRegex string, expectedACLVer
 
 	framework.Logf("Ensuring the audit log contains: 'name=\"%s\"', 'verdict=%s' AND 'severity=%s'", policyNameRegex, expectedACLVerdict, expectedACLSeverity)
 	for _, logLine := range strings.Split(targetNodeLog, "\n") {
-		matched, err := regexp.MatchString(fmt.Sprintf("name=\"%s\"", policyNameRegex), logLine)
+		stringToMatch := fmt.Sprintf(
+			".*acl_log.*name=\"*%s\".*verdict=%s.*severity=%s.*nw_src=%s.*nw_dst=%s.*tp_dst=%d.*",
+			policyNameRegex,
+			expectedACLVerdict,
+			expectedACLSeverity,
+			srcIP,
+			dstIP,
+			dstPort)
+
+		matched, err := regexp.MatchString(stringToMatch, logLine)
 		if err != nil {
 			return false, err
 		}
-		if matched &&
-			strings.Contains(logLine, fmt.Sprintf("verdict=%s", expectedACLVerdict)) &&
-			strings.Contains(logLine, fmt.Sprintf("severity=%s", expectedACLSeverity)) {
+		if matched {
 			return true, nil
 		}
 	}
@@ -848,7 +855,7 @@ func newPrivelegedTestFramework(basename string) *framework.Framework {
 // countACLLogs connects to <targetNodeName> (ovn-control-plane, ovn-worker or ovn-worker2 in kind environments) via the docker exec
 // command and it greps for the string "acl_log" inside the OVN controller logs. It then checks if the line contains name=<policyNameRegex>
 // and if it does, it increases the counter if both the verdict and the severity for this line match what's expected.
-func countACLLogs(targetNodeName string, policyNameRegex string, expectedACLVerdict string, expectedACLSeverity string) (int, error) {
+func countACLLogs(targetNodeName string, srcIP, dstIP string, dstPort int, policyNameRegex, expectedACLVerdict, expectedACLSeverity string) (int, error) {
 	count := 0
 
 	framework.Logf("collecting the ovn-controller logs for node: %s", targetNodeName)
@@ -858,10 +865,13 @@ func countACLLogs(targetNodeName string, policyNameRegex string, expectedACLVerd
 	}
 
 	stringToMatch := fmt.Sprintf(
-		".*acl_log.*name=\"%s\".*verdict=%s.*severity=%s.*",
+		".*acl_log.*name=\"*%s\".*verdict=%s.*severity=%s.*nw_src=%s.*nw_dst=%s.*tp_dst=%d.*",
 		policyNameRegex,
 		expectedACLVerdict,
-		expectedACLSeverity)
+		expectedACLSeverity,
+		srcIP,
+		dstIP,
+		dstPort)
 
 	for _, logLine := range strings.Split(targetNodeLog, "\n") {
 		matched, err := regexp.MatchString(stringToMatch, logLine)
