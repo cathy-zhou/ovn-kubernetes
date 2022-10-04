@@ -141,7 +141,7 @@ type Controller struct {
 	externalGWCache map[ktypes.NamespacedName]*externalRouteInfo
 	exGWCacheMutex  sync.RWMutex
 
-	// Info about policy-shared portGroup. key is namespace, then shared port group name
+	// Info about policy-shared portGroup. key is namespace, then readable port group name
 	spgInfoMap   map[string]map[string]*sharedPortGroupInfo
 	spgInfoMutex sync.Mutex
 

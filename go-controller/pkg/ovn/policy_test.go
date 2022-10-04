@@ -385,15 +385,15 @@ func getPolicyData(pgArgMap map[string]*pgArgType) []libovsdb.TestData {
 
 func (n kNetworkPolicy) addPolicyData(networkPolicy *knet.NetworkPolicy, policyPorts []string, peerNamespaces []string, tcpPeerPorts []int32, denyLogSeverity, allowLogSeverity nbdb.ACLSeverity, pgArgMap map[string]*pgArgType) []libovsdb.TestData {
 	ginkgo.By(fmt.Sprintf("addPolicyData %s/%s", networkPolicy.Namespace, networkPolicy.Name))
-	pgName := getUniquePodSelectorString(networkPolicy)
-	pgHash := getSharedPortGroupName(pgName)
-	pgArg, ok := pgArgMap[pgHash]
+	readablePortGroupName := getUniquePodSelectorString(networkPolicy)
+	pgName := getSharedPortGroupName(readablePortGroupName)
+	pgArg, ok := pgArgMap[pgName]
 	if !ok {
-		egressAcls, ingressAcls := n.getSharedNMDefaultDenyAcls(pgName, denyLogSeverity)
+		egressAcls, ingressAcls := n.getSharedNMDefaultDenyAcls(readablePortGroupName, denyLogSeverity)
 		pgArg = &pgArgType{
 			namespace:        networkPolicy.Namespace,
-			hashName:         pgHash,
-			name:             pgName,
+			hashName:         pgName,
+			name:             readablePortGroupName,
 			policies:         map[string]bool{},
 			policyAcls:       map[string][]*nbdb.ACL{},
 			ingressAcls:      ingressAcls,
@@ -401,7 +401,7 @@ func (n kNetworkPolicy) addPolicyData(networkPolicy *knet.NetworkPolicy, policyP
 			lspEgressRefCnt:  0,
 			lspIngressRefCnt: 0,
 		}
-		pgArgMap[pgHash] = pgArg
+		pgArgMap[pgName] = pgArg
 	}
 	pgArg.policyPorts = policyPorts
 	if _, ok := pgArg.policies[networkPolicy.Namespace+"_"+networkPolicy.Name]; !ok {
@@ -427,7 +427,7 @@ func (n kNetworkPolicy) addPolicyData(networkPolicy *knet.NetworkPolicy, policyP
 				aclName,
 				nbdb.ACLDirectionToLport,
 				types.DefaultAllowPriority,
-				fmt.Sprintf("ip4.src == {%s} && outport == @%s", ingressAsMatch, pgHash),
+				fmt.Sprintf("ip4.src == {%s} && outport == @%s", ingressAsMatch, pgName),
 				nbdb.ACLActionAllowRelated,
 				types.OvnACLLoggingMeter,
 				allowLogSeverity,
@@ -450,7 +450,7 @@ func (n kNetworkPolicy) addPolicyData(networkPolicy *knet.NetworkPolicy, policyP
 				aclName,
 				nbdb.ACLDirectionToLport,
 				types.DefaultAllowPriority,
-				fmt.Sprintf("ip4 && tcp && tcp.dst==%d && outport == @%s", v, pgHash),
+				fmt.Sprintf("ip4 && tcp && tcp.dst==%d && outport == @%s", v, pgName),
 				nbdb.ACLActionAllowRelated,
 				types.OvnACLLoggingMeter,
 				allowLogSeverity,
@@ -483,7 +483,7 @@ func (n kNetworkPolicy) addPolicyData(networkPolicy *knet.NetworkPolicy, policyP
 				aclName,
 				direction,
 				types.DefaultAllowPriority,
-				fmt.Sprintf("ip4.dst == {%s} && inport == @%s", egressAsMatch, pgHash),
+				fmt.Sprintf("ip4.dst == {%s} && inport == @%s", egressAsMatch, pgName),
 				nbdb.ACLActionAllowRelated,
 				types.OvnACLLoggingMeter,
 				allowLogSeverity,
@@ -506,7 +506,7 @@ func (n kNetworkPolicy) addPolicyData(networkPolicy *knet.NetworkPolicy, policyP
 				aclName,
 				direction,
 				types.DefaultAllowPriority,
-				fmt.Sprintf("ip4 && tcp && tcp.dst==%d && inport == @%s", v, pgHash),
+				fmt.Sprintf("ip4 && tcp && tcp.dst==%d && inport == @%s", v, pgName),
 				nbdb.ACLActionAllowRelated,
 				types.OvnACLLoggingMeter,
 				allowLogSeverity,
@@ -533,9 +533,9 @@ func (n kNetworkPolicy) addPolicyData(networkPolicy *knet.NetworkPolicy, policyP
 }
 
 func (n kNetworkPolicy) delPolicyData(networkPolicy *knet.NetworkPolicy, pgArgMap map[string]*pgArgType) []libovsdb.TestData {
-	pgName := getUniquePodSelectorString(networkPolicy)
-	pgHash := getSharedPortGroupName(pgName)
-	pgArg, ok := pgArgMap[pgHash]
+	readablePortGroupName := getUniquePodSelectorString(networkPolicy)
+	pgName := getSharedPortGroupName(readablePortGroupName)
+	pgArg, ok := pgArgMap[pgName]
 	if ok {
 		if _, ok := pgArg.policies[networkPolicy.Namespace+"_"+networkPolicy.Name]; ok {
 			if !(len(networkPolicy.Spec.PolicyTypes) == 1 && networkPolicy.Spec.PolicyTypes[0] == knet.PolicyTypeEgress) {
@@ -551,7 +551,7 @@ func (n kNetworkPolicy) delPolicyData(networkPolicy *knet.NetworkPolicy, pgArgMa
 		delete(pgArg.policies, networkPolicy.Namespace+"_"+networkPolicy.Name)
 
 		if len(pgArg.policies) == 0 {
-			delete(pgArgMap, pgHash)
+			delete(pgArgMap, pgName)
 		}
 	}
 

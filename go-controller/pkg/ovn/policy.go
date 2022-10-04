@@ -80,10 +80,10 @@ type networkPolicy struct {
 	ingressDefDeny bool
 	egressDefDeny  bool
 
-	// uniquePodSelector is in the form of <policy_namespace>_<localPodSelector.String>
+	// readablePortGroupName is in the form of <policy_namespace>_<localPodSelector.String>
 	// it is used as the key in each per-namespace spgInfoMap (oc.spgInfoMap[namespace]), and it is also used as
 	// the external-ids:name field of the associated shared port group
-	uniquePodSelector string
+	readablePortGroupName string
 }
 
 // now we only support portGroup sharing if the policy's local pod selector is empty. This can be changed later.
@@ -96,7 +96,7 @@ func getSharedPortGroupName(uniquePodSelectorString string) string {
 	if config.Default.OvnGeneratePredictableName {
 		return hashedPortGroup(uniquePodSelectorString)
 	}
-	return uuid.NewString()
+	return "a" + strings.ReplaceAll(uuid.NewString(), "-", ".")
 }
 
 func NewNetworkPolicy(policy *knet.NetworkPolicy) *networkPolicy {
@@ -620,7 +620,7 @@ func (oc *Controller) updateACLLoggingForSharedGroupAcls(nsInfo *namespaceInfo, 
 	acls := []*nbdb.ACL{}
 	updatedPodSelectors := map[string]bool{}
 	for _, np = range npMap {
-		if _, ok := updatedPodSelectors[np.uniquePodSelector]; ok {
+		if _, ok := updatedPodSelectors[np.readablePortGroupName]; ok {
 			// already handled
 			continue
 		}
@@ -630,14 +630,14 @@ func (oc *Controller) updateACLLoggingForSharedGroupAcls(nsInfo *namespaceInfo, 
 			oc.spgInfoMutex.Unlock()
 			continue
 		}
-		spgInfo, ok := spgInfoMap[np.uniquePodSelector]
+		spgInfo, ok := spgInfoMap[np.readablePortGroupName]
 		if !ok {
 			oc.spgInfoMutex.Unlock()
 			continue
 		}
 		spgInfo.Lock()
 		oc.spgInfoMutex.Unlock()
-		updatedPodSelectors[np.uniquePodSelector] = true
+		updatedPodSelectors[np.readablePortGroupName] = true
 		// nsInfo lock is held at this time which prevent shared group policy deletion from proceeding
 		if spgInfo.lspIngressRefCnt > 0 {
 			acl, _ := buildDenyACLs("", np.portGroupName,
@@ -1042,17 +1042,16 @@ func (oc *Controller) handleLocalPodSelectorDelFunc(spgInfo *sharedPortGroupInfo
 }
 
 func (oc *Controller) createSharedPortGroup(policy *knet.NetworkPolicy, np *networkPolicy) (*sharedPortGroupInfo, error) {
-	klog.Infof("Create shared port group for podSelector %s", np.uniquePodSelector)
+	klog.Infof("Create shared port group for podSelector %s", np.readablePortGroupName)
 
 	// create shared portGroup
-	name := np.uniquePodSelector
-	pgHashName := getSharedPortGroupName(name)
-	sharedPG := libovsdbops.BuildPortGroup(pgHashName, name, nil, nil)
+	pgName := getSharedPortGroupName(np.readablePortGroupName)
+	sharedPG := libovsdbops.BuildPortGroup(pgName, np.readablePortGroupName, nil, nil)
 	sharedPG.ExternalIDs[sharePortGroupExtIdKey] = "true"
 	sharedPG.ExternalIDs[namespaceACLExtIdKey] = policy.Namespace
 
 	spgInfo := &sharedPortGroupInfo{
-		pgName:           pgHashName,
+		pgName:           pgName,
 		lspIngressRefCnt: 0,
 		lspEgressRefCnt:  0,
 		podHandler:       nil,
@@ -1120,7 +1119,7 @@ func (oc *Controller) deleteSharedPortGroup(np *networkPolicy, isLastPolicyInSha
 }
 
 func (oc *Controller) createSharedPolicy(np *networkPolicy, policy *knet.NetworkPolicy, aclLogging *ACLLoggingLevels) (err error) {
-	var sharedPortGroupName string
+	var readablePortGroupName string
 	var spgInfo *sharedPortGroupInfo
 	klog.Infof("Policy %s/%s to be added to shared portGroup", np.namespace, np.name)
 	// create shared portGroup
@@ -1128,7 +1127,7 @@ func (oc *Controller) createSharedPolicy(np *networkPolicy, policy *knet.Network
 	oc.spgInfoMutex.Lock()
 	spgInfoMap, ok := oc.spgInfoMap[np.namespace]
 	if ok {
-		for sharedPortGroupName, spgInfo = range spgInfoMap {
+		for readablePortGroupName, spgInfo = range spgInfoMap {
 			if reflect.DeepEqual(spgInfo.localPodSelector, policy.Spec.PodSelector) {
 				found = true
 				break
@@ -1137,23 +1136,24 @@ func (oc *Controller) createSharedPolicy(np *networkPolicy, policy *knet.Network
 	}
 
 	if !found {
-		np.uniquePodSelector = getUniquePodSelectorString(policy)
+		readablePortGroupName = getUniquePodSelectorString(policy)
+		np.readablePortGroupName = readablePortGroupName
 		spgInfo, err = oc.createSharedPortGroup(policy, np)
 		if err != nil {
 			oc.spgInfoMutex.Unlock()
 			return err
 		}
 		if _, ok := oc.spgInfoMap[np.namespace]; !ok {
-			oc.spgInfoMap[np.namespace] = map[string]*sharedPortGroupInfo{np.uniquePodSelector: spgInfo}
+			oc.spgInfoMap[np.namespace] = map[string]*sharedPortGroupInfo{np.readablePortGroupName: spgInfo}
 		} else {
-			oc.spgInfoMap[np.namespace][np.uniquePodSelector] = spgInfo
+			oc.spgInfoMap[np.namespace][np.readablePortGroupName] = spgInfo
 		}
 	} else {
-		np.uniquePodSelector = sharedPortGroupName
+		np.readablePortGroupName = readablePortGroupName
 	}
 	np.portGroupName = spgInfo.pgName
-	klog.Infof("Policy %s/%s to be added to shared portGroup podSelector %s groupName %s",
-		np.namespace, np.name, np.uniquePodSelector, np.portGroupName)
+	klog.Infof("Policy %s/%s to be added to shared portGroup readableGroupName %s groupName %s",
+		np.namespace, np.name, np.readablePortGroupName, np.portGroupName)
 	spgInfo.Lock()
 	oc.spgInfoMutex.Unlock()
 
@@ -1214,11 +1214,11 @@ func (oc *Controller) createSharedPolicy(np *networkPolicy, policy *knet.Network
 }
 
 func (oc *Controller) deleteSharedPolicy(np *networkPolicy) error {
-	klog.V(5).Infof("Policy %s/%s to be removed from shared portGroup podSelector %s",
-		np.namespace, np.name, np.uniquePodSelector)
+	klog.V(5).Infof("Policy %s/%s to be removed from shared portGroup %s readable port group anem %s",
+		np.namespace, np.name, np.portGroupName, np.readablePortGroupName)
 
-	// if uniquePodSelector has not been assigned, nothing to do
-	if np.uniquePodSelector == "" {
+	// if readablePortGroupName has not been assigned, nothing to do
+	if np.readablePortGroupName == "" {
 		return nil
 	}
 
@@ -1229,7 +1229,7 @@ func (oc *Controller) deleteSharedPolicy(np *networkPolicy) error {
 	if !ok {
 		return nil
 	}
-	spgInfo, ok := spgInfoMap[np.uniquePodSelector]
+	spgInfo, ok := spgInfoMap[np.readablePortGroupName]
 	if !ok {
 		return nil
 	}
@@ -1310,7 +1310,7 @@ func (oc *Controller) deleteSharedPolicy(np *networkPolicy) error {
 			spgInfo.podHandler = nil
 		}
 
-		delete(spgInfoMap, np.uniquePodSelector)
+		delete(spgInfoMap, np.readablePortGroupName)
 		if len(spgInfoMap) == 0 {
 			delete(oc.spgInfoMap, np.namespace)
 		}
@@ -1454,8 +1454,8 @@ func (oc *Controller) createNetworkPolicy(np *networkPolicy, policy *knet.Networ
 		return nil
 	}
 	acls := oc.buildNetworkPolicyACLs(np, aclLogging)
-	klog.Infof("Creating local policy acls %+v for network policy %s/%s sharing portGroup pod selector %s",
-		acls, np.namespace, np.name, np.uniquePodSelector)
+	klog.Infof("Creating local policy acls %+v for network policy %s/%s sharing port group %s readable port group name %s",
+		acls, np.namespace, np.name, np.portGroupName, np.readablePortGroupName)
 	ops, err := libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, nil, acls...)
 	if err != nil {
 		return fmt.Errorf("failed to create local acls ops for network policy %s/%s: %v", np.namespace, np.name, err)
