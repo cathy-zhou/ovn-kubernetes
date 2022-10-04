@@ -730,7 +730,7 @@ func assertACLLogs(targetNodeName string, policyNameRegex, srcIP, dstIP string, 
 	framework.Logf("Ensuring the audit log contains: 'name=\"%s\"', 'verdict=%s' AND 'severity=%s'", policyNameRegex, expectedACLVerdict, expectedACLSeverity)
 	for _, logLine := range strings.Split(targetNodeLog, "\n") {
 		stringToMatch := fmt.Sprintf(
-			".*acl_log.*name=\"*%s\".*verdict=%s.*severity=%s.*nw_src=%s.*nw_dst=%s.*tp_dst=%d.*",
+			".*acl_log.*name=\".*%s\".*verdict=%s.*severity=%s.*nw_src=%s.*nw_dst=%s.*tp_dst=%d.*",
 			policyNameRegex,
 			expectedACLVerdict,
 			expectedACLSeverity,
@@ -865,7 +865,7 @@ func countACLLogs(targetNodeName string, srcIP, dstIP string, dstPort int, polic
 	}
 
 	stringToMatch := fmt.Sprintf(
-		".*acl_log.*name=\"*%s\".*verdict=%s.*severity=%s.*nw_src=%s.*nw_dst=%s.*tp_dst=%d.*",
+		".*acl_log.*name=\".*%s\".*verdict=%s.*severity=%s.*nw_src=%s.*nw_dst=%s.*tp_dst=%d.*",
 		policyNameRegex,
 		expectedACLVerdict,
 		expectedACLSeverity,
