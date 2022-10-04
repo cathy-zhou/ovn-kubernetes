@@ -93,7 +93,7 @@ func getUniquePodSelectorString(policy *knet.NetworkPolicy) string {
 }
 
 func getSharedPortGroupName(uniquePodSelectorString string) string {
-	if config.OvnTest.GeneratePredictableName {
+	if config.Default.OvnGeneratePredictableName {
 		return hashedPortGroup(uniquePodSelectorString)
 	}
 	return uuid.NewString()

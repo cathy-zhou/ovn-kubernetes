@@ -57,17 +57,18 @@ var (
 
 	// Default holds parsed config file parameters and command-line overrides
 	Default = DefaultConfig{
-		MTU:                   1400,
-		ConntrackZone:         64000,
-		EncapType:             "geneve",
-		EncapIP:               "",
-		EncapPort:             DefaultEncapPort,
-		InactivityProbe:       100000, // in Milliseconds
-		OpenFlowProbe:         180,    // in Seconds
-		OfctrlWaitBeforeClear: 0,      // in Milliseconds
-		MonitorAll:            true,
-		LFlowCacheEnable:      true,
-		RawClusterSubnets:     "10.128.0.0/14/23",
+		MTU:                        1400,
+		ConntrackZone:              64000,
+		EncapType:                  "geneve",
+		EncapIP:                    "",
+		EncapPort:                  DefaultEncapPort,
+		InactivityProbe:            100000, // in Milliseconds
+		OpenFlowProbe:              180,    // in Seconds
+		OfctrlWaitBeforeClear:      0,      // in Milliseconds
+		MonitorAll:                 true,
+		LFlowCacheEnable:           true,
+		RawClusterSubnets:          "10.128.0.0/14/23",
+		OvnGeneratePredictableName: false,
 	}
 
 	// Logging holds logging-related parsed config file parameters and command-line overrides
@@ -159,10 +160,6 @@ var (
 	OvnKubeNode = OvnKubeNodeConfig{
 		Mode: types.NodeModeFull,
 	}
-
-	OvnTest = OvnTestConfig{
-		GeneratePredictableName: false,
-	}
 )
 
 const (
@@ -230,6 +227,10 @@ type DefaultConfig struct {
 	// of small UDP packets by allowing them to be aggregated before passing through
 	// the kernel network stack. This requires a new-enough kernel (5.15 or RHEL 8.5).
 	EnableUDPAggregation bool `gcfg:"enable-udp-aggregation"`
+	// By default, set this to be false to create random unique names; E.g. use uuid;
+	// Set this to be true for test suite only, to allow test case to be able to get
+	// the expected test results;
+	OvnGeneratePredictableName bool `gcfg:"ovn-generate-predictable-name"`
 }
 
 // LoggingConfig holds logging-related parsed config file parameters and command-line overrides
@@ -432,13 +433,6 @@ type OvnKubeNodeConfig struct {
 	DisableOVNIfaceIdVer bool   `gcfg:"disable-ovn-iface-id-ver"`
 }
 
-// OvnTestConfig holds testing related configurations
-type OvnTestConfig struct {
-	// generate predictable name to allow test case predicting the expected test results;
-	// By default, set this to be false to create random unique names; E.g. use uuid
-	GeneratePredictableName bool `gcfg:"ovn-generate-predictable-name"`
-}
-
 // OvnDBScheme describes the OVN database connection transport method
 type OvnDBScheme string
 
@@ -467,7 +461,6 @@ type config struct {
 	MasterHA             MasterHAConfig
 	HybridOverlay        HybridOverlayConfig
 	OvnKubeNode          OvnKubeNodeConfig
-	TestConfig           OvnTestConfig
 }
 
 var (
@@ -485,7 +478,6 @@ var (
 	savedMasterHA             MasterHAConfig
 	savedHybridOverlay        HybridOverlayConfig
 	savedOvnKubeNode          OvnKubeNodeConfig
-	savedOvnTest              OvnTestConfig
 	// legacy service-cluster-ip-range CLI option
 	serviceClusterIPRange string
 	// legacy cluster-subnet CLI option
@@ -512,7 +504,6 @@ func init() {
 	savedMasterHA = MasterHA
 	savedHybridOverlay = HybridOverlay
 	savedOvnKubeNode = OvnKubeNode
-	savedOvnTest = OvnTest
 	cli.VersionPrinter = func(c *cli.Context) {
 		fmt.Printf("Version: %s\n", Version)
 		fmt.Printf("Git commit: %s\n", Commit)
@@ -528,6 +519,7 @@ func init() {
 // provide a pristine environment between tests.
 func PrepareTestConfig() error {
 	Default = savedDefault
+	Default.OvnGeneratePredictableName = true
 	Logging = savedLogging
 	Logging.Level = 5
 	Monitoring = savedMonitoring
@@ -542,7 +534,6 @@ func PrepareTestConfig() error {
 	MasterHA = savedMasterHA
 	HybridOverlay = savedHybridOverlay
 	OvnKubeNode = savedOvnKubeNode
-	OvnTest = OvnTestConfig{GeneratePredictableName: true}
 
 	if err := completeConfig(); err != nil {
 		return err
@@ -727,6 +718,12 @@ var CommonFlags = []cli.Flag{
 			"default the size of the cache is unlimited.",
 		Destination: &cliConfig.Default.LFlowCacheLimitKb,
 		Value:       Default.LFlowCacheLimitKb,
+	},
+	&cli.BoolFlag{
+		Name:        "ovn-generate-predictable-name",
+		Usage:       "for testing purpose, set this flag to True to enable test suite to create expected outcome",
+		Value:       Default.OvnGeneratePredictableName,
+		Destination: &cliConfig.Default.OvnGeneratePredictableName,
 	},
 	&cli.StringFlag{
 		Name:        "cluster-subnet",
@@ -1270,16 +1267,6 @@ var OvnKubeNodeFlags = []cli.Flag{
 	},
 }
 
-// OvnTestConfigFlag captures testing specific configurations
-var OvnTestConfigFlags = []cli.Flag{
-	&cli.BoolFlag{
-		Name:        "ovn-generate-predictable-name",
-		Usage:       "for testing purpose, set this flag to True to enable test suite to create expected outcome",
-		Value:       OvnTest.GeneratePredictableName,
-		Destination: &cliConfig.TestConfig.GeneratePredictableName,
-	},
-}
-
 // Flags are general command-line flags. Apps should add these flags to their
 // own urfave/cli flags and call InitConfig() early in the application.
 var Flags []cli.Flag
@@ -1300,7 +1287,6 @@ func GetFlags(customFlags []cli.Flag) []cli.Flag {
 	flags = append(flags, MonitoringFlags...)
 	flags = append(flags, IPFIXFlags...)
 	flags = append(flags, OvnKubeNodeFlags...)
-	flags = append(flags, OvnTestConfigFlags...)
 	flags = append(flags, customFlags...)
 	return flags
 }
@@ -1800,7 +1786,6 @@ func initConfigWithPath(ctx *cli.Context, exec kexec.Interface, saPath string, d
 		MasterHA:             savedMasterHA,
 		HybridOverlay:        savedHybridOverlay,
 		OvnKubeNode:          savedOvnKubeNode,
-		TestConfig:           savedOvnTest,
 	}
 
 	configFile, configFileIsDefault = getConfigFilePath(ctx)
@@ -1914,10 +1899,6 @@ func initConfigWithPath(ctx *cli.Context, exec kexec.Interface, saPath string, d
 		return "", err
 	}
 
-	if err = buildOvnTestConfig(ctx, &cliConfig, &cfg); err != nil {
-		return "", err
-	}
-
 	tmpAuth, err := buildOvnAuth(exec, true, &cliConfig.OvnNorth, &cfg.OvnNorth, defaults.OvnNorthAddress)
 	if err != nil {
 		return "", err
@@ -1945,7 +1926,6 @@ func initConfigWithPath(ctx *cli.Context, exec kexec.Interface, saPath string, d
 	klog.V(5).Infof("OVN South config: %+v", OvnSouth)
 	klog.V(5).Infof("Hybrid Overlay config: %+v", HybridOverlay)
 	klog.V(5).Infof("Ovnkube Node config: %+v", OvnKubeNode)
-	klog.V(5).Infof("Ovn Test config: %+v", OvnTest)
 
 	return retConfigFile, nil
 }
@@ -2263,20 +2243,5 @@ func buildOvnKubeNodeConfig(ctx *cli.Context, cli, file *config) error {
 				OvnKubeNode.Mode)
 		}
 	}
-	return nil
-}
-
-// buildOvnTestConfig updates OvnTest config from cli and config file
-func buildOvnTestConfig(ctx *cli.Context, cli, file *config) error {
-	// Copy config file values over default values
-	if err := overrideFields(&OvnTest, &file.TestConfig, &savedOvnTest); err != nil {
-		return err
-	}
-
-	// And CLI overrides over config file and default values
-	if err := overrideFields(&OvnTest, &cli.TestConfig, &savedOvnTest); err != nil {
-		return err
-	}
-
 	return nil
 }
