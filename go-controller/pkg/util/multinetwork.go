@@ -69,10 +69,9 @@ func GetSecondaryNetworkPrefix(netName string) string {
 }
 
 func NewNetAttachDefInfo(netconf *ovncnitypes.NetConf) *NetAttachDefInfo {
-	netName := types.DefaultNetworkName
+	netName := netconf.Name
 	prefix := ""
 	if netconf.IsSecondary {
-		netName = netconf.Name
 		prefix = GetSecondaryNetworkPrefix(netName)
 	}
 
@@ -95,9 +94,6 @@ func ParseNADInfo(netattachdef *nettypes.NetworkAttachmentDefinition) (*NetAttac
 	if netconf.NadName != nadKey {
 		return nil, fmt.Errorf("net-attach-def name (%s) is inconsistent with config (%s)", nadKey, netconf.NadName)
 	}
-	if netconf.IsSecondary && netconf.Name == types.DefaultNetworkName {
-		return nil, fmt.Errorf("non-default Network attachment definition's name cannot be %s", types.DefaultNetworkName)
-	}
 
 	nadInfo := NewNetAttachDefInfo(netconf)
 	return nadInfo, nil
@@ -113,9 +109,18 @@ func ParseNetConf(netattachdef *nettypes.NetworkAttachmentDefinition) (*ovncnity
 	if netconf.Type != "ovn-k8s-cni-overlay" {
 		return nil, ErrorAttachDefNotOvnManaged
 	}
+
 	if netconf.Name == "" {
 		netconf.Name = netattachdef.Name
 	}
+
+	// validation
+	if !netconf.IsSecondary {
+		netconf.Name = types.DefaultNetworkName
+	} else if netconf.Name == types.DefaultNetworkName {
+		return nil, fmt.Errorf("netconf name cannot be %s for secondary network net-attach-def", types.DefaultNetworkName)
+	}
+
 	return netconf, nil
 }
 

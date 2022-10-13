@@ -237,6 +237,19 @@ func (oc *Controller) Start(ctx context.Context) error {
 	return oc.Run(ctx)
 }
 
+func (oc *Controller) Stop() {
+	oc.wg.Wait()
+	close(oc.stopChan)
+
+	if oc.podHandler != nil {
+		oc.watchFactory.RemovePodHandler(oc.podHandler)
+	}
+
+	if oc.nodeHandler != nil {
+		oc.watchFactory.RemoveNodeHandler(oc.nodeHandler)
+	}
+}
+
 // Run starts the actual watching.
 func (oc *Controller) Run(ctx context.Context) error {
 	if !oc.nadInfo.IsSecondary {

@@ -3,6 +3,7 @@ package ovn
 import (
 	"context"
 	"fmt"
+	libovsdbclient "github.com/ovn-org/libovsdb/client"
 	"net"
 	"strings"
 	"time"
@@ -104,12 +105,10 @@ func (cm *ControllerManager) Start(ctx context.Context, cancel context.CancelFun
 					return
 				}
 
-				if config.OVNKubernetesFeature.EnableMultiNetwork {
-					if _, err = cm.watchNetworkAttachmentDefinitions(); err != nil {
-						klog.Error(err)
-						cancel()
-						return
-					}
+				if err = cm.Run(); err != nil {
+					klog.Error(err)
+					cancel()
+					return
 				}
 
 				// if no default network net-attach-def exists, we'd need to start it now
@@ -1111,7 +1110,7 @@ func (oc *Controller) deleteNodeLogicalNetwork(nodeName string) error {
 		Name: logicalRouterPortName,
 	}
 	err = libovsdbops.DeleteLogicalRouterPorts(oc.nbClient, &logiccalRouter, &logicalRouterPort)
-	if err != nil {
+	if err != nil && err != libovsdbclient.ErrNotFound {
 		return fmt.Errorf("failed to delete router port %s: %v", logicalRouterPort.Name, err)
 	}
 

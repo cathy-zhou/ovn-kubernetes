@@ -58,6 +58,7 @@ type GenericController struct {
 type ControllerManager struct {
 	GenericController
 
+	netAttachDefHandler *factory.Handler
 	// default wait group and stop channel, used by default network controller
 	defaultWg       *sync.WaitGroup
 	defaultStopChan chan struct{}
@@ -253,7 +254,8 @@ func (cm *ControllerManager) initOvnController(netattachdef *nettypes.NetworkAtt
 	// Check if any Controller of the same netconf.Name already exists, if so, check its conf to see if they are the same.
 	oc, ok := cm.allOvnControllers[nadInfo.NetName]
 	if ok {
-		if oc.nadInfo.NetCidr != nadInfo.NetCidr || oc.nadInfo.MTU != nadInfo.MTU {
+		// for default network, the configuration comes from command configuration, do not validate
+		if oc.nadInfo.IsSecondary && (oc.nadInfo.NetCidr != nadInfo.NetCidr || oc.nadInfo.MTU != nadInfo.MTU) {
 			return nil, fmt.Errorf("network attachment definition %s/%s does not share the same CNI config of name %s",
 				netattachdef.Namespace, netattachdef.Name, nadInfo.NetName)
 		} else {
@@ -262,8 +264,45 @@ func (cm *ControllerManager) initOvnController(netattachdef *nettypes.NetworkAtt
 		}
 	}
 
-	nadInfo.NetAttachDefs.Store(util.GetNadKeyName(netattachdef.Namespace, netattachdef.Name), true)
-	return cm.NewOvnController(nadInfo, nil)
+	oc, err = cm.NewOvnController(nadInfo, nil)
+	oc.nadInfo.NetAttachDefs.Store(util.GetNadKeyName(netattachdef.Namespace, netattachdef.Name), true)
+	return oc, err
+}
+
+func (cm *ControllerManager) Run() error {
+	if config.OVNKubernetesFeature.EnableMultiNetwork {
+		handler, err := cm.watchFactory.AddNetworkattachmentdefinitionHandler(cache.ResourceEventHandlerFuncs{
+			AddFunc: func(obj interface{}) {
+				netattachdef := obj.(*nettypes.NetworkAttachmentDefinition)
+				cm.addNetworkAttachDefinition(netattachdef)
+			},
+			UpdateFunc: func(old, new interface{}) {},
+			DeleteFunc: func(obj interface{}) {
+				netattachdef := obj.(*nettypes.NetworkAttachmentDefinition)
+				cm.deleteNetworkAttachDefinition(netattachdef)
+			},
+		}, cm.syncNetworkAttachDefinition)
+
+		if err != nil {
+			cm.netAttachDefHandler = handler
+		}
+		return err
+	}
+	return nil
+}
+
+func (cm *ControllerManager) Stop() {
+	if config.OVNKubernetesFeature.EnableMultiNetwork {
+		if cm.netAttachDefHandler != nil {
+			cm.watchFactory.RemovePodHandler(cm.netAttachDefHandler)
+		}
+		for netName, oc := range cm.allOvnControllers {
+			if netName == ovntypes.DefaultNetworkName {
+				continue
+			}
+			oc.Stop()
+		}
+	}
 }
 
 func (cm *ControllerManager) addNetworkAttachDefinition(netattachdef *nettypes.NetworkAttachmentDefinition) {
@@ -293,10 +332,7 @@ func (cm *ControllerManager) deleteNetworkAttachDefinition(netattachdef *nettype
 		}
 		return
 	}
-	netName := ovntypes.DefaultNetworkName
-	if !netconf.IsSecondary {
-		netName = netconf.Name
-	}
+	netName := netconf.Name
 	nadName := util.GetNadKeyName(netattachdef.Namespace, netattachdef.Name)
 	oc, ok := cm.allOvnControllers[netName]
 	if !ok {
@@ -320,19 +356,13 @@ func (cm *ControllerManager) deleteNetworkAttachDefinition(netattachdef *nettype
 	if netAttachDefLeft {
 		return
 	}
+
 	klog.Infof("The last Network Attachment Definition %s/%s is deleted from nad %s, delete associated logical entities",
 		netattachdef.Namespace, netattachdef.Name, netconf.Name)
-	oc.wg.Wait()
-	close(oc.stopChan)
 
-	if oc.podHandler != nil {
-		oc.watchFactory.RemovePodHandler(oc.podHandler)
-	}
+	oc.Stop()
 
-	if oc.nodeHandler != nil {
-		oc.watchFactory.RemoveNodeHandler(oc.nodeHandler)
-	}
-
+	// cleanup related OVN logical entities
 	for namespace := range oc.namespaces {
 		ns := kapi.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
 		if err = oc.deleteNamespace(&ns); err != nil {
@@ -455,20 +485,4 @@ func (cm *ControllerManager) syncNetworkAttachDefinition(netattachdefs []interfa
 		oc.deleteMaster()
 	}
 	return nil
-}
-
-// watchNetworkAttachmentDefinitions starts the watching of network attachment definition
-// resource and calls back the appropriate handler logic
-func (cm *ControllerManager) watchNetworkAttachmentDefinitions() (*factory.Handler, error) {
-	return cm.watchFactory.AddNetworkattachmentdefinitionHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
-			netattachdef := obj.(*nettypes.NetworkAttachmentDefinition)
-			cm.addNetworkAttachDefinition(netattachdef)
-		},
-		UpdateFunc: func(old, new interface{}) {},
-		DeleteFunc: func(obj interface{}) {
-			netattachdef := obj.(*nettypes.NetworkAttachmentDefinition)
-			cm.deleteNetworkAttachDefinition(netattachdef)
-		},
-	}, cm.syncNetworkAttachDefinition)
 }

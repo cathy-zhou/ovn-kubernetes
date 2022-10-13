@@ -86,7 +86,8 @@ func (n *OvnNode) initOvnNodeController(netattachdef *nettypes.NetworkAttachment
 	// Check if any Controller of the same netconf.Name already exists, if so, check its conf to see if they are the same.
 	nc, ok := n.allNodeControllers[nadInfo.NetName]
 	if ok {
-		if nc.nadInfo.NetCidr != nadInfo.NetCidr || nc.nadInfo.MTU != nadInfo.MTU {
+		// for default network, the configuration comes from command configuration, do not validate
+		if nc.nadInfo.IsSecondary && (nc.nadInfo.NetCidr != nadInfo.NetCidr || nc.nadInfo.MTU != nadInfo.MTU) {
 			return nil, fmt.Errorf("network attachment definition %s/%s does not share the same CNI config of name %s",
 				netattachdef.Namespace, netattachdef.Name, nadInfo.NetName)
 		} else {
@@ -149,10 +150,7 @@ func (n *OvnNode) deleteNetworkAttachDefinition(netattachdef *nettypes.NetworkAt
 		}
 		return
 	}
-	netName := types.DefaultNetworkName
-	if !netconf.IsSecondary {
-		netName = netconf.Name
-	}
+	netName := netconf.Name
 	nadName := util.GetNadKeyName(netattachdef.Namespace, netattachdef.Name)
 	nc, ok := n.allNodeControllers[netName]
 	if !ok {
