@@ -516,7 +516,7 @@ func (oc *DefaultL3Controller) syncNodeClusterRouterPort(node *kapi.Node, hostSu
 func (oc *DefaultL3Controller) ensureNodeLogicalNetwork(node *kapi.Node, hostSubnets []*net.IPNet) error {
 	// logical router port MAC is based on IPv4 subnet if there is one, else IPv6
 	var nodeLRPMAC net.HardwareAddr
-	nodeName := node.Name
+	switchName := node.Name
 	for _, hostSubnet := range hostSubnets {
 		gwIfAddr := util.GetNodeGatewayIfAddr(hostSubnet)
 		nodeLRPMAC = util.IPAddrToHWAddr(gwIfAddr.IP)
@@ -526,7 +526,7 @@ func (oc *DefaultL3Controller) ensureNodeLogicalNetwork(node *kapi.Node, hostSub
 	}
 
 	logicalSwitch := nbdb.LogicalSwitch{
-		Name: nodeName,
+		Name: switchName,
 	}
 
 	var v4Gateway, v6Gateway net.IP
@@ -560,7 +560,7 @@ func (oc *DefaultL3Controller) ensureNodeLogicalNetwork(node *kapi.Node, hostSub
 		logicalSwitch.LoadBalancerGroup = []string{oc.loadBalancerGroupUUID}
 	}
 
-	logicalRouterPortName := types.RouterToSwitchPrefix + nodeName
+	logicalRouterPortName := types.RouterToSwitchPrefix + switchName
 	logicalRouterPort := nbdb.LogicalRouterPort{
 		Name:     logicalRouterPortName,
 		MAC:      nodeLRPMAC.String(),
@@ -601,9 +601,9 @@ func (oc *DefaultL3Controller) ensureNodeLogicalNetwork(node *kapi.Node, hostSub
 	}
 
 	// also add the join switch IPs for this node - needed in shared gateway mode
-	lrpIPs, err := oc.joinSwIPManager.EnsureJoinLRPIPs(nodeName)
+	lrpIPs, err := oc.joinSwIPManager.EnsureJoinLRPIPs(switchName)
 	if err != nil {
-		return fmt.Errorf("failed to get join switch port IP address for node %s: %v", nodeName, err)
+		return fmt.Errorf("failed to get join switch port IP address for switch %s: %v", switchName, err)
 	}
 
 	for _, lrpIP := range lrpIPs {
@@ -630,15 +630,15 @@ func (oc *DefaultL3Controller) ensureNodeLogicalNetwork(node *kapi.Node, hostSub
 
 	// Connect the switch to the router.
 	logicalSwitchPort := nbdb.LogicalSwitchPort{
-		Name:      types.SwitchToRouterPrefix + nodeName,
+		Name:      types.SwitchToRouterPrefix + switchName,
 		Type:      "router",
 		Addresses: []string{"router"},
-		Options:   map[string]string{"router-port": types.RouterToSwitchPrefix + nodeName},
+		Options:   map[string]string{"router-port": types.RouterToSwitchPrefix + switchName},
 	}
-	sw := nbdb.LogicalSwitch{Name: nodeName}
+	sw := nbdb.LogicalSwitch{Name: switchName}
 	err = libovsdbops.CreateOrUpdateLogicalSwitchPortsOnSwitch(oc.nbClient, &sw, &logicalSwitchPort)
 	if err != nil {
-		klog.Errorf("Failed to add logical port %+v to switch %s: %v", logicalSwitchPort, nodeName, err)
+		klog.Errorf("Failed to add logical port %+v to switch %s: %v", logicalSwitchPort, switchName, err)
 		return err
 	}
 
@@ -649,7 +649,7 @@ func (oc *DefaultL3Controller) ensureNodeLogicalNetwork(node *kapi.Node, hostSub
 	}
 
 	// Add the node to the logical switch cache
-	return oc.lsManager.AddNode(nodeName, logicalSwitch.UUID, hostSubnets)
+	return oc.lsManager.AddNode(switchName, logicalSwitch.UUID, hostSubnets)
 }
 
 func (oc *DefaultL3Controller) updateNodeAnnotationWithRetry(nodeName string, hostSubnets []*net.IPNet) error {
