@@ -181,6 +181,16 @@ github.com/juju/errors
 ## explicit; go 1.17
 github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io
 github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1
+github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned
+github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/fake
+github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/scheme
+github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/typed/k8s.cni.cncf.io/v1
+github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/typed/k8s.cni.cncf.io/v1/fake
+github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/informers/externalversions
+github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/informers/externalversions/internalinterfaces
+github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/informers/externalversions/k8s.cni.cncf.io
+github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/informers/externalversions/k8s.cni.cncf.io/v1
+github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/listers/k8s.cni.cncf.io/v1
 github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/utils
 # github.com/mailru/easyjson v0.7.6
 ## explicit; go 1.12
@@ -309,8 +319,6 @@ github.com/russross/blackfriday/v2
 # github.com/safchain/ethtool v0.0.0-20210803160452-9aa261dae9b1
 ## explicit
 github.com/safchain/ethtool
-# github.com/shurcooL/sanitized_anchor_name v1.0.0
-## explicit
 # github.com/sirupsen/logrus v1.9.0
 ## explicit; go 1.13
 github.com/sirupsen/logrus
@@ -348,8 +356,6 @@ go.opencensus.io/trace/tracestate
 # golang.org/x/crypto v0.0.0-20220214200702-86341886e292
 ## explicit; go 1.17
 golang.org/x/crypto/ed25519
-# golang.org/x/mod v0.6.0-dev.0.20220106191415-9b9b3d81d5e3
-## explicit; go 1.17
 # golang.org/x/net v0.0.0-20220526153639-5463443f8c37
 ## explicit; go 1.17
 golang.org/x/net/bpf
@@ -411,10 +417,6 @@ golang.org/x/text/width
 # golang.org/x/time v0.0.0-20220210224613-90d013bbcef8
 ## explicit
 golang.org/x/time/rate
-# golang.org/x/tools v0.1.10-0.20220218145154-897bd77cd717
-## explicit; go 1.17
-# golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1
-## explicit; go 1.11
 # google.golang.org/appengine v1.6.7
 ## explicit; go 1.11
 google.golang.org/appengine/internal
@@ -911,10 +913,6 @@ k8s.io/client-go/util/keyutil
 k8s.io/client-go/util/retry
 k8s.io/client-go/util/testing
 k8s.io/client-go/util/workqueue
-# k8s.io/code-generator v0.24.0 => k8s.io/code-generator v0.24.0
-## explicit; go 1.16
-# k8s.io/gengo v0.0.0-20211129171323-c02415ce4185
-## explicit; go 1.13
 # k8s.io/klog/v2 v2.60.1
 ## explicit; go 1.13
 k8s.io/klog/v2
