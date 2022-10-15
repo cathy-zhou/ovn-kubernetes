@@ -566,7 +566,6 @@ func (n *OvnNode) Start(ctx context.Context, wg *sync.WaitGroup) error {
 		}
 
 		// default network only:
-		// start health check to ensure there are no stale OVS internal ports
 		// Only start default network Pod watcher after other default net-attach-defs are added.
 		// This is needed to correctly determine if a pod is scheduled on the default network
 		// if the pod's default network is defined by v1.multus-cni.io/default-network annotation.

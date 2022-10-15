@@ -43,11 +43,11 @@ func (c *portCache) get(logicalPort string) (*lpInfo, error) {
 	return nil, fmt.Errorf("logical port %s not found in cache", logicalPort)
 }
 
-func (c *portCache) add(switchName, logicalPort, uuid string, mac net.HardwareAddr, ips []*net.IPNet) *lpInfo {
+func (c *portCache) add(logicalSwitch, logicalPort, uuid string, mac net.HardwareAddr, ips []*net.IPNet) *lpInfo {
 	c.Lock()
 	defer c.Unlock()
 	portInfo := &lpInfo{
-		logicalSwitch: switchName,
+		logicalSwitch: logicalSwitch,
 		name:          logicalPort,
 		uuid:          uuid,
 		ips:           ips,

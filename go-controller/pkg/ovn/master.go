@@ -152,9 +152,6 @@ func (cm *ControllerManager) Start(ctx context.Context, cancel context.CancelFun
 
 // cleanup obsolete *gressDefaultDeny port groups
 func (oc *Controller) upgradeToNamespacedDenyPGOVNTopology(existingNodeList *kapi.NodeList) error {
-	if oc.nadInfo.IsSecondary {
-		return nil
-	}
 	err := libovsdbops.DeletePortGroups(oc.nbClient, "ingressDefaultDeny", "egressDefaultDeny")
 	if err != nil {
 		klog.Errorf("%v", err)
@@ -165,10 +162,6 @@ func (oc *Controller) upgradeToNamespacedDenyPGOVNTopology(existingNodeList *kap
 // delete obsoleted logical OVN entities that are specific for Multiple join switches OVN topology. Also cleanup
 // OVN entities for deleted nodes (similar to syncNodes() but for obsoleted Multiple join switches OVN topology)
 func (oc *Controller) upgradeToSingleSwitchOVNTopology(existingNodeList *kapi.NodeList) error {
-	if oc.nadInfo.IsSecondary {
-		return nil
-	}
-
 	existingNodes := make(map[string]bool)
 	for _, node := range existingNodeList.Items {
 		existingNodes[node.Name] = true
@@ -260,6 +253,7 @@ func (oc *Controller) StartClusterMaster() error {
 		return err
 	}
 
+	klog.Infof("Allocating subnets for network %s", oc.nadInfo.NetName)
 	var v4HostSubnetCount, v6HostSubnetCount float64
 	for _, clusterEntry := range oc.clusterSubnets {
 		err := oc.masterSubnetAllocator.AddNetworkRange(clusterEntry.CIDR, clusterEntry.HostSubnetLength)
@@ -318,7 +312,7 @@ func (oc *Controller) StartClusterMaster() error {
 			oc.loadBalancerGroupUUID = loadBalancerGroup.UUID
 		}
 	} else {
-		// TBD do we support multicast for non-default network? if yes, search for clusterRtrPortGroupName and clusterRtrPortGroupUUID
+		// TBD, not support multicast for secondary network for now
 		oc.multicastSupport = false
 	}
 
@@ -467,10 +461,6 @@ func (oc *Controller) SetupMaster(existingNodeNames []string) error {
 
 // deleteMaster delete the central router and switch for the network
 func (oc *Controller) deleteMaster() {
-	if !oc.nadInfo.IsSecondary {
-		return
-	}
-
 	// delete the single common distributed router for the cluster.
 	err := libovsdbops.DeleteLogicalRouter(oc.nbClient, oc.nadInfo.Prefix+types.OVNClusterRouter)
 	if err != nil {
@@ -756,10 +746,10 @@ func (oc *Controller) ensureNodeLogicalNetwork(node *kapi.Node, hostSubnets []*n
 	}
 
 	if !oc.nadInfo.IsSecondary {
-		// also add the join switch IPs for this node - needed in shared gateway mode
-		lrpIPs, err := oc.joinSwIPManager.EnsureJoinLRPIPs(nodeName)
+		// also add the join switch IPs for this switch - needed in shared gateway mode
+		lrpIPs, err := oc.joinSwIPManager.EnsureJoinLRPIPs(switchName)
 		if err != nil {
-			return fmt.Errorf("failed to get join switch port IP address for node %s: %v", nodeName, err)
+			return fmt.Errorf("failed to get join switch port IP address for switch %s: %v", switchName, err)
 		}
 
 		for _, lrpIP := range lrpIPs {
@@ -987,19 +977,19 @@ func (oc *Controller) addNode(node *kapi.Node) ([]*net.IPNet, error) {
 		}
 	}()
 
-	if !oc.nadInfo.IsSecondary {
-		// delete stale chassis in SBDB if any
-		if err = oc.deleteStaleNodeChassis(node); err != nil {
-			return nil, err
-		}
-	}
-
 	// Set the HostSubnet annotation on the node object to signal
 	// to nodes that their logical infrastructure is set up and they can
 	// proceed with their initialization
 	err = oc.updateNodeAnnotationWithRetry(node.Name, hostSubnets)
 	if err != nil {
 		return nil, err
+	}
+
+	if !oc.nadInfo.IsSecondary {
+		// delete stale chassis in SBDB if any
+		if err = oc.deleteStaleNodeChassis(node); err != nil {
+			return nil, err
+		}
 	}
 
 	// Ensure that the node's logical network has been created. Note that if the

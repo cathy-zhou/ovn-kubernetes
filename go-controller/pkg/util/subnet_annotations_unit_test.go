@@ -167,11 +167,12 @@ func TestParseSubnetAnnotation(t *testing.T) {
 	}
 	for i, tc := range tests {
 		t.Run(fmt.Sprintf("%d:%s", i, tc.desc), func(t *testing.T) {
-			ipList, e := parseSubnetAnnotation(tc.inpNode.Annotations, tc.annName)
+			ipListMap, e := parseSubnetAnnotation(tc.inpNode.Annotations, tc.annName)
 			if tc.errExpected {
 				t.Log(e)
 				assert.Error(t, e)
 			} else {
+				ipList := ipListMap[types.DefaultNetworkName]
 				t.Log(ipList)
 				assert.Greater(t, len(ipList), 0)
 			}

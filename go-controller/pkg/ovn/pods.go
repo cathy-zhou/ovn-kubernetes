@@ -76,7 +76,7 @@ func (oc *Controller) syncPodsRetriable(pods []interface{}) error {
 			// delete the outdated hybrid overlay subnet route if it exists
 			if !oc.nadInfo.IsSecondary && annotations != nil {
 				newRoutes := []util.PodRoute{}
-				for _, subnet := range oc.lsManager.GetSwitchSubnets(pod.Spec.NodeName) {
+				for _, subnet := range oc.lsManager.GetSwitchSubnets(switchName) {
 					hybridOverlayIFAddr := util.GetNodeHybridOverlayIfAddr(subnet).IP
 					for _, route := range annotations.Routes {
 						if !route.NextHop.Equal(hybridOverlayIFAddr) {
@@ -137,7 +137,7 @@ func (oc *Controller) syncPodsRetriable(pods []interface{}) error {
 				hybridOverlayDRIP = strings.Split(nodeHybridOverlayDRIP, ",")
 
 			}
-			AllocatedHybridOverlayDRIPes, err := oc.lsManager.AllocateHybridOverlay(n.Name, hybridOverlayDRIP)
+			AllocatedHybridOverlayDRIPes, err := oc.lsManager.AllocateHybridOverlay(switchName, hybridOverlayDRIP)
 			if err != nil {
 				return fmt.Errorf("cannot allocate hybrid overlay interface addresses: %v", err)
 			}
@@ -845,7 +845,7 @@ func (oc *Controller) updatePodAnnotationWithRetry(origPod *kapi.Pod, podInfo *u
 	return nil
 }
 
-// Given a node, gets the next set of addresses (from the IPAM) for each of the node's
+// Given a switch, gets the next set of addresses (from the IPAM) for each of the node's
 // subnets to assign to the new pod
 func (oc *Controller) assignPodAddresses(switchName string) (net.HardwareAddr, []*net.IPNet, error) {
 	var (

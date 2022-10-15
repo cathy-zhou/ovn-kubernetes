@@ -62,13 +62,15 @@ type Controller struct {
 	GenericController
 
 	// network configuration information
-	nadInfo     *util.NetAttachDefInfo
-	isStarted   bool
-	startMutex  sync.Mutex
+	nadInfo    *util.NetAttachDefInfo
+	isStarted  bool
+	startMutex sync.Mutex
+
+	// watcher handlers that need to be removed for secondary networks
 	podHandler  *factory.Handler
 	nodeHandler *factory.Handler
 
-	// wg and stopChan is per-Controller
+	// wg and stopChan per-Controller
 	wg       *sync.WaitGroup
 	stopChan chan struct{}
 

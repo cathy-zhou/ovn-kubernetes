@@ -13,7 +13,7 @@ import (
 	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	utilMocks "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util/mocks"
-	v1 "k8s.io/api/core/v1"
+	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -44,7 +44,6 @@ var _ = Describe("cni_dpu tests", func() {
 			effectiveNetName: ovntypes.DefaultNetworkName,
 			effectiveNADName: ovntypes.DefaultNetworkName,
 		}
-
 		pod = &v1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        pr.PodName,
@@ -74,6 +73,7 @@ var _ = Describe("cni_dpu tests", func() {
 			fakeKubeInterface.On("UpdatePod", cpod).Return(nil)
 			err = pr.addDPUConnectionDetailsAnnot(&fakeKubeInterface, &podLister, "")
 			Expect(err).ToNot(HaveOccurred())
+
 		})
 
 		It("Fails if DeviceID is not present in CNI config", func() {

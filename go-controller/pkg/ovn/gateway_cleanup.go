@@ -263,9 +263,6 @@ func (oc *Controller) removeLRPolicies(nodeName string, priorities []string) {
 
 // removes DGP, snat_and_dnat entries, and LRPs
 func (oc *Controller) cleanupDGP(nodes *kapi.NodeList) error {
-	if oc.nadInfo.IsSecondary {
-		return nil
-	}
 	klog.Infof("Removing DGP %v", nodes)
 	// remove dnat_snat entries as well as LRPs
 	for _, node := range nodes.Items {

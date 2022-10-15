@@ -283,13 +283,13 @@ func (manager *LogicalSwitchManager) AllocateNextIPs(switchName string) ([]*net.
 	return ipnets, nil
 }
 
-func (manager *LogicalSwitchManager) AllocateHybridOverlay(nodeName string, hybridOverlayAnnotation []string) ([]*net.IPNet, error) {
+func (manager *LogicalSwitchManager) AllocateHybridOverlay(switchName string, hybridOverlayAnnotation []string) ([]*net.IPNet, error) {
 	if len(hybridOverlayAnnotation) > 0 {
 		var allocateAddresses []*net.IPNet
 		for _, ip := range hybridOverlayAnnotation {
 			allocateAddresses = append(allocateAddresses, &net.IPNet{IP: net.ParseIP(ip).To4(), Mask: net.CIDRMask(32, 32)})
 		}
-		err := manager.AllocateIPs(nodeName, allocateAddresses)
+		err := manager.AllocateIPs(switchName, allocateAddresses)
 		if err != nil {
 			return nil, err
 		}
@@ -299,9 +299,9 @@ func (manager *LogicalSwitchManager) AllocateHybridOverlay(nodeName string, hybr
 	manager.RLock()
 	defer manager.RUnlock()
 
-	lsi, ok := manager.cache[nodeName]
+	lsi, ok := manager.cache[switchName]
 	if !ok {
-		return nil, fmt.Errorf("node %s not found in the logical switch manager cache", nodeName)
+		return nil, fmt.Errorf("switch %s not found in the logical switch manager cache", switchName)
 	}
 	// determine if ipams are ipv4
 	var ipv4IPAMS []ipam.Interface
@@ -319,8 +319,8 @@ func (manager *LogicalSwitchManager) AllocateHybridOverlay(nodeName string, hybr
 			// allocate NextIP
 			allocatedipv4, err := ipv4IPAM.AllocateNext()
 			if err != nil {
-				_ = manager.ReleaseIPs(nodeName, allocatedAddresses)
-				return nil, fmt.Errorf("cannot allocate hybrid overlay interface address for node/subnet %s/%s (%+v)", nodeName, hostSubnet, err)
+				_ = manager.ReleaseIPs(switchName, allocatedAddresses)
+				return nil, fmt.Errorf("cannot allocate hybrid overlay interface address for switch/subnet %s/%s (%+v)", switchName, hostSubnet, err)
 
 			}
 			if err == nil {
@@ -328,8 +328,8 @@ func (manager *LogicalSwitchManager) AllocateHybridOverlay(nodeName string, hybr
 
 			}
 		} else if err != nil {
-			_ = manager.ReleaseIPs(nodeName, allocatedAddresses)
-			return nil, fmt.Errorf("cannot allocate hybrid overlay interface address for node/subnet %s/%s (%+v)", nodeName, hostSubnet, err)
+			_ = manager.ReleaseIPs(switchName, allocatedAddresses)
+			return nil, fmt.Errorf("cannot allocate hybrid overlay interface address for switch/subnet %s/%s (%+v)", switchName, hostSubnet, err)
 		} else {
 			allocatedAddresses = append(allocatedAddresses, &net.IPNet{IP: potentialHybridIFAddress.IP.To4(), Mask: net.CIDRMask(32, 32)})
 		}
