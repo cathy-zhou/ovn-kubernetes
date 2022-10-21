@@ -239,7 +239,7 @@ func unmarshalPodAnnotationAllNetworks(annotations map[string]string) (map[strin
 // GetPodCIDRsWithFullMask returns the pod's IP addresses in a CIDR with FullMask format
 // Internally it calls GetAllPodIPs
 func GetPodCIDRsWithFullMask(pod *v1.Pod) ([]*net.IPNet, error) {
-	podIPs, err := GetAllPodIPs(pod, nil)
+	podIPs, err := GetAllPodIPs(pod, (*NetNameInfo)(nil))
 	if err != nil {
 		return nil, err
 	}
@@ -261,13 +261,12 @@ func GetPodCIDRsWithFullMask(pod *v1.Pod) ([]*net.IPNet, error) {
 // GetAllPodIPs returns the pod's IP addresses, first from the OVN annotation
 // and then falling back to the Pod Status IPs. This function is intended to
 // also return IPs for HostNetwork and other non-OVN-IPAM-ed pods.
-func GetAllPodIPs(pod *v1.Pod, netInfo *NetInfo) ([]net.IP, error) {
+func GetAllPodIPs(pod *v1.Pod, nInfo NetInfo) ([]net.IP, error) {
 	// if netInfo is nil, this is called fro default network
-	isSecondaryNetwork := (netInfo != nil && netInfo.IsSecondary)
 	ips := []net.IP{}
 	nadName := types.DefaultNetworkName
-	if isSecondaryNetwork {
-		on, network, err := IsNetworkOnPod(pod, netInfo)
+	if nInfo.IsSecondary() {
+		on, network, err := IsNetworkOnPod(pod, nInfo)
 		if err != nil {
 			return nil, err
 		} else if !on {
@@ -292,9 +291,9 @@ func GetAllPodIPs(pod *v1.Pod, netInfo *NetInfo) ([]net.IP, error) {
 		return ips, nil
 	}
 
-	if isSecondaryNetwork {
+	if nInfo.IsSecondary() {
 		return []net.IP{}, fmt.Errorf("no pod annotation of pod %s/%s found for network %s",
-			pod.Namespace, pod.Name, netInfo.NetName)
+			pod.Namespace, pod.Name, nInfo.GetNetworkName())
 	}
 
 	// Otherwise, default network, if the annotation is not valid try to use Kube API pod IPs

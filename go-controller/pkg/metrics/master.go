@@ -1022,9 +1022,9 @@ func (cr *ConfigDurationRecorder) End(kind, namespace, name string) time.Time {
 // If multiple AddOVN is called between Start and End for the same kind/namespace/name, then the
 // OVN durations will be summed and added to the total. There is an assumption that processing of kind/namespace/name is
 // sequential
-func (cr *ConfigDurationRecorder) AddOVN(nbClient libovsdbclient.Client, kind, namespace, name string, netInfo *util.NetInfo) (
+func (cr *ConfigDurationRecorder) AddOVN(nbClient libovsdbclient.Client, kind, namespace, name string, netInfo util.NetInfo) (
 	[]ovsdb.Operation, func(), time.Time, error) {
-	if netInfo != nil && netInfo.IsSecondary {
+	if netInfo.IsSecondary() {
 		// no op for secondary network for now
 		return []ovsdb.Operation{}, func() {}, time.Time{}, nil
 	}

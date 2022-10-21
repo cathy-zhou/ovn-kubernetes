@@ -208,7 +208,7 @@ func (nci *NetworkControllerInfo) createOvnClusterRouter(multicastSupport bool) 
 	}
 
 	// Create a single common distributed router for the cluster.
-	logicalRouterName := nci.Prefix + types.OVNClusterRouter
+	logicalRouterName := nci.GetPrefix() + types.OVNClusterRouter
 	logicalRouter := nbdb.LogicalRouter{
 		Name: logicalRouterName,
 		ExternalIDs: map[string]string{
@@ -219,8 +219,8 @@ func (nci *NetworkControllerInfo) createOvnClusterRouter(multicastSupport bool) 
 		},
 		Copp: &defaultCOPPUUID,
 	}
-	if nci.IsSecondary {
-		logicalRouter.ExternalIDs[types.NetworkNameExternalID] = nci.NetName
+	if nci.IsSecondary() {
+		logicalRouter.ExternalIDs[types.NetworkNameExternalID] = nci.GetNetworkName()
 	}
 	if multicastSupport {
 		logicalRouter.Options = map[string]string{
@@ -466,7 +466,7 @@ func (nci *NetworkControllerInfo) syncNodeClusterRouterPort(node *kapi.Node, hos
 	}
 
 	if len(hostSubnets) == 0 {
-		hostSubnets, err = util.ParseNodeHostSubnetAnnotation(node, nci.NetName)
+		hostSubnets, err = util.ParseNodeHostSubnetAnnotation(node, nci.GetNetworkName())
 		if err != nil {
 			return err
 		}
@@ -482,8 +482,8 @@ func (nci *NetworkControllerInfo) syncNodeClusterRouterPort(node *kapi.Node, hos
 		}
 	}
 
-	switchName := nci.Prefix + node.Name
-	logicalRouterName := nci.Prefix + types.OVNClusterRouter
+	switchName := nci.GetPrefix() + node.Name
+	logicalRouterName := nci.GetPrefix() + types.OVNClusterRouter
 	lrpName := types.RouterToSwitchPrefix + switchName
 	lrpNetworks := []string{}
 	for _, hostSubnet := range hostSubnets {
@@ -525,7 +525,7 @@ func (nci *NetworkControllerInfo) createNodeLogicalSwitch(nodeName string, hostS
 	loadBalancerGroupUUID string, multicastSupport bool) (*nbdb.LogicalSwitch, error) {
 	// logical router port MAC is based on IPv4 subnet if there is one, else IPv6
 	var nodeLRPMAC net.HardwareAddr
-	switchName := nci.Prefix + nodeName
+	switchName := nci.GetPrefix() + nodeName
 	for _, hostSubnet := range hostSubnets {
 		gwIfAddr := util.GetNodeGatewayIfAddr(hostSubnet)
 		nodeLRPMAC = util.IPAddrToHWAddr(gwIfAddr.IP)
@@ -537,8 +537,8 @@ func (nci *NetworkControllerInfo) createNodeLogicalSwitch(nodeName string, hostS
 	logicalSwitch := nbdb.LogicalSwitch{
 		Name: switchName,
 	}
-	if nci.IsSecondary {
-		logicalSwitch.ExternalIDs = map[string]string{types.NetworkNameExternalID: nci.NetName}
+	if nci.IsSecondary() {
+		logicalSwitch.ExternalIDs = map[string]string{types.NetworkNameExternalID: nci.GetNetworkName()}
 	}
 
 	var v4Gateway, v6Gateway net.IP
@@ -576,7 +576,7 @@ func (nci *NetworkControllerInfo) createNodeLogicalSwitch(nodeName string, hostS
 		MAC:      nodeLRPMAC.String(),
 		Networks: logicalRouterPortNetwork,
 	}
-	logicalRouterName := nci.Prefix + types.OVNClusterRouter
+	logicalRouterName := nci.GetPrefix() + types.OVNClusterRouter
 	logicalRouter := nbdb.LogicalRouter{Name: logicalRouterName}
 
 	err := libovsdbops.CreateOrUpdateLogicalRouterPorts(nci.nbClient, &logicalRouter,
@@ -683,10 +683,10 @@ func (oc *DefaultNetworkController) ensureNodeLogicalNetwork(node *kapi.Node, ho
 
 func (nci *NetworkControllerInfo) createNodeSubnetAnnotation(node *kapi.Node,
 	masterSubnetAllocator *subnetallocator.HostSubnetAllocator) ([]*net.IPNet, error) {
-	existingSubnets, err := util.ParseNodeHostSubnetAnnotation(node, nci.NetName)
+	existingSubnets, err := util.ParseNodeHostSubnetAnnotation(node, nci.GetNetworkName())
 	if err != nil && !util.IsAnnotationNotSetError(err) {
 		// Log the error and try to allocate new subnets
-		klog.Infof("Failed to get node %s host subnets annotations for network %s: %v", node.Name, nci.NetName, err)
+		klog.Infof("Failed to get node %s host subnets annotations for network %s: %v", node.Name, nci.GetNetworkName(), err)
 	}
 
 	hostSubnets, allocatedSubnets, err := masterSubnetAllocator.AllocateNodeSubnets(node.Name, existingSubnets, config.IPv4Mode, config.IPv6Mode)
@@ -762,7 +762,7 @@ func (oc *DefaultNetworkController) addNode(node *kapi.Node) ([]*net.IPNet, erro
 		return nil, err
 	}
 
-	hostSubnetsMap := map[string][]*net.IPNet{oc.NetName: hostSubnets}
+	hostSubnetsMap := map[string][]*net.IPNet{oc.GetNetworkName(): hostSubnets}
 	err = oc.UpdateNodeAnnotationWithRetry(node.Name, hostSubnetsMap, updatedNodeAnnotation)
 	if err != nil {
 		return nil, err
@@ -828,7 +828,7 @@ func (oc *DefaultNetworkController) deleteStaleNodeChassis(node *kapi.Node) erro
 
 // deleteNodeLogicalNetwork removes the logical switch and logical router port associated with the node
 func (nci *NetworkControllerInfo) deleteNodeLogicalNetwork(nodeName string) error {
-	switchName := nci.Prefix + nodeName
+	switchName := nci.GetPrefix() + nodeName
 	// Remove switch to lb associations from the LBCache before removing the switch
 	lbCache, err := ovnlb.GetLBCache(nci.nbClient)
 	if err != nil {
@@ -842,7 +842,7 @@ func (nci *NetworkControllerInfo) deleteNodeLogicalNetwork(nodeName string) erro
 		return fmt.Errorf("failed to delete logical switch %s: %v", switchName, err)
 	}
 
-	logicalRouterName := nci.Prefix + types.OVNClusterRouter
+	logicalRouterName := nci.GetPrefix() + types.OVNClusterRouter
 	logicalRouter := nbdb.LogicalRouter{Name: logicalRouterName}
 	logicalRouterPort := nbdb.LogicalRouterPort{
 		Name: types.RouterToSwitchPrefix + switchName,
@@ -975,10 +975,10 @@ func (nci *NetworkControllerInfo) updateFoundNodes(node *kapi.Node,
 	if noHostSubnet(node) {
 		return []*net.IPNet{}
 	}
-	hostSubnets, _ := util.ParseNodeHostSubnetAnnotation(node, nci.NetName)
+	hostSubnets, _ := util.ParseNodeHostSubnetAnnotation(node, nci.GetNetworkName())
 	foundNodes.Insert(node.Name)
 
-	klog.V(5).Infof("Node %s contains subnets: %v network %s", node.Name, hostSubnets, nci.NetName)
+	klog.V(5).Infof("Node %s contains subnets: %v network %s", node.Name, hostSubnets, nci.GetNetworkName())
 	if err := masterSubnetAllocator.MarkSubnetsAllocated(node.Name, hostSubnets...); err != nil {
 		utilruntime.HandleError(err)
 	}

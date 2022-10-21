@@ -20,7 +20,6 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/subnetallocator"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
-	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	kapi "k8s.io/api/core/v1"
@@ -194,13 +193,8 @@ func newDefaultControllerCommon(bnc *BaseNetworkController,
 	oc := &DefaultNetworkController{
 		NetworkControllerInfo: NetworkControllerInfo{
 			BaseNetworkController: *bnc,
-			NetConfInfo:           &util.DefaultNetConfInfo{},
-			NetInfo: util.NetInfo{
-				NetName:     ovntypes.DefaultNetworkName,
-				Prefix:      "",
-				IsSecondary: false,
-				NadNames:    &sync.Map{},
-			},
+			NetConfInfo:           nil,
+			NetInfo:               (*util.NetNameInfo)(nil),
 		},
 		stopChan:                     defaultStopChan,
 		wg:                           defaultWg,
@@ -294,10 +288,6 @@ func (oc *DefaultNetworkController) newRetryFrameworkMasterWithParameters(
 		resourceHandler,
 	)
 	return r
-}
-
-func (oc *DefaultNetworkController) CompareNetConf(netConfInfo util.NetConfInfo) bool {
-	return oc.Compare(netConfInfo)
 }
 
 // Start starts the default controller; handles all events and creates all needed logical entities

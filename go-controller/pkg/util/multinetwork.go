@@ -13,46 +13,95 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 
 	kapi "k8s.io/api/core/v1"
-	"k8s.io/klog/v2"
 )
 
 var ErrorAttachDefNotOvnManaged = errors.New("net-attach-def not managed by OVN")
 
 // NetInfo is structure which holds network name information
-type NetInfo struct {
+// for default network, this is set to nil
+type NetInfo interface {
+	GetNetworkName() string
+	IsSecondary() bool
+	GetPrefix() string
+	AddNad(nadName string)
+	DeleteNad(nadName string) bool
+	CheckNadExist(nadName string) bool
+}
+
+type NetNameInfo struct {
 	// netconf's name, default for default network
-	NetName string
-	// Prefix of OVN logical entities for this network
-	Prefix      string
-	IsSecondary bool
-	NadNames    *sync.Map
+	netName  string
+	nadNames *sync.Map
+}
+
+// GetNetworkName returns the network name
+func (nInfo *NetNameInfo) GetNetworkName() string {
+	if nInfo == nil {
+		// default network
+		return types.DefaultNetworkName
+	}
+	return nInfo.netName
+}
+
+// IsSecondary returns if this network is secondary
+func (nInfo *NetNameInfo) IsSecondary() bool {
+	return nInfo != nil
+}
+
+// GetPrefix returns if the logical entities prefix for this network
+func (nInfo *NetNameInfo) GetPrefix() string {
+	if nInfo == nil {
+		return ""
+	}
+	return GetSecondaryNetworkPrefix(nInfo.netName)
+}
+
+// AddNad adds the specified nad
+func (nInfo *NetNameInfo) AddNad(nadName string) {
+	if nInfo != nil {
+		nInfo.nadNames.Store(nadName, true)
+	}
+}
+
+// DeleteNad deletes the specified nad and return true if no nads left
+func (nInfo *NetNameInfo) DeleteNad(nadName string) bool {
+	if nInfo == nil {
+		// default network always exists
+		return false
+	}
+	nInfo.nadNames.Delete(nadName)
+	// check if there any other nads sharing the same CNI conf name left, if yes, just return
+	nadLeft := false
+	nInfo.nadNames.Range(func(key, value interface{}) bool {
+		nadLeft = true
+		return false
+	})
+	return !nadLeft
+}
+
+// CheckNadExist returns true if the given nad exists, used
+// to check if the network needs to be plumbed over
+func (nInfo *NetNameInfo) CheckNadExist(nadName string) bool {
+	if nInfo == nil {
+		// default network always needs to be plumbed over Pod
+		return true
+	}
+	_, ok := nInfo.nadNames.Load(nadName)
+	return ok
 }
 
 // NetConfInfo is structure which holds specific per-network information
 type NetConfInfo interface {
 	Verify() error
 	Compare(NetConfInfo) bool
+	GetTopologyType() string
 }
-
-// DefaultNetConfInfo is structure which holds default network information
-type DefaultNetConfInfo struct{}
 
 // L3NetConfInfo is structure which holds specific secondary L3 network information
 type L3NetConfInfo struct {
-	ProtoType      string
 	NetCidr        string
 	MTU            int
 	ClusterSubnets []config.CIDRNetworkEntry
-}
-
-func (defaultNetConfInfo *DefaultNetConfInfo) Compare(NetConfInfo) bool {
-	// configuration of default network comes from command line; always return true
-	return true
-}
-
-func (defaultNetConfInfo *DefaultNetConfInfo) Verify() error {
-	// configuration of default network comes from command line; always verified in config check
-	return nil
 }
 
 func (l3NetConfInfo *L3NetConfInfo) Compare(newNetConfInfo NetConfInfo) bool {
@@ -72,35 +121,8 @@ func (l3NetConfInfo *L3NetConfInfo) Verify() error {
 	return nil
 }
 
-// AddNad adds the specified nad
-func (nInfo *NetInfo) AddNad(nadName string) {
-	klog.V(5).Infof("Add nad %s to network %s", nadName, nInfo.NetName)
-	nInfo.NadNames.Store(nadName, true)
-}
-
-// DeleteNad deletes the specified nad and return true if no nads left
-func (nInfo *NetInfo) DeleteNad(nadName string) bool {
-	klog.V(5).Infof("Delete nad %s from network %s", nadName, nInfo.NetName)
-	nInfo.NadNames.Delete(nadName)
-	// check if there any other nads sharing the same CNI conf name left, if yes, just return
-	nadLeft := false
-	nInfo.NadNames.Range(func(key, value interface{}) bool {
-		nadLeft = true
-		return false
-	})
-	return !nadLeft
-}
-
-// CheckNadExist returns true if the given nad exists, used
-// to check if the network needs to be plumbed over
-func (nInfo *NetInfo) CheckNadExist(nadName string) bool {
-	_, ok := nInfo.NadNames.Load(nadName)
-	return ok
-}
-
-// GetNetworkName returns the network name
-func (nInfo *NetInfo) GetNetworkName() string {
-	return nInfo.NetName
+func (l3NetConfInfo *L3NetConfInfo) GetTopologyType() string {
+	return types.Layer3AttachDefTopoType
 }
 
 // GetNadName returns key of NetAttachDefInfo.NetAttachDefs map, also used as Pod annotation key
@@ -120,26 +142,34 @@ func GetSecondaryNetworkPrefix(netName string) string {
 }
 
 // ParseNADInfo parses config in NAD spec and return a NetAttachDefInfo object
-func ParseNADInfo(netattachdef *nettypes.NetworkAttachmentDefinition) (*NetInfo, NetConfInfo, error) {
+func ParseNADInfo(netattachdef *nettypes.NetworkAttachmentDefinition) (NetInfo, NetConfInfo, error) {
+	var netconfInfo NetConfInfo
+	var nInfo *NetNameInfo
 	netconf, err := ParseNetConf(netattachdef)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	netName := netconf.Name
-	prefix := ""
+	// default network netInfo is nil
+	nInfo = nil
 	if netconf.IsSecondary {
-		prefix = GetSecondaryNetworkPrefix(netName)
+		nInfo = &NetNameInfo{
+			netName:  netconf.Name,
+			nadNames: &sync.Map{},
+		}
 	}
 
-	netInfo := NetInfo{
-		NetName:     netconf.Name,
-		Prefix:      prefix,
-		IsSecondary: netconf.IsSecondary,
-		NadNames:    &sync.Map{},
+	if netconf.Topology == "" {
+		netconfInfo = &L3NetConfInfo{NetCidr: netconf.NetCidr, MTU: netconf.MTU}
+	} else {
+		// other topology nad can be supported later
+		return nil, nil, fmt.Errorf("topology %s not supported", netconf.Topology)
 	}
-	nadConfInfo := L3NetConfInfo{NetCidr: netconf.NetCidr, MTU: netconf.MTU}
-	return &netInfo, &nadConfInfo, nil
+	err = netconfInfo.Verify()
+	if err != nil {
+		return nil, nil, err
+	}
+	return nInfo, netconfInfo, nil
 }
 
 // ParseNetConf parses config in NAD spec
@@ -176,24 +206,24 @@ func ParseNetConf(netattachdef *nettypes.NetworkAttachmentDefinition) (*ovncnity
 	return netconf, nil
 }
 
-// See if this pod needs to plumb over this given network specified by netconf,
+// IsNetworkOnPod sees if the given pod needs to plumb over this given network specified by netconf,
 // and return the matching NetworkSelectionElement if any exists.
 //
 // Return value:
 //    bool: if this Pod is on this Network; true or false
 //    *networkattachmentdefinitionapi.NetworkSelectionElement: all NetworkSelectionElement that pod is requested for the specified network
 //    error:  error in case of failure
-func IsNetworkOnPod(pod *kapi.Pod, netInfo *NetInfo) (bool, *nettypes.NetworkSelectionElement, error) {
-	podDesc := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
-	if !netInfo.IsSecondary {
-		defaultNetwork, err := GetK8sPodDefaultNetwork(pod)
+func IsNetworkOnPod(pod *kapi.Pod, nInfo NetInfo) (bool, *nettypes.NetworkSelectionElement, error) {
+	if !nInfo.IsSecondary() {
+		network, err := GetK8sPodDefaultNetwork(pod)
 		if err != nil {
 			// multus won't add this Pod if this fails, should never happen
-			return false, nil, fmt.Errorf("failed to get default network for pod %s: %v", podDesc, err)
+			return false, nil, fmt.Errorf("error getting default-network's network-attachment for pod %s/%s: %v", pod.Namespace, pod.Name, err)
 		}
-		return true, defaultNetwork, nil
+		return true, network, nil
 	}
 
+	podDesc := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
 	// For non-default network controller, try to see if its name exists in the Pod's k8s.v1.cni.cncf.io/networks, if no,
 	// return false;
 	allNetworks, err := GetK8sPodAllNetworks(pod)
@@ -204,13 +234,13 @@ func IsNetworkOnPod(pod *kapi.Pod, netInfo *NetInfo) (bool, *nettypes.NetworkSel
 	nses := make([]*nettypes.NetworkSelectionElement, 0, len(allNetworks))
 	for _, network := range allNetworks {
 		nadName := GetNadName(network.Namespace, network.Name)
-		if netInfo.CheckNadExist(nadName) {
+		if nInfo.CheckNadExist(nadName) {
 			nses = append(nses, network)
 		}
 	}
 	if len(nses) > 1 {
 		return false, nil, fmt.Errorf("unexpected error: more than one nad of the network %s specified for pod %s",
-			netInfo.NetName, podDesc)
+			nInfo.GetNetworkName(), podDesc)
 	} else if len(nses) == 0 {
 		return false, nil, nil
 	}

@@ -30,8 +30,6 @@ import (
 
 	networkattachmentdefinitionapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	networkattachmentdefinitionscheme "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/scheme"
-	networkattachmentdefinitioninformerfactory "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/informers/externalversions"
-
 	kapi "k8s.io/api/core/v1"
 	discovery "k8s.io/api/discovery/v1"
 	knet "k8s.io/api/networking/v1"
@@ -62,7 +60,6 @@ type WatchFactory struct {
 	efFactory        egressfirewallinformerfactory.SharedInformerFactory
 	cpipcFactory     ocpcloudnetworkinformerfactory.SharedInformerFactory
 	egressQoSFactory egressqosinformerfactory.SharedInformerFactory
-	nadFactory       networkattachmentdefinitioninformerfactory.SharedInformerFactory
 	informers        map[reflect.Type]*informer
 
 	stopChan chan struct{}
@@ -155,7 +152,6 @@ func NewMasterWatchFactory(ovnClientset *util.OVNClientset) (*WatchFactory, erro
 		efFactory:        egressfirewallinformerfactory.NewSharedInformerFactory(ovnClientset.EgressFirewallClient, resyncInterval),
 		cpipcFactory:     ocpcloudnetworkinformerfactory.NewSharedInformerFactory(ovnClientset.CloudNetworkClient, resyncInterval),
 		egressQoSFactory: egressqosinformerfactory.NewSharedInformerFactory(ovnClientset.EgressQoSClient, resyncInterval),
-		nadFactory:       networkattachmentdefinitioninformerfactory.NewSharedInformerFactory(ovnClientset.NetworkAttchDefClient, resyncInterval),
 		informers:        make(map[reflect.Type]*informer),
 		stopChan:         make(chan struct{}),
 	}
@@ -248,14 +244,6 @@ func NewMasterWatchFactory(ovnClientset *util.OVNClientset) (*WatchFactory, erro
 		}
 	}
 
-	if config.OVNKubernetesFeature.EnableMultiNetwork {
-		wf.informers[NetworkattachmentdefinitionType], err = newInformer(NetworkattachmentdefinitionType,
-			wf.nadFactory.K8sCniCncfIo().V1().NetworkAttachmentDefinitions().Informer())
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	return wf, nil
 }
 
@@ -294,15 +282,6 @@ func (wf *WatchFactory) Start() error {
 	if config.OVNKubernetesFeature.EnableEgressQoS && wf.egressQoSFactory != nil {
 		wf.egressQoSFactory.Start(wf.stopChan)
 		for oType, synced := range wf.egressQoSFactory.WaitForCacheSync(wf.stopChan) {
-			if !synced {
-				return fmt.Errorf("error in syncing cache for %v informer", oType)
-			}
-		}
-	}
-
-	if config.OVNKubernetesFeature.EnableMultiNetwork && wf.nadFactory != nil {
-		wf.nadFactory.Start(wf.stopChan)
-		for oType, synced := range wf.nadFactory.WaitForCacheSync(wf.stopChan) {
 			if !synced {
 				return fmt.Errorf("error in syncing cache for %v informer", oType)
 			}

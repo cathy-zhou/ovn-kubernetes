@@ -11,7 +11,6 @@ import (
 
 	networkattachmentdefinitionapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	"github.com/ovn-org/libovsdb/ovsdb"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
@@ -40,15 +39,13 @@ type secondaryL3MasterEventHandler struct {
 // for a secondary l3 network
 type SecondaryL3Controller struct {
 	NetworkControllerInfo
+	//util.L3NetConfInfo
 
 	wg       *sync.WaitGroup
 	stopChan chan struct{}
 
 	nodeHandler *factory.Handler
 	podHandler  *factory.Handler
-
-	// configured cluster subnets
-	clusterSubnets []config.CIDRNetworkEntry
 
 	// FIXME DUAL-STACK -  Make IP Allocators more dual-stack friendly
 	masterSubnetAllocator *subnetallocator.HostSubnetAllocator
@@ -69,30 +66,23 @@ type SecondaryL3Controller struct {
 	nodeClusterRouterPortFailed sync.Map
 
 	//podRecorder metrics.PodRecorder
+	isStarted bool
 }
 
 // NewSecondaryL3Controller create a new OVN controller for the given secondary l3 nad
-func NewSecondaryL3Controller(bnc *BaseNetworkController, netInfo *util.NetInfo,
-	netConfInfo util.NetConfInfo) (*SecondaryL3Controller, error) {
+func NewSecondaryL3Controller(bnc *BaseNetworkController, nInfo util.NetInfo,
+	netconfInfo *util.L3NetConfInfo) (*SecondaryL3Controller, error) {
 	var oc *SecondaryL3Controller
-
-	l3NetConfInfo := netConfInfo.(*util.L3NetConfInfo)
-	clusterSubnets, err := config.ParseClusterSubnetEntries(l3NetConfInfo.NetCidr)
-	if err != nil {
-		return nil, fmt.Errorf("cluster subnet %s for network %s is invalid: %v",
-			l3NetConfInfo.NetCidr, netInfo.NetName, err)
-	}
 
 	stopChan := make(chan struct{})
 	oc = &SecondaryL3Controller{
 		NetworkControllerInfo: NetworkControllerInfo{
 			BaseNetworkController: *bnc,
-			NetInfo:               *netInfo,
-			NetConfInfo:           netConfInfo,
+			NetInfo:               nInfo,
+			NetConfInfo:           netconfInfo,
 		},
 		stopChan:              stopChan,
 		wg:                    &sync.WaitGroup{},
-		clusterSubnets:        clusterSubnets,
 		masterSubnetAllocator: subnetallocator.NewHostSubnetAllocator(),
 		lsManager:             lsm.NewLogicalSwitchManager(),
 		logicalPortCache:      newPortCache(stopChan),
@@ -140,12 +130,27 @@ func (oc *SecondaryL3Controller) CompareNetConf(netConfInfo util.NetConfInfo) bo
 	return oc.Compare(netConfInfo)
 }
 
+//// GetNetInfo returns netInfo of this controller
+//func (oc *SecondaryL3Controller) GetNetInfo() *util.NetInfo {
+//	return &oc.NetInfo
+//}
+//
 func (oc *SecondaryL3Controller) Start(ctx context.Context) error {
-	if err := oc.StartClusterMaster(); err != nil {
+	if oc.isStarted {
+		return nil
+	}
+
+	err := oc.StartClusterMaster()
+	if err != nil {
 		return err
 	}
 
-	return oc.Run()
+	err = oc.Run()
+	if err != nil {
+		return err
+	}
+	oc.isStarted = true
+	return nil
 }
 
 func (oc *SecondaryL3Controller) Stop(deleteLogicalEntities bool) error {
@@ -170,24 +175,24 @@ func (oc *SecondaryL3Controller) Stop(deleteLogicalEntities bool) error {
 	// first delete node logical switches
 	ops, err = libovsdbops.DeleteLogicalSwitchesWithPredicateOps(oc.nbClient, ops,
 		func(item *nbdb.LogicalSwitch) bool {
-			return item.ExternalIDs[types.NetworkNameExternalID] == oc.NetName
+			return item.ExternalIDs[types.NetworkNameExternalID] == oc.GetNetworkName()
 		})
 	if err != nil {
-		return fmt.Errorf("failed to get ops for deleting switches of network %s", oc.NetName)
+		return fmt.Errorf("failed to get ops for deleting switches of network %s", oc.GetNetworkName())
 	}
 
 	// now delete cluster router
 	ops, err = libovsdbops.DeleteLogicalRoutersWithPredicateOps(oc.nbClient, ops,
 		func(item *nbdb.LogicalRouter) bool {
-			return item.ExternalIDs[types.NetworkNameExternalID] == oc.NetName
+			return item.ExternalIDs[types.NetworkNameExternalID] == oc.GetNetworkName()
 		})
 	if err != nil {
-		return fmt.Errorf("failed to get ops for deleting routers of network %s", oc.NetName)
+		return fmt.Errorf("failed to get ops for deleting routers of network %s", oc.GetNetworkName())
 	}
 
 	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
 	if err != nil {
-		return fmt.Errorf("failed to deleting routers/switches of network %s", oc.NetName)
+		return fmt.Errorf("failed to deleting routers/switches of network %s", oc.GetNetworkName())
 	}
 
 	// cleanup related OVN logical entities
@@ -197,15 +202,15 @@ func (oc *SecondaryL3Controller) Stop(deleteLogicalEntities bool) error {
 	} else {
 		// remove hostsubnet annoation for this network
 		for _, node := range existingNodes {
-			oc.lsManager.DeleteSwitch(oc.Prefix + node.Name)
+			oc.lsManager.DeleteSwitch(oc.GetPrefix() + node.Name)
 			if noHostSubnet(node) {
 				continue
 			}
-			hostSubnetsMap := map[string][]*net.IPNet{oc.NetName: nil}
+			hostSubnetsMap := map[string][]*net.IPNet{oc.GetNetworkName(): nil}
 			err = oc.UpdateNodeAnnotationWithRetry(node.Name, hostSubnetsMap, nil)
 			if err != nil {
 				return fmt.Errorf("failed to clear node %q subnet annotation for network %s",
-					node.Name, oc.NetName)
+					node.Name, oc.GetNetworkName())
 			}
 		}
 	}
@@ -437,7 +442,7 @@ func (oc *SecondaryL3Controller) getPortInfo(pod *kapi.Pod) *lpInfo {
 	if !util.PodWantsNetwork(pod) {
 		return nil
 	} else {
-		on, network, err := util.IsNetworkOnPod(pod, &oc.NetInfo)
+		on, network, err := util.IsNetworkOnPod(pod, oc.NetInfo)
 		if err == nil && on {
 			nadName := util.GetNadName(network.Namespace, network.Name)
 			key := util.GetSecondaryNetworkLogicalPortName(pod.Namespace, pod.Name, nadName)
@@ -453,7 +458,8 @@ func (oc *SecondaryL3Controller) StartClusterMaster() error {
 	//klog.Infof("Starting cluster master for network %s", oc.nadInfo.NetName)
 
 	klog.Infof("Allocating subnets")
-	if err := oc.masterSubnetAllocator.InitRanges(oc.clusterSubnets); err != nil {
+	l3NetConfInfo := oc.NetConfInfo.(*util.L3NetConfInfo)
+	if err := oc.masterSubnetAllocator.InitRanges(l3NetConfInfo.ClusterSubnets); err != nil {
 		klog.Errorf("Failed to initialize host subnet allocator ranges: %v", err)
 		return err
 	}
@@ -475,16 +481,16 @@ func (oc *SecondaryL3Controller) ensurePod(oldPod, pod *kapi.Pod, addPort bool) 
 	}
 
 	// If a node does node have an assigned hostsubnet don't wait for the logical switch to appear
-	switchName := oc.Prefix + pod.Spec.NodeName
+	switchName := oc.GetPrefix() + pod.Spec.NodeName
 	if oc.lsManager.IsNonHostSubnetSwitch(switchName) {
 		return nil
 	}
 
-	on, network, err := util.IsNetworkOnPod(pod, &oc.NetInfo)
+	on, network, err := util.IsNetworkOnPod(pod, oc.NetInfo)
 	if err != nil || !on {
 		// the pod is not attached to this specific network
 		klog.V(5).Infof("Pod %s/%s is not attached on this network controller %s error (%v) ",
-			pod.Namespace, pod.Name, oc.NetName, err)
+			pod.Namespace, pod.Name, oc.GetNetworkName(), err)
 		return nil
 	}
 
@@ -504,7 +510,7 @@ func (oc *SecondaryL3Controller) addLogicalPort(pod *kapi.Pod, nadName string,
 	var podAnnotation *util.PodAnnotation
 	var err error
 
-	switchName := oc.Prefix + pod.Spec.NodeName
+	switchName := oc.GetPrefix() + pod.Spec.NodeName
 	// Keep track of how long syncs take.
 	start := time.Now()
 	defer func() {
@@ -512,8 +518,7 @@ func (oc *SecondaryL3Controller) addLogicalPort(pod *kapi.Pod, nadName string,
 			pod.Namespace, pod.Name, nadName, time.Since(start), libovsdbExecuteTime)
 	}()
 
-	ops, lsp, podAnnotation, _, err = oc.addPodLogicalPort(pod,
-		oc.lsManager, oc.clusterSubnets, nadName, network)
+	ops, lsp, podAnnotation, _, err = oc.addPodLogicalPort(pod, oc.lsManager, nadName, network)
 	if err != nil {
 		return err
 	}
@@ -565,7 +570,7 @@ func (oc *SecondaryL3Controller) removePod(pod *kapi.Pod, portInfo *lpInfo) erro
 		return nil
 	}
 
-	on, network, err := util.IsNetworkOnPod(pod, &oc.NetInfo)
+	on, network, err := util.IsNetworkOnPod(pod, oc.NetInfo)
 	if err != nil || !on {
 		// the pod is not attached to this specific network
 		return nil
@@ -602,14 +607,14 @@ func (oc *SecondaryL3Controller) addUpdateNodeEvent(node *kapi.Node, nSyncs *nod
 	var err error
 
 	if noHostSubnet := noHostSubnet(node); noHostSubnet {
-		err := oc.lsManager.AddNoHostSubnetSwitch(oc.Prefix + node.Name)
+		err := oc.lsManager.AddNoHostSubnetSwitch(oc.GetPrefix() + node.Name)
 		if err != nil {
 			return fmt.Errorf("nodeAdd: error adding noHost subnet for node %s: %w", node.Name, err)
 		}
 		return nil
 	}
 
-	klog.Infof("Adding or Updating Node %q network %s", node.Name, oc.NetName)
+	klog.Infof("Adding or Updating Node %q network %s", node.Name, oc.GetNetworkName())
 	if nSyncs.syncNode {
 		if hostSubnets, err = oc.addNode(node); err != nil {
 			oc.addNodeFailed.Store(node.Name, true)
@@ -651,7 +656,7 @@ func (oc *SecondaryL3Controller) addNode(node *kapi.Node) ([]*net.IPNet, error) 
 		return nil, err
 	}
 
-	hostSubnetsMap := map[string][]*net.IPNet{oc.NetName: hostSubnets}
+	hostSubnetsMap := map[string][]*net.IPNet{oc.GetNetworkName(): hostSubnets}
 	err = oc.UpdateNodeAnnotationWithRetry(node.Name, hostSubnetsMap, nil)
 	if err != nil {
 		return nil, err
@@ -702,7 +707,7 @@ func (oc *SecondaryL3Controller) syncPods(pods []interface{}) error {
 		if !ok {
 			return fmt.Errorf("spurious object in syncPods: %v", podInterface)
 		}
-		on, network, err := util.IsNetworkOnPod(pod, &oc.NetInfo)
+		on, network, err := util.IsNetworkOnPod(pod, oc.NetInfo)
 		if err != nil || !on {
 			continue
 		}
@@ -734,18 +739,18 @@ func (oc *SecondaryL3Controller) syncNodes(nodes []interface{}) error {
 	}
 
 	p := func(item *nbdb.LogicalSwitch) bool {
-		return len(item.OtherConfig) > 0 && item.ExternalIDs[types.NetworkNameExternalID] == oc.NetName
+		return len(item.OtherConfig) > 0 && item.ExternalIDs[types.NetworkNameExternalID] == oc.GetNetworkName()
 	}
 	nodeSwitches, err := libovsdbops.FindLogicalSwitchesWithPredicate(oc.nbClient, p)
 	if err != nil {
 		return fmt.Errorf("failed to get node logical switches which have other-config set: %v", err)
 	}
 	for _, nodeSwitch := range nodeSwitches {
-		if !strings.HasPrefix(nodeSwitch.Name, oc.Prefix) {
-			klog.Errorf("Node switch name %s unexpected, expect prefix %s", nodeSwitch.Name, oc.Prefix)
+		if !strings.HasPrefix(nodeSwitch.Name, oc.GetPrefix()) {
+			klog.Errorf("Node switch name %s unexpected, expect prefix %s", nodeSwitch.Name, oc.GetPrefix())
 			continue
 		}
-		nodeName := strings.Trim(nodeSwitch.Name, oc.Prefix)
+		nodeName := strings.Trim(nodeSwitch.Name, oc.GetPrefix())
 		if !foundNodes.Has(nodeName) {
 			if err := oc.deleteNode(nodeName); err != nil {
 				return fmt.Errorf("failed to delete node:%s, err:%v", nodeName, err)

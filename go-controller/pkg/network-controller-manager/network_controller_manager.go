@@ -43,11 +43,20 @@ func (_ ovnkubeMasterLeaderMetricsProvider) NewLeaderMetric() leaderelection.Swi
 type NetworkController interface {
 	Start(ctx context.Context) error
 	Stop(deleteLogicalEntities bool) error
+	GetNetworkName() string
+}
+
+type SecondaryNetworkController interface {
+	NetworkController
 	CompareNetConf(util.NetConfInfo) bool
+	AddNad(nadName string)
+	DeleteNad(nadName string) bool
+	CheckNadExist(nadName string) bool
 }
 
 // NetworkControllerManager structure is the object manages all controllers for all networks
 type NetworkControllerManager struct {
+	ovnClientset *util.OVNClientset
 	client       clientset.Interface
 	kube         kube.Interface
 	watchFactory *factory.WatchFactory
@@ -67,10 +76,7 @@ type NetworkControllerManager struct {
 	// used for leader election
 	identity string
 
-	// controller for all networks, key is netName of net-attach-def, value is *Controller
-	// this map is updated either at the very beginning of ovnkube-master when initializing the default controller
-	// or when net-attach-def is added/deleted. All these are serialized and no lock protection is needed
-	ovnControllers map[string]NetworkController
+	controllerNameManager
 }
 
 // Start waits until this process is the leader before starting master functions
@@ -119,7 +125,7 @@ func (cm *NetworkControllerManager) Start(ctx context.Context, stopChan <-chan s
 					return
 				}
 
-				if err = cm.Run(ctx); err != nil {
+				if err = cm.Run(ctx, stopChan); err != nil {
 					klog.Error(err)
 					cancel()
 					return
@@ -164,7 +170,8 @@ func NewNetworkControllerManager(ovnClient *util.OVNClientset, identity string, 
 	podRecorder := metrics.NewPodRecorder()
 
 	return &NetworkControllerManager{
-		client: ovnClient.KubeClient,
+		ovnClientset: ovnClient,
+		client:       ovnClient.KubeClient,
 		kube: &kube.Kube{
 			KClient:              ovnClient.KubeClient,
 			EIPClient:            ovnClient.EgressIPClient,
@@ -176,10 +183,13 @@ func NewNetworkControllerManager(ovnClient *util.OVNClientset, identity string, 
 		nbClient:     libovsdbOvnNBClient,
 		sbClient:     libovsdbOvnSBClient,
 		podRecorder:  &podRecorder,
+		wg:           wg,
+		identity:     identity,
 
-		wg:             wg,
-		identity:       identity,
-		ovnControllers: make(map[string]NetworkController),
+		controllerNameManager: controllerNameManager{
+			controllersByNadName: map[string]string{},
+			networkControllers:   map[string]SecondaryNetworkController{},
+		},
 	}
 }
 
@@ -248,22 +258,29 @@ func (cm *NetworkControllerManager) NewDefaultController() {
 	bnc := ovn.NewBaseNetworkController(cm.client, cm.kube, cm.watchFactory, cm.recorder, cm.nbClient,
 		cm.sbClient, cm.podRecorder, cm.SCTPSupport)
 	defaultController := ovn.NewDefaultController(bnc)
-	cm.ovnControllers[ovntypes.DefaultNetworkName] = defaultController
+	cm.defaultNetworkController = defaultController
 }
 
 // Run starts to handle all the secondary net-attach-def and creates and manages all the secondary controllers
-func (cm *NetworkControllerManager) Run(ctx context.Context) error {
-	if err := cm.watchFactory.Start(); err != nil {
+func (cm *NetworkControllerManager) Run(ctx context.Context, stopChan <-chan struct{}) error {
+	err := cm.watchFactory.Start()
+	if err != nil {
 		return err
 	}
 
-	defaultController, ok := cm.ovnControllers[ovntypes.DefaultNetworkName]
+	defaultController, ok := cm.networkControllers[ovntypes.DefaultNetworkName]
 	if ok {
-		return defaultController.Start(ctx)
+		err = defaultController.Start(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to start default network controller: %v", err)
+		}
 	}
 
-	// start the net-attach-def controller which handles net-attach-def events and
-	// creates/deletes/starts secondary controllers,
+	if config.OVNKubernetesFeature.EnableMultiNetwork {
+		klog.Infof("Multiple network supported, starts net-attach-def controller")
+		nadController := cm.NewNadController()
+		return nadController.Run(stopChan)
+	}
 	return nil
 }
 
@@ -271,7 +288,10 @@ func (cm *NetworkControllerManager) Run(ctx context.Context) error {
 func (cm *NetworkControllerManager) Stop() {
 	// stop the net-attach-def controller
 	// and for each Controller of secondary network, call oc.Stop()
-	for _, oc := range cm.ovnControllers {
-		_ = oc.Stop(false)
+	for _, oc := range cm.networkControllers {
+		err := oc.Stop(false)
+		if err != nil {
+			klog.Errorf("Failed to stop controller of network %s", oc.GetNetworkName())
+		}
 	}
 }
