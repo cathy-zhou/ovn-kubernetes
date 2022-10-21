@@ -42,6 +42,7 @@ func (_ ovnkubeMasterLeaderMetricsProvider) NewLeaderMetric() leaderelection.Swi
 
 // NetworkControllerManager structure is the object manages all controllers for all networks
 type NetworkControllerManager struct {
+	ovnClientset *util.OVNClientset
 	client       clientset.Interface
 	kube         kube.Interface
 	watchFactory *factory.WatchFactory
@@ -63,10 +64,7 @@ type NetworkControllerManager struct {
 	// used for leader election
 	identity string
 
-	// controller for all networks, key is netName of net-attach-def, value is *Controller
-	// this map is updated either at the very beginning of ovnkube-master when initializing the default controller
-	// or when net-attach-def is added/deleted. All these are serialized and no lock protection is needed
-	ovnControllers map[string]ovn.Controller
+	controllerNameManager
 }
 
 // Start waits until this process is the leader before starting master functions
@@ -160,7 +158,8 @@ func NewNetworkControllerManager(ovnClient *util.OVNClientset, identity string, 
 	podRecorder := metrics.NewPodRecorder()
 
 	return &NetworkControllerManager{
-		client: ovnClient.KubeClient,
+		ovnClientset: ovnClient,
+		client:       ovnClient.KubeClient,
 		kube: &kube.Kube{
 			KClient:              ovnClient.KubeClient,
 			EIPClient:            ovnClient.EgressIPClient,
@@ -172,11 +171,14 @@ func NewNetworkControllerManager(ovnClient *util.OVNClientset, identity string, 
 		nbClient:     libovsdbOvnNBClient,
 		sbClient:     libovsdbOvnSBClient,
 		podRecorder:  &podRecorder,
+		wg:           wg,
+		stopChan:     stopChan,
+		identity:     identity,
 
-		wg:             wg,
-		stopChan:       stopChan,
-		identity:       identity,
-		ovnControllers: make(map[string]ovn.Controller),
+		controllerNameManager: controllerNameManager{
+			controllersByNadName: map[string]string{},
+			ovnControllers:       map[string]ovn.Controller{},
+		},
 	}
 }
 
@@ -250,17 +252,24 @@ func (cm *NetworkControllerManager) NewDefaultController() {
 
 // Run starts to handle all the secondary net-attach-def and creates and manages all the secondary controllers
 func (cm *NetworkControllerManager) Run(ctx context.Context) error {
-	if err := cm.watchFactory.Start(); err != nil {
+	err := cm.watchFactory.Start()
+	if err != nil {
 		return err
 	}
 
 	defaultController, ok := cm.ovnControllers[ovntypes.DefaultNetworkName]
 	if ok {
-		return defaultController.Start(ctx)
+		err = defaultController.Start(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to start default network controller: %v", err)
+		}
 	}
 
-	// start the net-attach-def controller which handles net-attach-def events and
-	// creates/deletes/starts secondary controllers,
+	if config.OVNKubernetesFeature.EnableMultiNetwork {
+		klog.Infof("Multiple network supported, starts net-attach-def controller")
+		nadController := cm.NewNadController()
+		return nadController.Run()
+	}
 	return nil
 }
 
@@ -269,6 +278,9 @@ func (cm *NetworkControllerManager) Stop() {
 	// stop the net-attach-def controller
 	// and for each Controller of secondary network, call oc.Stop()
 	for _, oc := range cm.ovnControllers {
-		_ = oc.Stop(false)
+		err := oc.Stop(false)
+		if err != nil {
+			klog.Errorf("Failed to stop controller of network %s", oc.GetNetInfo().GetNetworkName())
+		}
 	}
 }

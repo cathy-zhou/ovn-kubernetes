@@ -256,6 +256,11 @@ func (oc *DefaultNetworkController) CompareNetConf(netConfInfo util.NetConfInfo)
 	return oc.Compare(netConfInfo)
 }
 
+// GetNetInfo returns NetInfo of this controller
+func (oc *DefaultNetworkController) GetNetInfo() *util.NetInfo {
+	return &oc.NetInfo
+}
+
 // RecordAddEvent records add event for the specified object
 func (oc *DefaultNetworkController) RecordAddEvent(eventObjType reflect.Type, obj interface{}) {
 	switch eventObjType {

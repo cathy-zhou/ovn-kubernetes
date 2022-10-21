@@ -79,6 +79,7 @@ type Controller interface {
 	Start(ctx context.Context) error
 	Stop(deleleLogicalEntities bool) error
 	CompareNetConf(util.NetConfInfo) bool
+	GetNetInfo() *util.NetInfo
 
 	GetInternalCacheEntry(eventObjType reflect.Type, obj interface{}) interface{}
 

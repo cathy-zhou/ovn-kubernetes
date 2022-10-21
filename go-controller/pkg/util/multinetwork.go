@@ -76,7 +76,7 @@ func (nInfo *NetInfo) DeleteNad(nadName string) bool {
 }
 
 // CheckNadExist returns true if the given nad exists, used
-// to check if the network needs to be plumbed over
+// to check if the network is requested to be plumbed in a Pod
 func (nInfo *NetInfo) CheckNadExist(nadName string) bool {
 	_, ok := nInfo.NadNames.Load(nadName)
 	return ok

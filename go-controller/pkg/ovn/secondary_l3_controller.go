@@ -60,6 +60,7 @@ type SecondaryL3Controller struct {
 	nodeClusterRouterPortFailed sync.Map
 
 	//podRecorder metrics.PodRecorder
+	isStarted bool
 }
 
 // NewSecondaryL3Controller create a new OVN controller for the given secondary l3 nad
@@ -104,6 +105,11 @@ func (oc *SecondaryL3Controller) CompareNetConf(netConfInfo util.NetConfInfo) bo
 	return oc.Compare(netConfInfo)
 }
 
+// GetNetInfo returns netInfo of this controller
+func (oc *SecondaryL3Controller) GetNetInfo() *util.NetInfo {
+	return &oc.NetInfo
+}
+
 func (oc *SecondaryL3Controller) RecordAddEvent(eventObjType reflect.Type, obj interface{}) {
 	// TBD
 	//switch eventObjType {
@@ -145,11 +151,21 @@ func (oc *SecondaryL3Controller) RecordErrorEvent(eventObjType reflect.Type, eve
 }
 
 func (oc *SecondaryL3Controller) Start(ctx context.Context) error {
-	if err := oc.StartClusterMaster(); err != nil {
+	if oc.isStarted {
+		return nil
+	}
+
+	err := oc.StartClusterMaster()
+	if err != nil {
 		return err
 	}
 
-	return oc.Run()
+	err = oc.Run()
+	if err != nil {
+		return err
+	}
+	oc.isStarted = true
+	return nil
 }
 
 func (oc *SecondaryL3Controller) Stop(deleteLogicalEntities bool) error {
