@@ -243,10 +243,12 @@ type SecondaryLayer3NetworkController struct {
 	// Node-specific syncMaps used by node event handler
 	addNodeFailed               sync.Map
 	nodeClusterRouterPortFailed sync.Map
+
+	isStarted bool
 }
 
-// NewSecondaryLayer3Controller create a new OVN controller for the given secondary l3 nad
-func NewSecondaryLayer3Controller(bnc *BaseNetworkController, nInfo util.NetInfo,
+// NewSecondaryLayer3NetworkController create a new OVN controller for the given secondary l3 nad
+func NewSecondaryLayer3NetworkController(bnc *BaseNetworkController, nInfo util.NetInfo,
 	netconfInfo *util.Layer3NetConfInfo) (*SecondaryLayer3NetworkController, error) {
 	stopChan := make(chan struct{})
 	oc := &SecondaryLayer3NetworkController{
@@ -267,13 +269,12 @@ func NewSecondaryLayer3Controller(bnc *BaseNetworkController, nInfo util.NetInfo
 }
 
 func (oc *SecondaryLayer3NetworkController) initRetryFramework() {
-	// Init the retry framework for pods, namespaces, nodes, network policies, egress firewalls,
-	// egress IP (and dependent namespaces, pods, nodes), cloud private ip config.
+	// Init the retry framework for pods, nodes,
 	oc.retryPods = oc.newRetryFrameworkWithParameters(factory.PodType, nil, nil)
 	oc.retryNodes = oc.newRetryFrameworkWithParameters(factory.NodeType, nil, nil)
 }
 
-// newRetryFrameworkMasterWithParameters builds and returns a retry framework for the input resource
+// newRetryFrameworkWithParameters builds and returns a retry framework for the input resource
 // type and assigns all ovnk-master-specific function attributes in the returned struct;
 func (oc *SecondaryLayer3NetworkController) newRetryFrameworkWithParameters(
 	objectType reflect.Type,
@@ -300,14 +301,26 @@ func (oc *SecondaryLayer3NetworkController) newRetryFrameworkWithParameters(
 	return r
 }
 
+// Start starts the secondary layer3 controller, handles all events and creates all needed logical entities
 func (oc *SecondaryLayer3NetworkController) Start(ctx context.Context) error {
-	if err := oc.Init(); err != nil {
+	if oc.isStarted {
+		return nil
+	}
+
+	err := oc.Init()
+	if err != nil {
 		return err
 	}
 
-	return oc.Run()
+	err = oc.Run()
+	if err != nil {
+		return err
+	}
+	oc.isStarted = true
+	return nil
 }
 
+// Stop gracefully stops the controller, and delete all logical entities for this network if requested
 func (oc *SecondaryLayer3NetworkController) Stop(deleteLogicalEntities bool) error {
 	oc.wg.Wait()
 	close(oc.stopChan)
@@ -432,8 +445,8 @@ func (oc *SecondaryLayer3NetworkController) getPortInfo(pod *kapi.Pod) *lpInfo {
 
 func (oc *SecondaryLayer3NetworkController) Init() error {
 	klog.Infof("Allocating subnets")
-	l3NetConfInfo := oc.NetConfInfo.(*util.Layer3NetConfInfo)
-	if err := oc.masterSubnetAllocator.InitRanges(l3NetConfInfo.ClusterSubnets); err != nil {
+	layer3NetConfInfo := oc.NetConfInfo.(*util.Layer3NetConfInfo)
+	if err := oc.masterSubnetAllocator.InitRanges(layer3NetConfInfo.ClusterSubnets); err != nil {
 		klog.Errorf("Failed to initialize host subnet allocator ranges: %v", err)
 		return err
 	}

@@ -404,8 +404,8 @@ func (nci *NetworkControllerInfo) addRoutesGatewayIP(pod *kapi.Pod, network *net
 				return err
 			}
 			gatewayIPnet := util.GetNodeGatewayIfAddr(nodeSubnet)
-			l3NetConfInfo := nci.NetConfInfo.(*util.Layer3NetConfInfo)
-			for _, clusterSubnet := range l3NetConfInfo.ClusterSubnets {
+			layer3NetConfInfo := nci.NetConfInfo.(*util.Layer3NetConfInfo)
+			for _, clusterSubnet := range layer3NetConfInfo.ClusterSubnets {
 				if isIPv6 == utilnet.IsIPv6CIDR(clusterSubnet.CIDR) {
 					podAnnotation.Routes = append(podAnnotation.Routes, util.PodRoute{
 						Dest:    clusterSubnet.CIDR,

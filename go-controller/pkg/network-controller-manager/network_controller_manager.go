@@ -46,8 +46,17 @@ type NetworkController interface {
 	GetNetworkName() string
 }
 
+type SecondaryNetworkController interface {
+	NetworkController
+	CompareNetConf(util.NetConfInfo) bool
+	AddNad(nadName string)
+	DeleteNad(nadName string) bool
+	IsNadExist(nadName string) bool
+}
+
 // NetworkControllerManager structure is the object manages all controllers for all networks
 type NetworkControllerManager struct {
+	ovnClientset *util.OVNClientset
 	client       clientset.Interface
 	kube         kube.Interface
 	watchFactory *factory.WatchFactory
@@ -70,10 +79,7 @@ type NetworkControllerManager struct {
 	// used for leader election
 	identity string
 
-	// controller for all networks, key is netName of net-attach-def, value is *Controller
-	// this map is updated either at the very beginning of ovnkube-master when initializing the default controller
-	// or when net-attach-def is added/deleted. All these are serialized and no lock protection is needed
-	networkControllers map[string]NetworkController
+	controllerNameManager
 }
 
 // Start waits until this process is the leader before starting master functions
@@ -167,23 +173,27 @@ func NewNetworkControllerManager(ovnClient *util.OVNClientset, identity string, 
 	podRecorder := metrics.NewPodRecorder()
 
 	return &NetworkControllerManager{
-		client: ovnClient.KubeClient,
+		ovnClientset: ovnClient,
+		client:       ovnClient.KubeClient,
 		kube: &kube.Kube{
 			KClient:              ovnClient.KubeClient,
 			EIPClient:            ovnClient.EgressIPClient,
 			EgressFirewallClient: ovnClient.EgressFirewallClient,
 			CloudNetworkClient:   ovnClient.CloudNetworkClient,
 		},
-		stopChan:           make(chan struct{}),
-		watchFactory:       wf,
-		recorder:           recorder,
-		nbClient:           libovsdbOvnNBClient,
-		sbClient:           libovsdbOvnSBClient,
-		podRecorder:        &podRecorder,
-		aclLoggingEnabled:  true,
-		wg:                 wg,
-		identity:           identity,
-		networkControllers: make(map[string]NetworkController),
+		stopChan:          make(chan struct{}),
+		watchFactory:      wf,
+		recorder:          recorder,
+		nbClient:          libovsdbOvnNBClient,
+		sbClient:          libovsdbOvnSBClient,
+		podRecorder:       &podRecorder,
+		aclLoggingEnabled: true,
+		wg:                wg,
+		identity:          identity,
+		controllerNameManager: controllerNameManager{
+			controllersByNadName: map[string]string{},
+			networkControllers:   map[string]SecondaryNetworkController{},
+		},
 	}
 }
 
@@ -284,7 +294,7 @@ func (cm *NetworkControllerManager) NewDefaultNetworkController() {
 	bnc := ovn.NewBaseNetworkController(cm.client, cm.kube, cm.watchFactory, cm.recorder, cm.nbClient,
 		cm.sbClient, cm.podRecorder, cm.SCTPSupport, cm.aclLoggingEnabled)
 	defaultController := ovn.NewDefaultNetworkController(bnc)
-	cm.networkControllers[ovntypes.DefaultNetworkName] = defaultController
+	cm.defaultNetworkController = defaultController
 }
 
 // Run starts to handle all the secondary net-attach-def and creates and manages all the secondary controllers
@@ -310,8 +320,11 @@ func (cm *NetworkControllerManager) Run(ctx context.Context) error {
 		}
 	}
 
-	// start the net-attach-def controller which handles net-attach-def events and
-	// creates/deletes/starts secondary controllers,
+	if config.OVNKubernetesFeature.EnableMultiNetwork {
+		klog.Infof("Multiple network supported, starts net-attach-def controller")
+		nadController := cm.NewNadController()
+		return nadController.Run(cm.stopChan)
+	}
 	return nil
 }
 
