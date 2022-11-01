@@ -85,6 +85,11 @@ type Controller interface {
 	RecordErrorEvent(eventObjType reflect.Type, err error, reason string, obj interface{})
 }
 
+type namespaceManager struct {
+	namespaces      map[string]*namespaceInfo
+	namespacesMutex sync.Mutex
+}
+
 const (
 	// TCP is the constant string for the string "TCP"
 	TCP = "TCP"
@@ -126,7 +131,7 @@ func (oc *DefaultNetworkController) Start(ctx context.Context) error {
 	return oc.Run(ctx, oc.wg)
 }
 
-// Start gracefully stop the controller
+// Stop gracefully stop the controller
 func (oc *DefaultNetworkController) Stop() {
 	oc.wg.Wait()
 	close(oc.stopChan)

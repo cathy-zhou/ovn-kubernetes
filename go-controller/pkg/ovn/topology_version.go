@@ -33,21 +33,31 @@ func (oc *DefaultNetworkController) ovnTopologyCleanup() error {
 	return err
 }
 
+func (cc *ControllerConnection) updateL3TopologyVersion() error {
+	currentTopologyVersion := strconv.Itoa(ovntypes.OvnCurrentTopologyVersion)
+	logicalRouterName := ovntypes.OVNClusterRouter
+	logicalRouter := nbdb.LogicalRouter{
+		Name:        logicalRouterName,
+		ExternalIDs: map[string]string{"k8s-ovn-topo-version": currentTopologyVersion},
+	}
+	err := libovsdbops.UpdateLogicalRouterSetExternalIDs(cc.nbClient, &logicalRouter)
+	if err != nil {
+		return fmt.Errorf("failed to generate set topology version, err: %v", err)
+	}
+	klog.Infof("Updated Logical_Router %s topology version to %s", logicalRouterName, currentTopologyVersion)
+	return nil
+}
+
 // reportTopologyVersion saves the topology version to two places:
 // - an ExternalID on the ovn_cluster_router LogicalRouter in nbdb
 // - a ConfigMap. This is used by nodes to determine the cluster's topology
 func (oc *DefaultNetworkController) reportTopologyVersion(ctx context.Context) error {
-	currentTopologyVersion := strconv.Itoa(ovntypes.OvnCurrentTopologyVersion)
-	logicalRouter := nbdb.LogicalRouter{
-		Name:        ovntypes.OVNClusterRouter,
-		ExternalIDs: map[string]string{"k8s-ovn-topo-version": currentTopologyVersion},
-	}
-	err := libovsdbops.UpdateLogicalRouterSetExternalIDs(oc.nbClient, &logicalRouter)
+	err := oc.updateL3TopologyVersion()
 	if err != nil {
-		return fmt.Errorf("failed to generate set topology version in OVN, err: %v", err)
+		return err
 	}
-	klog.Infof("Updated Logical_Router %s topology version to %s", ovntypes.OVNClusterRouter, currentTopologyVersion)
 
+	currentTopologyVersion := strconv.Itoa(ovntypes.OvnCurrentTopologyVersion)
 	// Report topology version in a ConfigMap
 	// (we used to report this via annotations on our Node)
 	cm := corev1apply.ConfigMap(ovntypes.OvnK8sStatusCMName, globalconfig.Kubernetes.OVNConfigNamespace)

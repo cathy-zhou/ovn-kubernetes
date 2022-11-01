@@ -140,8 +140,10 @@ func (oc *DefaultNetworkController) addPodToNamespace(ns string, ips []*net.IPNe
 	return oc.getRoutingExternalGWs(nsInfo), oc.getRoutingPodGWs(nsInfo), ops, nil
 }
 
-func (oc *DefaultNetworkController) deletePodFromNamespace(ns string, podIfAddrs []*net.IPNet, portUUID string) ([]ovsdb.Operation, error) {
-	nsInfo, nsUnlock := oc.getNamespaceLocked(ns, true)
+func (cc *ControllerConnection) deletePodFromNamespace(nsm *namespaceManager, ns string,
+	podIfAddrs []*net.IPNet, portUUID string, multicastSupport bool) ([]ovsdb.Operation, error) {
+	// for secondary network, namespace may be nil
+	nsInfo, nsUnlock := nsm.getNamespaceLocked(ns, true)
 	if nsInfo == nil {
 		return nil, nil
 	}
@@ -155,8 +157,8 @@ func (oc *DefaultNetworkController) deletePodFromNamespace(ns string, podIfAddrs
 	}
 
 	// Remove the port from the multicast allow policy.
-	if oc.multicastSupport && nsInfo.multicastEnabled && len(portUUID) > 0 {
-		if err = podDeleteAllowMulticastPolicy(oc.nbClient, ns, portUUID); err != nil {
+	if multicastSupport && nsInfo.multicastEnabled && len(portUUID) > 0 {
+		if err = podDeleteAllowMulticastPolicy(cc.nbClient, ns, portUUID); err != nil {
 			return nil, err
 		}
 	}
@@ -278,7 +280,7 @@ func (oc *DefaultNetworkController) updateNamespace(old, newer *kapi.Namespace) 
 	var errors []error
 	klog.Infof("[%s] updating namespace", old.Name)
 
-	nsInfo, nsUnlock := oc.getNamespaceLocked(old.Name, false)
+	nsInfo, nsUnlock := oc.namespaceManager.getNamespaceLocked(old.Name, false)
 	if nsInfo == nil {
 		klog.Warningf("Update event for unknown namespace %q", old.Name)
 		return nil
@@ -393,7 +395,7 @@ func (oc *DefaultNetworkController) updateNamespace(old, newer *kapi.Namespace) 
 func (oc *DefaultNetworkController) deleteNamespace(ns *kapi.Namespace) error {
 	klog.Infof("[%s] deleting namespace", ns.Name)
 
-	nsInfo := oc.deleteNamespaceLocked(ns.Name)
+	nsInfo := oc.namespaceManager.deleteNamespaceLocked(oc.stopChan, ns.Name)
 	if nsInfo == nil {
 		return nil
 	}
@@ -410,14 +412,17 @@ func (oc *DefaultNetworkController) deleteNamespace(ns *kapi.Namespace) error {
 
 // getNamespaceLocked locks namespacesMutex, looks up ns, and (if found), returns it with
 // its mutex locked. If ns is not known, nil will be returned
-func (oc *DefaultNetworkController) getNamespaceLocked(ns string, readOnly bool) (*namespaceInfo, func()) {
+func (nsm *namespaceManager) getNamespaceLocked(ns string, readOnly bool) (*namespaceInfo, func()) {
+	if nsm == nil {
+		return nil, nil
+	}
 	// Only hold namespacesMutex while reading/modifying oc.namespaces. In particular,
 	// we drop namespacesMutex while trying to claim nsInfo.Mutex, because something
 	// else might have locked the nsInfo and be doing something slow with it, and we
 	// don't want to block all access to oc.namespaces while that's happening.
-	oc.namespacesMutex.Lock()
-	nsInfo := oc.namespaces[ns]
-	oc.namespacesMutex.Unlock()
+	nsm.namespacesMutex.Lock()
+	nsInfo := nsm.namespaces[ns]
+	nsm.namespacesMutex.Unlock()
 
 	if nsInfo == nil {
 		return nil, nil
@@ -431,9 +436,9 @@ func (oc *DefaultNetworkController) getNamespaceLocked(ns string, readOnly bool)
 		nsInfo.Lock()
 	}
 	// Check that the namespace wasn't deleted while we were waiting for the lock
-	oc.namespacesMutex.Lock()
-	defer oc.namespacesMutex.Unlock()
-	if nsInfo != oc.namespaces[ns] {
+	nsm.namespacesMutex.Lock()
+	defer nsm.namespacesMutex.Unlock()
+	if nsInfo != nsm.namespaces[ns] {
 		unlockFunc()
 		return nil, nil
 	}
@@ -517,21 +522,21 @@ func (oc *DefaultNetworkController) ensureNamespaceLocked(ns string, readOnly bo
 
 // deleteNamespaceLocked locks namespacesMutex, finds and deletes ns, and returns the
 // namespace, locked.
-func (oc *DefaultNetworkController) deleteNamespaceLocked(ns string) *namespaceInfo {
+func (nsm *namespaceManager) deleteNamespaceLocked(stopChan chan struct{}, ns string) *namespaceInfo {
 	// The locking here is the same as in getNamespaceLocked
 
-	oc.namespacesMutex.Lock()
-	nsInfo := oc.namespaces[ns]
-	oc.namespacesMutex.Unlock()
+	nsm.namespacesMutex.Lock()
+	nsInfo := nsm.namespaces[ns]
+	nsm.namespacesMutex.Unlock()
 
 	if nsInfo == nil {
 		return nil
 	}
 	nsInfo.Lock()
 
-	oc.namespacesMutex.Lock()
-	defer oc.namespacesMutex.Unlock()
-	if nsInfo != oc.namespaces[ns] {
+	nsm.namespacesMutex.Lock()
+	defer nsm.namespacesMutex.Unlock()
+	if nsInfo != nsm.namespaces[ns] {
 		nsInfo.Unlock()
 		return nil
 	}
@@ -546,12 +551,12 @@ func (oc *DefaultNetworkController) deleteNamespaceLocked(ns string) *namespaceI
 		addressSet := nsInfo.addressSet
 		go func() {
 			select {
-			case <-oc.stopChan:
+			case <-stopChan:
 				return
 			case <-time.After(20 * time.Second):
 				// Check to see if the NS was re-added in the meanwhile. If so,
 				// only delete if the new NS's AddressSet shouldn't exist.
-				nsInfo, nsUnlock := oc.getNamespaceLocked(ns, true)
+				nsInfo, nsUnlock := nsm.getNamespaceLocked(ns, true)
 				if nsInfo != nil {
 					defer nsUnlock()
 					if nsInfo.addressSet != nil {
@@ -567,7 +572,7 @@ func (oc *DefaultNetworkController) deleteNamespaceLocked(ns string) *namespaceI
 			}
 		}()
 	}
-	delete(oc.namespaces, ns)
+	delete(nsm.namespaces, ns)
 
 	return nsInfo
 }

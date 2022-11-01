@@ -61,8 +61,7 @@ type DefaultNetworkController struct {
 	// oc.waitForNamespaceLocked() to read this map, and oc.createNamespaceLocked()
 	// or oc.deleteNamespaceLocked() to modify it. namespacesMutex is only held
 	// from inside those functions.
-	namespaces      map[string]*namespaceInfo
-	namespacesMutex sync.Mutex
+	namespaceManager
 
 	externalGWCache map[ktypes.NamespacedName]*externalRouteInfo
 	exGWCacheMutex  sync.RWMutex
@@ -196,8 +195,7 @@ func newDefaultControllerCommon(bnc *BaseNetworkController,
 		hybridOverlaySubnetAllocator: hybridOverlaySubnetAllocator,
 		lsManager:                    lsm.NewLogicalSwitchManager(),
 		logicalPortCache:             newPortCache(defaultStopChan),
-		namespaces:                   make(map[string]*namespaceInfo),
-		namespacesMutex:              sync.Mutex{},
+		namespaceManager:             namespaceManager{namespaces: make(map[string]*namespaceInfo), namespacesMutex: sync.Mutex{}},
 		externalGWCache:              make(map[ktypes.NamespacedName]*externalRouteInfo),
 		exGWCacheMutex:               sync.RWMutex{},
 		addressSetFactory:            addressSetFactory,
