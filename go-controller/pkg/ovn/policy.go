@@ -1192,7 +1192,7 @@ func (oc *DefaultNetworkController) addNetworkPolicy(policy *knet.NetworkPolicy)
 
 	// 1. save required namespace information to use for netpol create,
 	npKey := getPolicyKey(policy)
-	nsInfo, nsUnlock := oc.getNamespaceLocked(policy.Namespace, true)
+	nsInfo, nsUnlock := oc.namespaceManager.getNamespaceLocked(policy.Namespace, true)
 	if nsInfo == nil {
 		return fmt.Errorf("unable to get namespace for network policy %s: namespace doesn't exist", npKey)
 	}
@@ -1229,7 +1229,7 @@ func (oc *DefaultNetworkController) addNetworkPolicy(policy *knet.NetworkPolicy)
 	klog.Infof("Create network policy %s resources completed, update namespace loglevel", npKey)
 
 	// 3. lock namespace
-	nsInfo, nsUnlock = oc.getNamespaceLocked(policy.Namespace, false)
+	nsInfo, nsUnlock = oc.namespaceManager.getNamespaceLocked(policy.Namespace, false)
 	if nsInfo == nil {
 		// namespace was deleted while we were adding network policy,
 		// try to cleanup network policy
@@ -1288,7 +1288,7 @@ func (oc *DefaultNetworkController) deleteNetworkPolicy(policy *knet.NetworkPoli
 	klog.Infof("Deleting network policy %s", npKey)
 
 	// First lock and update namespace
-	nsInfo, nsUnlock := oc.getNamespaceLocked(policy.Namespace, false)
+	nsInfo, nsUnlock := oc.namespaceManager.getNamespaceLocked(policy.Namespace, false)
 	if nsInfo != nil {
 		// unsubscribe from namespace events
 		delete(nsInfo.relatedNetworkPolicies, npKey)
@@ -1627,7 +1627,7 @@ func (oc *DefaultNetworkController) peerNamespaceUpdate(np *networkPolicy, gp *g
 	// Lock namespace before locking np
 	// this is to make sure we don't miss update acl loglevel event for namespace.
 	// The order of locking is strict: namespace first, then network policy, otherwise deadlock may happen
-	nsInfo, nsUnlock := oc.getNamespaceLocked(np.namespace, true)
+	nsInfo, nsUnlock := oc.namespaceManager.getNamespaceLocked(np.namespace, true)
 	var aclLogging *ACLLoggingLevels
 	if nsInfo == nil {
 		aclLogging = &ACLLoggingLevels{
