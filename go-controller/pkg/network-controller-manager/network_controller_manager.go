@@ -70,7 +70,7 @@ type NetworkControllerManager struct {
 	// controller for all networks, key is netName of net-attach-def, value is *Controller
 	// this map is updated either at the very beginning of ovnkube-master when initializing the default controller
 	// or when net-attach-def is added/deleted. All these are serialized and no lock protection is needed
-	ovnControllers map[string]NetworkController
+	networkControllers map[string]NetworkController
 }
 
 // Start waits until this process is the leader before starting master functions
@@ -178,9 +178,9 @@ func NewNetworkControllerManager(ovnClient *util.OVNClientset, identity string, 
 		sbClient:     libovsdbOvnSBClient,
 		podRecorder:  &podRecorder,
 
-		wg:             wg,
-		identity:       identity,
-		ovnControllers: make(map[string]NetworkController),
+		wg:                 wg,
+		identity:           identity,
+		networkControllers: make(map[string]NetworkController),
 	}
 }
 
@@ -244,7 +244,7 @@ func (cm *NetworkControllerManager) NewDefaultNetworkController() {
 	bnc := ovn.NewBaseNetworkController(cm.client, cm.kube, cm.watchFactory, cm.recorder, cm.nbClient,
 		cm.sbClient, cm.podRecorder, cm.SCTPSupport)
 	defaultController := ovn.NewDefaultNetworkController(bnc)
-	cm.ovnControllers[ovntypes.DefaultNetworkName] = defaultController
+	cm.networkControllers[ovntypes.DefaultNetworkName] = defaultController
 }
 
 // Run starts to handle all the secondary net-attach-def and creates and manages all the secondary controllers
@@ -257,13 +257,17 @@ func (cm *NetworkControllerManager) Run(ctx context.Context) error {
 	}
 	cm.podRecorder.Run(cm.sbClient, cm.stopChan)
 
-	if err := cm.watchFactory.Start(); err != nil {
+	err := cm.watchFactory.Start()
+	if err != nil {
 		return err
 	}
 
-	defaultController, ok := cm.ovnControllers[ovntypes.DefaultNetworkName]
+	defaultController, ok := cm.networkControllers[ovntypes.DefaultNetworkName]
 	if ok {
-		return defaultController.Start(ctx)
+		err = defaultController.Start(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to start default network controller: %v", err)
+		}
 	}
 
 	// start the net-attach-def controller which handles net-attach-def events and
@@ -275,7 +279,7 @@ func (cm *NetworkControllerManager) Run(ctx context.Context) error {
 func (cm *NetworkControllerManager) Stop() {
 	// stop the net-attach-def controller
 	// and for each Controller of secondary network, call oc.Stop()
-	for _, oc := range cm.ovnControllers {
+	for _, oc := range cm.networkControllers {
 		oc.Stop()
 	}
 	close(cm.stopChan)

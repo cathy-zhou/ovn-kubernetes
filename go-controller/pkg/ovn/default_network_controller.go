@@ -60,12 +60,7 @@ type DefaultNetworkController struct {
 	// A cache of all logical ports known to the controller
 	logicalPortCache *portCache
 
-	// Info about known namespaces. You must use oc.getNamespaceLocked() or
-	// oc.waitForNamespaceLocked() to read this map, and oc.createNamespaceLocked()
-	// or oc.deleteNamespaceLocked() to modify it. namespacesMutex is only held
-	// from inside those functions.
-	namespaces      map[string]*namespaceInfo
-	namespacesMutex sync.Mutex
+	namespaceManager
 
 	externalGWCache map[ktypes.NamespacedName]*externalRouteInfo
 	exGWCacheMutex  sync.RWMutex
@@ -199,13 +194,15 @@ func newDefaultNetworkControllerCommon(bnc *BaseNetworkController,
 		hybridOverlaySubnetAllocator: hybridOverlaySubnetAllocator,
 		lsManager:                    lsm.NewLogicalSwitchManager(),
 		logicalPortCache:             newPortCache(defaultStopChan),
-		namespaces:                   make(map[string]*namespaceInfo),
-		namespacesMutex:              sync.Mutex{},
-		externalGWCache:              make(map[ktypes.NamespacedName]*externalRouteInfo),
-		exGWCacheMutex:               sync.RWMutex{},
-		addressSetFactory:            addressSetFactory,
-		networkPolicies:              syncmap.NewSyncMap[*networkPolicy](),
-		sharedNetpolPortGroups:       syncmap.NewSyncMap[*defaultDenyPortGroups](),
+		namespaceManager: namespaceManager{
+			namespaces:      make(map[string]*namespaceInfo),
+			namespacesMutex: sync.Mutex{},
+		},
+		externalGWCache:        make(map[ktypes.NamespacedName]*externalRouteInfo),
+		exGWCacheMutex:         sync.RWMutex{},
+		addressSetFactory:      addressSetFactory,
+		networkPolicies:        syncmap.NewSyncMap[*networkPolicy](),
+		sharedNetpolPortGroups: syncmap.NewSyncMap[*defaultDenyPortGroups](),
 		eIPC: egressIPController{
 			egressIPAssignmentMutex:           &sync.Mutex{},
 			podAssignmentMutex:                &sync.Mutex{},
@@ -300,7 +297,7 @@ func (oc *DefaultNetworkController) Stop() {
 	close(oc.stopChan)
 }
 
-// Init runs a subnet IPAM and the network controller that watches arrival/departure
+// Init runs a subnet IPAM and a controller that watches arrival/departure
 // of nodes in the cluster
 // On an addition to the cluster (node create), a new subnet is created for it that will translate
 // to creation of a logical switch (done by the node, but could be created here at the master process too)
