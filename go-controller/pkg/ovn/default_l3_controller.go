@@ -539,6 +539,7 @@ func (oc *DefaultL3Controller) getPortInfo(pod *kapi.Pod) *lpInfo {
 	}
 	return portInfo
 }
+
 func (oc *DefaultL3Controller) GetInternalCacheEntry(eventObjType reflect.Type, obj interface{}) interface{} {
 	switch eventObjType {
 	case factory.PodType:

@@ -95,6 +95,11 @@ type Controller interface {
 	RecordErrorEvent(eventObjType reflect.Type, err error, reason string, obj interface{})
 }
 
+type namespaceManager struct {
+	namespaces      map[string]*namespaceInfo
+	namespacesMutex sync.Mutex
+}
+
 // DefaultL3Controller structure is the object which holds the controls for starting
 // and reacting upon the watched resources (e.g. pods, endpoints) for default l3 network
 type DefaultL3Controller struct {
@@ -118,12 +123,11 @@ type DefaultL3Controller struct {
 	// A cache of all logical ports known to the controller
 	logicalPortCache *portCache
 
-	// Info about known namespaces. You must use oc.getNamespaceLocked() or
-	// oc.waitForNamespaceLocked() to read this map, and oc.createNamespaceLocked()
-	// or oc.deleteNamespaceLocked() to modify it. namespacesMutex is only held
+	// Info about known namespaces. You must use getNamespaceLocked() or
+	// oc.ensureNamespaceLocked() to read this map, and oc.createNamespaceLocked()
+	// or deleteNamespaceLocked() to modify it. namespacesMutex is only held
 	// from inside those functions.
-	namespaces      map[string]*namespaceInfo
-	namespacesMutex sync.Mutex
+	namespaceManager
 
 	externalGWCache map[ktypes.NamespacedName]*externalRouteInfo
 	exGWCacheMutex  sync.RWMutex
@@ -245,9 +249,9 @@ func getPodNamespacedName(pod *kapi.Pod) string {
 }
 
 func NewControllerInfo(client clientset.Interface, kube kube.Interface, wf *factory.WatchFactory,
-	recorder record.EventRecorder, nbClient libovsdbclient.Client,
-	sbClient libovsdbclient.Client, podRecorder *metrics.PodRecorder, SCTPSupport bool) controllerInfo {
-	return controllerInfo{
+	recorder record.EventRecorder, nbClient libovsdbclient.Client, sbClient libovsdbclient.Client,
+	podRecorder *metrics.PodRecorder, SCTPSupport bool) *controllerInfo {
+	return &controllerInfo{
 		client:       client,
 		kube:         kube,
 		watchFactory: wf,
@@ -261,7 +265,7 @@ func NewControllerInfo(client clientset.Interface, kube kube.Interface, wf *fact
 
 // NewDefaultL3Controller creates a new OVN controller for creating logical network
 // infrastructure and policy for default l3 network
-func NewDefaultL3Controller(cInfo controllerInfo,
+func NewDefaultL3Controller(cInfo *controllerInfo,
 	defaultStopChan chan struct{}, defaultWg *sync.WaitGroup,
 	addressSetFactory addressset.AddressSetFactory) *DefaultL3Controller {
 
@@ -275,15 +279,14 @@ func NewDefaultL3Controller(cInfo controllerInfo,
 		hybridOverlaySubnetAllocator = subnetallocator.NewHostSubnetAllocator()
 	}
 	oc := &DefaultL3Controller{
-		controllerInfo:               cInfo,
+		controllerInfo:               *cInfo,
 		stopChan:                     defaultStopChan,
 		wg:                           defaultWg,
 		masterSubnetAllocator:        subnetallocator.NewHostSubnetAllocator(),
 		hybridOverlaySubnetAllocator: hybridOverlaySubnetAllocator,
 		lsManager:                    lsm.NewLogicalSwitchManager(),
 		logicalPortCache:             newPortCache(defaultStopChan),
-		namespaces:                   make(map[string]*namespaceInfo),
-		namespacesMutex:              sync.Mutex{},
+		namespaceManager:             namespaceManager{namespaces: make(map[string]*namespaceInfo), namespacesMutex: sync.Mutex{}},
 		externalGWCache:              make(map[ktypes.NamespacedName]*externalRouteInfo),
 		exGWCacheMutex:               sync.RWMutex{},
 		addressSetFactory:            addressSetFactory,

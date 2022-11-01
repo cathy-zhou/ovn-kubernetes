@@ -371,7 +371,7 @@ func (oc *DefaultL3Controller) deletePodExternalGW(pod *kapi.Pod) (err error) {
 
 // deletePodGwRoutesForNamespace handles deleting all routes in a namespace for a specific pod GW
 func (oc *DefaultL3Controller) deletePodGWRoutesForNamespace(pod *kapi.Pod, namespace string) (err error) {
-	nsInfo, nsUnlock := oc.getNamespaceLocked(namespace, false)
+	nsInfo, nsUnlock := oc.namespaceManager.getNamespaceLocked(namespace, false)
 	if nsInfo == nil {
 		return nil
 	}
@@ -393,7 +393,7 @@ func (oc *DefaultL3Controller) deletePodGWRoutesForNamespace(pod *kapi.Pod, name
 
 	if err := oc.deleteGWRoutesForNamespace(namespace, foundGws.gws); err != nil {
 		// add the entry back to nsInfo for retrying later
-		nsInfo, nsUnlock := oc.getNamespaceLocked(namespace, false)
+		nsInfo, nsUnlock := oc.namespaceManager.getNamespaceLocked(namespace, false)
 		if nsInfo == nil {
 			return fmt.Errorf("failed to get nsInfo %s to add back all the gw routes: %w", namespace, err)
 		}
