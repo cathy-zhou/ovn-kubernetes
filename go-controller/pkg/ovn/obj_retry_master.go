@@ -2,7 +2,6 @@ package ovn
 
 import (
 	"fmt"
-	"net"
 	"reflect"
 
 	kapi "k8s.io/api/core/v1"
@@ -188,25 +187,6 @@ func (h *masterEventHandler) AreResourcesEqual(obj1, obj2 interface{}) (bool, er
 	}
 
 	return false, fmt.Errorf("no object comparison for type %s", h.objType)
-}
-
-func (oc *DefaultL3Controller) getPortInfo(pod *kapi.Pod) *lpInfo {
-	var portInfo *lpInfo
-	key := util.GetLogicalPortName(pod.Namespace, pod.Name)
-	if !util.PodWantsNetwork(pod) {
-		// create dummy logicalPortInfo for host-networked pods
-		mac, _ := net.ParseMAC("00:00:00:00:00:00")
-		portInfo = &lpInfo{
-			logicalSwitch: "host-networked",
-			name:          key,
-			uuid:          "host-networked",
-			ips:           []*net.IPNet{},
-			mac:           mac,
-		}
-	} else {
-		portInfo, _ = oc.logicalPortCache.get(key)
-	}
-	return portInfo
 }
 
 // Given an object and its type, GetInternalCacheEntry returns the internal cache entry for this object.

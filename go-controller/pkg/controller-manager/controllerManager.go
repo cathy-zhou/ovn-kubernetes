@@ -227,9 +227,9 @@ func (cm *ControllerManager) Init(ctx context.Context) error {
 }
 
 func (cm *ControllerManager) NewDefaultController(addressSetFactory addressset.AddressSetFactory) *ovn.DefaultL3Controller {
-	sharedInfo := ovn.NewControllerSharedInfo(cm.client, cm.kube, cm.watchFactory, cm.recorder, cm.nbClient,
+	cInfo := ovn.NewControllerInfo(cm.client, cm.kube, cm.watchFactory, cm.recorder, cm.nbClient,
 		cm.sbClient, cm.podRecorder, cm.SCTPSupport)
-	defaultController := ovn.NewDefaultL3Controller(sharedInfo, cm.defaultStopChan, cm.defaultWg, addressSetFactory)
+	defaultController := ovn.NewDefaultL3Controller(cInfo, cm.defaultStopChan, cm.defaultWg, addressSetFactory)
 	cm.allOvnControllers[ovntypes.DefaultNetworkName] = defaultController
 	return defaultController
 }

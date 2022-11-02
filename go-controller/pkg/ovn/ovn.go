@@ -59,8 +59,8 @@ type ACLLoggingLevels struct {
 	Deny  string `json:"deny,omitempty"`
 }
 
-// controllerSharedInfo structure is place holder for all fields shared among controllers.
-type controllerSharedInfo struct {
+// controllerInfo structure is place holder for all fields shared among controllers.
+type controllerInfo struct {
 	client       clientset.Interface
 	kube         kube.Interface
 	watchFactory *factory.WatchFactory
@@ -100,7 +100,7 @@ type Controller interface {
 // DefaultL3Controller structure is the object which holds the controls for starting
 // and reacting upon the watched resources (e.g. pods, endpoints) for default l3 network
 type DefaultL3Controller struct {
-	controllerSharedInfo
+	controllerInfo
 
 	// wg and stopChan per-Controller
 	wg       *sync.WaitGroup
@@ -246,10 +246,10 @@ func getPodNamespacedName(pod *kapi.Pod) string {
 	return util.GetLogicalPortName(pod.Namespace, pod.Name)
 }
 
-func NewControllerSharedInfo(client clientset.Interface, kube kube.Interface, wf *factory.WatchFactory,
+func NewControllerInfo(client clientset.Interface, kube kube.Interface, wf *factory.WatchFactory,
 	recorder record.EventRecorder, nbClient libovsdbclient.Client,
-	sbClient libovsdbclient.Client, podRecorder *metrics.PodRecorder, SCTPSupport bool) controllerSharedInfo {
-	return controllerSharedInfo{
+	sbClient libovsdbclient.Client, podRecorder *metrics.PodRecorder, SCTPSupport bool) controllerInfo {
+	return controllerInfo{
 		client:       client,
 		kube:         kube,
 		watchFactory: wf,
@@ -263,21 +263,21 @@ func NewControllerSharedInfo(client clientset.Interface, kube kube.Interface, wf
 
 // NewDefaultL3Controller creates a new OVN controller for creating logical network
 // infrastructure and policy for default l3 network
-func NewDefaultL3Controller(sharedInfo controllerSharedInfo,
+func NewDefaultL3Controller(cInfo controllerInfo,
 	defaultStopChan chan struct{}, defaultWg *sync.WaitGroup,
 	addressSetFactory addressset.AddressSetFactory) *DefaultL3Controller {
 
 	if addressSetFactory == nil {
-		addressSetFactory = addressset.NewOvnAddressSetFactory(sharedInfo.nbClient)
+		addressSetFactory = addressset.NewOvnAddressSetFactory(cInfo.nbClient)
 	}
-	svcController, svcFactory := newServiceController(sharedInfo.client, sharedInfo.nbClient, sharedInfo.recorder)
-	egressSvcController := newEgressServiceController(sharedInfo.client, sharedInfo.nbClient, svcFactory, defaultStopChan)
+	svcController, svcFactory := newServiceController(cInfo.client, cInfo.nbClient, cInfo.recorder)
+	egressSvcController := newEgressServiceController(cInfo.client, cInfo.nbClient, svcFactory, defaultStopChan)
 	var hybridOverlaySubnetAllocator *subnetallocator.HostSubnetAllocator
 	if config.HybridOverlay.Enabled {
 		hybridOverlaySubnetAllocator = subnetallocator.NewHostSubnetAllocator()
 	}
 	oc := &DefaultL3Controller{
-		controllerSharedInfo:         sharedInfo,
+		controllerInfo:               cInfo,
 		stopChan:                     defaultStopChan,
 		wg:                           defaultWg,
 		masterSubnetAllocator:        subnetallocator.NewHostSubnetAllocator(),
@@ -298,8 +298,8 @@ func NewDefaultL3Controller(sharedInfo controllerSharedInfo,
 			pendingCloudPrivateIPConfigsMutex: &sync.Mutex{},
 			pendingCloudPrivateIPConfigsOps:   make(map[string]map[string]*cloudPrivateIPConfigOp),
 			allocator:                         allocator{&sync.Mutex{}, make(map[string]*egressNode)},
-			nbClient:                          sharedInfo.nbClient,
-			watchFactory:                      sharedInfo.watchFactory,
+			nbClient:                          cInfo.nbClient,
+			watchFactory:                      cInfo.watchFactory,
 			egressIPTotalTimeout:              config.OVNKubernetesFeature.EgressIPReachabiltyTotalTimeout,
 			egressIPNodeHealthCheckPort:       config.OVNKubernetesFeature.EgressIPNodeHealthCheckPort,
 		},

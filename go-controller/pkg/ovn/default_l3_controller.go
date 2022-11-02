@@ -2,6 +2,7 @@ package ovn
 
 import (
 	"fmt"
+	"net"
 	"reflect"
 
 	ocpcloudnetworkapi "github.com/openshift/api/cloudnetwork/v1"
@@ -509,6 +510,24 @@ func (oc *DefaultL3Controller) GetSyncFunc(eventObjType reflect.Type) (syncFunc 
 	return syncFunc, nil
 }
 
+func (oc *DefaultL3Controller) getPortInfo(pod *kapi.Pod) *lpInfo {
+	var portInfo *lpInfo
+	key := util.GetLogicalPortName(pod.Namespace, pod.Name)
+	if !util.PodWantsNetwork(pod) {
+		// create dummy logicalPortInfo for host-networked pods
+		mac, _ := net.ParseMAC("00:00:00:00:00:00")
+		portInfo = &lpInfo{
+			logicalSwitch: "host-networked",
+			name:          key,
+			uuid:          "host-networked",
+			ips:           []*net.IPNet{},
+			mac:           mac,
+		}
+	} else {
+		portInfo, _ = oc.logicalPortCache.get(key)
+	}
+	return portInfo
+}
 func (oc *DefaultL3Controller) GetInternalCacheEntry(eventObjType reflect.Type, obj interface{}) interface{} {
 	switch eventObjType {
 	case factory.PodType:
