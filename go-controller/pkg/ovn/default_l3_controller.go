@@ -18,10 +18,8 @@ import (
 	"k8s.io/klog/v2"
 )
 
-func (oc *DefaultL3Controller) RecordAddEvent(obj interface{}) {
-	objType := reflect.TypeOf(obj)
-
-	switch objType {
+func (oc *DefaultL3Controller) RecordAddEvent(eventObjType reflect.Type, obj interface{}) {
+	switch eventObjType {
 	case factory.PodType:
 		pod := obj.(*kapi.Pod)
 		klog.V(5).Infof("Recording add event on pod %s/%s", pod.Namespace, pod.Name)
@@ -34,7 +32,7 @@ func (oc *DefaultL3Controller) RecordAddEvent(obj interface{}) {
 	}
 }
 
-func (oc *DefaultL3Controller) RecordUpdateEvent(obj interface{}) {
+func (oc *DefaultL3Controller) RecordUpdateEvent(eventObjType reflect.Type, obj interface{}) {
 	objType := reflect.TypeOf(obj)
 
 	switch objType {
@@ -49,7 +47,7 @@ func (oc *DefaultL3Controller) RecordUpdateEvent(obj interface{}) {
 	}
 }
 
-func (oc *DefaultL3Controller) RecordDeleteEvent(obj interface{}) {
+func (oc *DefaultL3Controller) RecordDeleteEvent(eventObjType reflect.Type, obj interface{}) {
 	objType := reflect.TypeOf(obj)
 
 	switch objType {

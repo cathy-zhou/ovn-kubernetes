@@ -249,17 +249,17 @@ func (h *masterEventHandler) GetResourceFromInformerCache(key string) (interface
 
 // Given an object and its type, RecordAddEvent records the add event on this object.
 func (h *masterEventHandler) RecordAddEvent(obj interface{}) {
-	h.oc.RecordAddEvent(obj)
+	h.oc.RecordAddEvent(h.objType, obj)
 }
 
 // Given an object and its type, RecordUpdateEvent records the update event on this object.
 func (h *masterEventHandler) RecordUpdateEvent(obj interface{}) {
-	h.oc.RecordUpdateEvent(obj)
+	h.oc.RecordUpdateEvent(h.objType, obj)
 }
 
 // Given an object and its type, RecordDeleteEvent records the delete event on this object. Only used for pods now.
 func (h *masterEventHandler) RecordDeleteEvent(obj interface{}) {
-	h.oc.RecordDeleteEvent(obj)
+	h.oc.RecordDeleteEvent(h.objType, obj)
 }
 
 func (h *masterEventHandler) RecordSuccessEvent(obj interface{}) {

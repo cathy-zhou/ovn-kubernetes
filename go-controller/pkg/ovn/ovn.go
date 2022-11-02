@@ -90,9 +90,9 @@ type Controller interface {
 	DeleteResource(eventObjType reflect.Type, obj, cachedObj, extraParameters interface{}) error
 	GetSyncFunc(reflect.Type) (func([]interface{}) error, error)
 
-	RecordAddEvent(obj interface{})
-	RecordUpdateEvent(obj interface{})
-	RecordDeleteEvent(obj interface{})
+	RecordAddEvent(eventObjType reflect.Type, obj interface{})
+	RecordUpdateEvent(eventObjType reflect.Type, obj interface{})
+	RecordDeleteEvent(eventObjType reflect.Type, obj interface{})
 	RecordSuccessEvent(eventObjType reflect.Type, obj interface{})
 	RecordErrorEvent(err error, reason string, obj interface{})
 }
