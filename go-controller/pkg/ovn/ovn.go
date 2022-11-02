@@ -94,7 +94,7 @@ type Controller interface {
 	RecordUpdateEvent(obj interface{})
 	RecordDeleteEvent(obj interface{})
 	RecordSuccessEvent(eventObjType reflect.Type, obj interface{})
-	RecordObjErrorEvent(err error, obj interface{})
+	RecordObjErrorEvent(err error, reason string, obj interface{})
 }
 
 // DefaultL3Controller structure is the object which holds the controls for starting
@@ -506,7 +506,7 @@ func (oc *DefaultL3Controller) syncPeriodic() {
 	}()
 }
 
-func (oc *DefaultL3Controller) RecordObjErrorEvent(addErr error, obj interface{}) {
+func (oc *DefaultL3Controller) RecordObjErrorEvent(addErr error, reason string, obj interface{}) {
 	objType := reflect.TypeOf(obj)
 	switch objType {
 	case factory.PodType:

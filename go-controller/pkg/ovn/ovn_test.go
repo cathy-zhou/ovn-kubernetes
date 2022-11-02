@@ -149,7 +149,7 @@ func NewOvnController(ovnClient *util.OVNClientset, wf *factory.WatchFactory, st
 	}
 
 	podRecorder := metrics.NewPodRecorder()
-	sharedInfo := NewControllerSharedInfo(
+	sharedInfo := NewControllerInfo(
 		ovnClient.KubeClient,
 		&kube.Kube{
 			KClient:              ovnClient.KubeClient,

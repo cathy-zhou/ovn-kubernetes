@@ -268,8 +268,8 @@ func (h *masterEventHandler) RecordSuccessEvent(obj interface{}) {
 
 // Given an object and its type, RecordErrorEvent records an error event on this object.
 // Only used for pods now.
-func (h *masterEventHandler) RecordErrorEvent(obj interface{}, err error) {
-	h.oc.RecordObjErrorEvent(err, obj)
+func (h *masterEventHandler) RecordErrorEvent(obj interface{}, reason string, err error) {
+	h.oc.RecordObjErrorEvent(err, reason, obj)
 }
 
 // Given an object and its type, isResourceScheduled returns true if the object has been scheduled.

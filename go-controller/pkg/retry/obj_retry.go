@@ -56,7 +56,7 @@ type EventHandler interface {
 	RecordUpdateEvent(obj interface{})
 	RecordDeleteEvent(obj interface{})
 	RecordSuccessEvent(obj interface{})
-	RecordErrorEvent(obj interface{}, err error)
+	RecordErrorEvent(obj interface{}, reason string, err error)
 }
 
 type ResourceHandler struct {
@@ -405,7 +405,7 @@ func (r *RetryFramework) processObjectInTerminalState(obj interface{}, lockedKey
 	if err := r.ResourceHandler.DeleteResource(obj, internalCacheEntry); err != nil {
 		klog.Errorf("Failed to delete object %s of type %s in terminal state, during %s event: %v",
 			lockedKey, r.ResourceHandler.ObjType, event, err)
-		r.ResourceHandler.RecordErrorEvent(obj, err)
+		r.ResourceHandler.RecordErrorEvent(obj, "ErrorDeletingResource", err)
 		r.increaseFailedAttemptsCounter(retryEntry)
 		return
 	}
@@ -463,7 +463,7 @@ func (r *RetryFramework) WatchResourceFiltered(namespaceForFilteredHandler strin
 						if err := r.ResourceHandler.DeleteResource(retryObj.oldObj, internalCacheEntry); err != nil {
 							klog.Errorf("Failed to delete old object %s of type %s,"+
 								" during add event: %v", key, r.ResourceHandler.ObjType, err)
-							r.ResourceHandler.RecordErrorEvent(obj, err)
+							r.ResourceHandler.RecordErrorEvent(obj, "ErrorDeletingResource", err)
 							r.increaseFailedAttemptsCounter(retryObj)
 							return
 						}
@@ -472,7 +472,7 @@ func (r *RetryFramework) WatchResourceFiltered(namespaceForFilteredHandler strin
 					start := time.Now()
 					if err := r.ResourceHandler.AddResource(obj, false); err != nil {
 						klog.Errorf("Failed to create %s %s, error: %v", r.ResourceHandler.ObjType, key, err)
-						r.ResourceHandler.RecordErrorEvent(obj, err)
+						r.ResourceHandler.RecordErrorEvent(obj, "ErrorAddingResource", err)
 						r.increaseFailedAttemptsCounter(retryObj)
 						return
 					}
@@ -552,7 +552,7 @@ func (r *RetryFramework) WatchResourceFiltered(namespaceForFilteredHandler strin
 						if err := r.ResourceHandler.DeleteResource(retryEntryOrNil.oldObj,
 							retryEntryOrNil.config); err != nil {
 							klog.Errorf("Failed to delete stale object %s, during update: %v", oldKey, err)
-							r.ResourceHandler.RecordErrorEvent(retryEntryOrNil.oldObj, err)
+							r.ResourceHandler.RecordErrorEvent(retryEntryOrNil.oldObj, "ErrorDeletingResource", err)
 							retryEntry := r.initRetryObjWithAdd(latest, key)
 							r.increaseFailedAttemptsCounter(retryEntry)
 							return
@@ -579,7 +579,7 @@ func (r *RetryFramework) WatchResourceFiltered(namespaceForFilteredHandler strin
 						if err := r.ResourceHandler.DeleteResource(old, existingCacheEntry); err != nil {
 							klog.Errorf("Failed to delete %s %s, during update: %v",
 								r.ResourceHandler.ObjType, oldKey, err)
-							r.ResourceHandler.RecordErrorEvent(old, err)
+							r.ResourceHandler.RecordErrorEvent(old, "ErrorDeletingResource", err)
 							retryEntry := r.InitRetryObjWithDelete(old, key, nil, false)
 							r.initRetryObjWithAdd(latest, key)
 							r.increaseFailedAttemptsCounter(retryEntry)
@@ -598,7 +598,7 @@ func (r *RetryFramework) WatchResourceFiltered(namespaceForFilteredHandler strin
 						if err := r.ResourceHandler.UpdateResource(old, latest, found); err != nil {
 							klog.Errorf("Failed to update %s, old=%s, new=%s, error: %v",
 								r.ResourceHandler.ObjType, oldKey, newKey, err)
-							r.ResourceHandler.RecordErrorEvent(latest, err)
+							r.ResourceHandler.RecordErrorEvent(latest, "ErrorUpdatingResource", err)
 							var retryEntry *retryObjEntry
 							if r.ResourceHandler.NeedsUpdateDuringRetry {
 								retryEntry = r.initRetryObjWithUpdate(old, latest, key)
@@ -610,7 +610,7 @@ func (r *RetryFramework) WatchResourceFiltered(namespaceForFilteredHandler strin
 						}
 					} else { // we previously deleted old object, now let's add the new one
 						if err := r.ResourceHandler.AddResource(latest, false); err != nil {
-							r.ResourceHandler.RecordErrorEvent(latest, err)
+							r.ResourceHandler.RecordErrorEvent(latest, "ErrorAddingResource", err)
 							retryEntry := r.initRetryObjWithAdd(latest, key)
 							r.increaseFailedAttemptsCounter(retryEntry)
 							klog.Errorf("Failed to add %s %s, during update: %v",
