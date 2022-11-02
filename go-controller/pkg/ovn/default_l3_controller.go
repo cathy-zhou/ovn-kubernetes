@@ -48,9 +48,7 @@ func (oc *DefaultL3Controller) RecordUpdateEvent(eventObjType reflect.Type, obj 
 }
 
 func (oc *DefaultL3Controller) RecordDeleteEvent(eventObjType reflect.Type, obj interface{}) {
-	objType := reflect.TypeOf(obj)
-
-	switch objType {
+	switch eventObjType {
 	case factory.PodType:
 		pod := obj.(*kapi.Pod)
 		klog.V(5).Infof("Recording delete event on pod %s/%s", pod.Namespace, pod.Name)
