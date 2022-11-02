@@ -12,9 +12,11 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
-	knet "k8s.io/api/networking/v1"
 
 	kapi "k8s.io/api/core/v1"
+	knet "k8s.io/api/networking/v1"
+	"k8s.io/client-go/kubernetes/scheme"
+	ref "k8s.io/client-go/tools/reference"
 	"k8s.io/klog/v2"
 )
 
@@ -73,6 +75,22 @@ func (oc *DefaultL3Controller) RecordSuccessEvent(eventObjType reflect.Type, obj
 		np := obj.(*knet.NetworkPolicy)
 		klog.V(5).Infof("Recording success event on network policy %s/%s", np.Namespace, np.Name)
 		metrics.GetConfigDurationRecorder().End("networkpolicy", np.Namespace, np.Name)
+	}
+}
+
+func (oc *DefaultL3Controller) RecordErrorEvent(addErr error, reason string, obj interface{}) {
+	objType := reflect.TypeOf(obj)
+	switch objType {
+	case factory.PodType:
+		pod := obj.(*kapi.Pod)
+		podRef, err := ref.GetReference(scheme.Scheme, pod)
+		if err != nil {
+			klog.Errorf("Couldn't get a reference to pod %s/%s to post an event: '%v'",
+				pod.Namespace, pod.Name, err)
+		} else {
+			klog.V(5).Infof("Posting a %s event for Pod %s/%s", kapi.EventTypeWarning, pod.Namespace, pod.Name)
+			oc.recorder.Eventf(podRef, kapi.EventTypeWarning, "ErrorAddingLogicalPort", addErr.Error())
+		}
 	}
 }
 

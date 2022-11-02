@@ -40,11 +40,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/scheme"
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
-	ref "k8s.io/client-go/tools/reference"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 )
@@ -504,22 +502,6 @@ func (oc *DefaultL3Controller) syncPeriodic() {
 			}
 		}
 	}()
-}
-
-func (oc *DefaultL3Controller) RecordErrorEvent(addErr error, reason string, obj interface{}) {
-	objType := reflect.TypeOf(obj)
-	switch objType {
-	case factory.PodType:
-		pod := obj.(*kapi.Pod)
-		podRef, err := ref.GetReference(scheme.Scheme, pod)
-		if err != nil {
-			klog.Errorf("Couldn't get a reference to pod %s/%s to post an event: '%v'",
-				pod.Namespace, pod.Name, err)
-		} else {
-			klog.V(5).Infof("Posting a %s event for Pod %s/%s", kapi.EventTypeWarning, pod.Namespace, pod.Name)
-			oc.recorder.Eventf(podRef, kapi.EventTypeWarning, "ErrorAddingLogicalPort", addErr.Error())
-		}
-	}
 }
 
 func exGatewayAnnotationsChanged(oldPod, newPod *kapi.Pod) bool {
