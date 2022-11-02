@@ -92,7 +92,7 @@ type Controller interface {
 	RecordUpdateEvent(eventObjType reflect.Type, obj interface{})
 	RecordDeleteEvent(eventObjType reflect.Type, obj interface{})
 	RecordSuccessEvent(eventObjType reflect.Type, obj interface{})
-	RecordErrorEvent(err error, reason string, obj interface{})
+	RecordErrorEvent(eventObjType reflect.Type, err error, reason string, obj interface{})
 }
 
 // DefaultL3Controller structure is the object which holds the controls for starting

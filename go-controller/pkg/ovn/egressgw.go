@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -156,7 +157,7 @@ func (oc *DefaultL3Controller) addPodExternalGW(pod *kapi.Pod) error {
 	foundGws, err := getExGwPodIPs(pod)
 	if err != nil {
 		klog.Errorf("Error getting exgw IPs for pod: %s, error: %v", pod.Name, err)
-		oc.RecordErrorEvent(err, "ErrorAddingLogicalPort", pod)
+		oc.RecordErrorEvent(reflect.TypeOf(pod), err, "ErrorAddingLogicalPort", pod)
 		return nil
 	}
 

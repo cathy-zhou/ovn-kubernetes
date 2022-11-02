@@ -35,9 +35,7 @@ func (oc *DefaultL3Controller) RecordAddEvent(eventObjType reflect.Type, obj int
 }
 
 func (oc *DefaultL3Controller) RecordUpdateEvent(eventObjType reflect.Type, obj interface{}) {
-	objType := reflect.TypeOf(obj)
-
-	switch objType {
+	switch eventObjType {
 	case factory.PodType:
 		pod := obj.(*kapi.Pod)
 		klog.V(5).Infof("Recording update event on pod %s/%s", pod.Namespace, pod.Name)
@@ -78,9 +76,8 @@ func (oc *DefaultL3Controller) RecordSuccessEvent(eventObjType reflect.Type, obj
 	}
 }
 
-func (oc *DefaultL3Controller) RecordErrorEvent(addErr error, reason string, obj interface{}) {
-	objType := reflect.TypeOf(obj)
-	switch objType {
+func (oc *DefaultL3Controller) RecordErrorEvent(eventObjType reflect.Type, addErr error, reason string, obj interface{}) {
+	switch eventObjType {
 	case factory.PodType:
 		pod := obj.(*kapi.Pod)
 		podRef, err := ref.GetReference(scheme.Scheme, pod)
