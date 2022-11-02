@@ -74,7 +74,7 @@ func (oc *DefaultL3Controller) RecordSuccessEvent(eventObjType reflect.Type, obj
 	}
 }
 
-func (oc *DefaultL3Controller) RecordErrorEvent(eventObjType reflect.Type, addErr error, reason string, obj interface{}) {
+func (oc *DefaultL3Controller) RecordErrorEvent(eventObjType reflect.Type, eventErr error, reason string, obj interface{}) {
 	switch eventObjType {
 	case factory.PodType:
 		pod := obj.(*kapi.Pod)
@@ -84,7 +84,7 @@ func (oc *DefaultL3Controller) RecordErrorEvent(eventObjType reflect.Type, addEr
 				pod.Namespace, pod.Name, err)
 		} else {
 			klog.V(5).Infof("Posting a %s event for Pod %s/%s", kapi.EventTypeWarning, pod.Namespace, pod.Name)
-			oc.recorder.Eventf(podRef, kapi.EventTypeWarning, "ErrorAddingLogicalPort", addErr.Error())
+			oc.recorder.Eventf(podRef, kapi.EventTypeWarning, reason, eventErr.Error())
 		}
 	}
 }
