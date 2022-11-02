@@ -64,6 +64,19 @@ func (oc *DefaultL3Controller) RecordDeleteEvent(obj interface{}) {
 	}
 }
 
+func (oc *DefaultL3Controller) RecordSuccessEvent(eventObjType reflect.Type, obj interface{}) {
+	switch eventObjType {
+	case factory.PodType:
+		pod := obj.(*kapi.Pod)
+		klog.V(5).Infof("Recording success event on pod %s/%s", pod.Namespace, pod.Name)
+		metrics.GetConfigDurationRecorder().End("pod", pod.Namespace, pod.Name)
+	case factory.PolicyType:
+		np := obj.(*knet.NetworkPolicy)
+		klog.V(5).Infof("Recording success event on network policy %s/%s", np.Namespace, np.Name)
+		metrics.GetConfigDurationRecorder().End("networkpolicy", np.Namespace, np.Name)
+	}
+}
+
 func (oc *DefaultL3Controller) AddResource(eventObjType reflect.Type, obj interface{}, fromRetryLoop bool, extraParameters interface{}) error {
 	var err error
 

@@ -13,7 +13,6 @@ import (
 
 	egressfirewall "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 )
@@ -284,16 +283,7 @@ func (h *masterEventHandler) RecordDeleteEvent(obj interface{}) {
 }
 
 func (h *masterEventHandler) RecordSuccessEvent(obj interface{}) {
-	switch h.objType {
-	case factory.PodType:
-		pod := obj.(*kapi.Pod)
-		klog.V(5).Infof("Recording success event on pod %s/%s", pod.Namespace, pod.Name)
-		metrics.GetConfigDurationRecorder().End("pod", pod.Namespace, pod.Name)
-	case factory.PolicyType:
-		np := obj.(*knet.NetworkPolicy)
-		klog.V(5).Infof("Recording success event on network policy %s/%s", np.Namespace, np.Name)
-		metrics.GetConfigDurationRecorder().End("networkpolicy", np.Namespace, np.Name)
-	}
+	h.oc.RecordSuccessEvent(h.objType, obj)
 }
 
 // Given an object and its type, RecordErrorEvent records an error event on this object.

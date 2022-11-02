@@ -93,6 +93,7 @@ type Controller interface {
 	RecordAddEvent(obj interface{})
 	RecordUpdateEvent(obj interface{})
 	RecordDeleteEvent(obj interface{})
+	RecordSuccessEvent(eventObjType reflect.Type, obj interface{})
 	RecordObjErrorEvent(err error, obj interface{})
 }
 
