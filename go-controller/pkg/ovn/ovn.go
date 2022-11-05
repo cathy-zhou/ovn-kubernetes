@@ -69,6 +69,14 @@ type BaseNetworkController struct {
 	SCTPSupport bool
 }
 
+// NetworkControllerInfo structure holds network specific configuration
+type NetworkControllerInfo struct {
+	BaseNetworkController
+	// per controller nad/netconf name information
+	util.NetInfo
+	util.NetConfInfo
+}
+
 type namespaceManager struct {
 	// Info about known namespaces. You must use oc.getNamespaceLocked() or
 	// oc.waitForNamespaceLocked() to read this map, and oc.createNamespaceLocked()

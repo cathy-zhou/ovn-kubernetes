@@ -20,6 +20,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/subnetallocator"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
+	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	kapi "k8s.io/api/core/v1"
@@ -44,7 +45,7 @@ type defaultNetworkControllerEventHandler struct {
 // DefaultNetworkController structure is the object which holds the controls for starting
 // and reacting upon the watched resources (e.g. pods, endpoints) for default l3 network
 type DefaultNetworkController struct {
-	BaseNetworkController
+	NetworkControllerInfo
 
 	// wg and stopChan per-Controller
 	wg       *sync.WaitGroup
@@ -191,7 +192,16 @@ func newDefaultControllerCommon(bnc *BaseNetworkController,
 		hybridOverlaySubnetAllocator = subnetallocator.NewHostSubnetAllocator()
 	}
 	oc := &DefaultNetworkController{
-		BaseNetworkController:        *bnc,
+		NetworkControllerInfo: NetworkControllerInfo{
+			BaseNetworkController: *bnc,
+			NetConfInfo:           &util.DefaultNetConfInfo{},
+			NetInfo: util.NetInfo{
+				NetName:     ovntypes.DefaultNetworkName,
+				Prefix:      "",
+				IsSecondary: false,
+				NadNames:    &sync.Map{},
+			},
+		},
 		stopChan:                     defaultStopChan,
 		wg:                           defaultWg,
 		masterSubnetAllocator:        subnetallocator.NewHostSubnetAllocator(),
@@ -286,6 +296,10 @@ func (oc *DefaultNetworkController) newRetryFrameworkMasterWithParameters(
 	return r
 }
 
+func (oc *DefaultNetworkController) CompareNetConf(netConfInfo util.NetConfInfo) bool {
+	return oc.Compare(netConfInfo)
+}
+
 // Start starts the default controller; handles all events and creates all needed logical entities
 func (oc *DefaultNetworkController) Start(ctx context.Context) error {
 	if err := oc.StartClusterMaster(); err != nil {
@@ -295,10 +309,12 @@ func (oc *DefaultNetworkController) Start(ctx context.Context) error {
 	return oc.Run(ctx, oc.wg)
 }
 
-// Stop gracefully stops the controller
-func (oc *DefaultNetworkController) Stop() {
+// Stop gracefully stop the controller
+// deleteLogicalEntities will never be true for default network
+func (oc *DefaultNetworkController) Stop(deleteLogicalEntities bool) error {
 	oc.wg.Wait()
 	close(oc.stopChan)
+	return nil
 }
 
 // AreResourcesEqual returns true if, given two objects of a known resource type, the update logic for this resource
