@@ -33,18 +33,18 @@ func (oc *DefaultNetworkController) ovnTopologyCleanup() error {
 	return err
 }
 
-func (cc *ControllerConnection) updateL3TopologyVersion() error {
+func (nci *NetworkControllerInfo) updateL3TopologyVersion() error {
 	currentTopologyVersion := strconv.Itoa(ovntypes.OvnCurrentTopologyVersion)
-	logicalRouterName := ovntypes.OVNClusterRouter
+	clusterRouterName := nci.Prefix + ovntypes.OVNClusterRouter
 	logicalRouter := nbdb.LogicalRouter{
-		Name:        logicalRouterName,
+		Name:        clusterRouterName,
 		ExternalIDs: map[string]string{"k8s-ovn-topo-version": currentTopologyVersion},
 	}
-	err := libovsdbops.UpdateLogicalRouterSetExternalIDs(cc.nbClient, &logicalRouter)
+	err := libovsdbops.UpdateLogicalRouterSetExternalIDs(nci.nbClient, &logicalRouter)
 	if err != nil {
 		return fmt.Errorf("failed to generate set topology version, err: %v", err)
 	}
-	klog.Infof("Updated Logical_Router %s topology version to %s", logicalRouterName, currentTopologyVersion)
+	klog.Infof("Updated Logical_Router %s topology version to %s", clusterRouterName, currentTopologyVersion)
 	return nil
 }
 
@@ -113,11 +113,12 @@ func (oc *DefaultNetworkController) cleanTopologyAnnotation() error {
 // determineOVNTopoVersionFromOVN determines what OVN Topology version is being used
 // If "k8s-ovn-topo-version" key in external_ids column does not exist, it is prior to OVN topology versioning
 // and therefore set version number to OvnCurrentTopologyVersion
-func (oc *DefaultNetworkController) determineOVNTopoVersionFromOVN() (int, error) {
-	logicalRouter := &nbdb.LogicalRouter{Name: ovntypes.OVNClusterRouter}
-	logicalRouter, err := libovsdbops.GetLogicalRouter(oc.nbClient, logicalRouter)
+func (nci *NetworkControllerInfo) determineOVNTopoVersionFromOVN() (int, error) {
+	clusterRouterName := nci.Prefix + ovntypes.OVNClusterRouter
+	logicalRouter := &nbdb.LogicalRouter{Name: clusterRouterName}
+	logicalRouter, err := libovsdbops.GetLogicalRouter(nci.nbClient, logicalRouter)
 	if err != nil && err != libovsdbclient.ErrNotFound {
-		return 0, fmt.Errorf("error getting router %s: %v", ovntypes.OVNClusterRouter, err)
+		return 0, fmt.Errorf("error getting router %s: %v", clusterRouterName, err)
 	}
 	if err == libovsdbclient.ErrNotFound {
 		// no OVNClusterRouter exists, DB is empty, nothing to upgrade

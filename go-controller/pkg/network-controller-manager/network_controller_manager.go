@@ -269,6 +269,6 @@ func (cm *NetworkControllerManager) Stop() {
 	// stop the net-attach-def controller
 	// and for each Controller of secondary network, call oc.Stop()
 	for _, oc := range cm.ovnControllers {
-		oc.Stop()
+		_ = oc.Stop(false)
 	}
 }

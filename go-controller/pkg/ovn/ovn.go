@@ -67,9 +67,18 @@ type BaseNetworkController struct {
 	SCTPSupport bool
 }
 
+// NetworkControllerInfo structure holds network specific configuration
+type NetworkControllerInfo struct {
+	BaseNetworkController
+	// per controller nad/netconf name information
+	util.NetInfo
+	util.NetConfInfo
+}
+
 type Controller interface {
 	Start(ctx context.Context) error
-	Stop()
+	Stop(deleleLogicalEntities bool) error
+	CompareNetConf(util.NetConfInfo) bool
 
 	GetInternalCacheEntry(eventObjType reflect.Type, obj interface{}) interface{}
 
@@ -132,9 +141,11 @@ func (oc *DefaultNetworkController) Start(ctx context.Context) error {
 }
 
 // Stop gracefully stop the controller
-func (oc *DefaultNetworkController) Stop() {
+// deleteLogicalEntities will never be true for default network
+func (oc *DefaultNetworkController) Stop(deleteLogicalEntities bool) error {
 	oc.wg.Wait()
 	close(oc.stopChan)
+	return nil
 }
 
 // Run starts the actual watching.

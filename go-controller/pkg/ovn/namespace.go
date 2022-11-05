@@ -140,7 +140,7 @@ func (oc *DefaultNetworkController) addPodToNamespace(ns string, ips []*net.IPNe
 	return oc.getRoutingExternalGWs(nsInfo), oc.getRoutingPodGWs(nsInfo), ops, nil
 }
 
-func (cc *ControllerConnection) deletePodFromNamespace(nsm *namespaceManager, ns string,
+func (bnc *BaseNetworkController) deletePodFromNamespace(nsm *namespaceManager, ns string,
 	podIfAddrs []*net.IPNet, portUUID string, multicastSupport bool) ([]ovsdb.Operation, error) {
 	// for secondary network, namespace may be nil
 	nsInfo, nsUnlock := nsm.getNamespaceLocked(ns, true)
@@ -158,7 +158,7 @@ func (cc *ControllerConnection) deletePodFromNamespace(nsm *namespaceManager, ns
 
 	// Remove the port from the multicast allow policy.
 	if multicastSupport && nsInfo.multicastEnabled && len(portUUID) > 0 {
-		if err = podDeleteAllowMulticastPolicy(cc.nbClient, ns, portUUID); err != nil {
+		if err = podDeleteAllowMulticastPolicy(bnc.nbClient, ns, portUUID); err != nil {
 			return nil, err
 		}
 	}
@@ -305,7 +305,7 @@ func (oc *DefaultNetworkController) updateNamespace(old, newer *kapi.Namespace) 
 					if !util.PodWantsNetwork(pod) {
 						continue
 					}
-					podIPs, err := util.GetAllPodIPs(pod)
+					podIPs, err := util.GetAllPodIPs(pod, &oc.NetInfo)
 					if err != nil {
 						errors = append(errors, fmt.Errorf("unable to get pod %q IPs for SNAT rule removal err (%v)", logicalPort, err))
 					}
@@ -619,7 +619,7 @@ func (oc *DefaultNetworkController) createNamespaceAddrSetAllPods(ns string) (ad
 		ips = make([]net.IP, 0, len(existingPods))
 		for _, pod := range existingPods {
 			if util.PodWantsNetwork(pod) && !util.PodCompleted(pod) && util.PodScheduled(pod) {
-				podIPs, err := util.GetAllPodIPs(pod)
+				podIPs, err := util.GetAllPodIPs(pod, &oc.NetInfo)
 				if err != nil {
 					klog.Warningf(err.Error())
 					continue

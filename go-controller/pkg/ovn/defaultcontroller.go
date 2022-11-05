@@ -20,6 +20,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/subnetallocator"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
+	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	kapi "k8s.io/api/core/v1"
@@ -37,7 +38,7 @@ import (
 // DefaultNetworkController structure is the object which holds the controls for starting
 // and reacting upon the watched resources (e.g. pods, endpoints) for default l3 network
 type DefaultNetworkController struct {
-	BaseNetworkController
+	NetworkControllerInfo
 
 	// wg and stopChan per-Controller
 	wg       *sync.WaitGroup
@@ -188,7 +189,16 @@ func newDefaultControllerCommon(bnc *BaseNetworkController,
 		hybridOverlaySubnetAllocator = subnetallocator.NewHostSubnetAllocator()
 	}
 	oc := &DefaultNetworkController{
-		BaseNetworkController:        *bnc,
+		NetworkControllerInfo: NetworkControllerInfo{
+			BaseNetworkController: *bnc,
+			NetConfInfo:           &util.DefaultNetConfInfo{},
+			NetInfo: util.NetInfo{
+				NetName:     ovntypes.DefaultNetworkName,
+				Prefix:      "",
+				IsSecondary: false,
+				NadNames:    &sync.Map{},
+			},
+		},
 		stopChan:                     defaultStopChan,
 		wg:                           defaultWg,
 		masterSubnetAllocator:        subnetallocator.NewHostSubnetAllocator(),
@@ -240,6 +250,10 @@ func (oc *DefaultNetworkController) initRetryFrameworkForMaster() {
 	oc.retryEgressNodes = newRetryFrameworkMaster(oc, oc.watchFactory, factory.EgressNodeType)
 	oc.retryCloudPrivateIPConfig = newRetryFrameworkMaster(oc, oc.watchFactory, factory.CloudPrivateIPConfigType)
 	oc.retryNamespaces = newRetryFrameworkMaster(oc, oc.watchFactory, factory.NamespaceType)
+}
+
+func (oc *DefaultNetworkController) CompareNetConf(netConfInfo util.NetConfInfo) bool {
+	return oc.Compare(netConfInfo)
 }
 
 // RecordAddEvent records add event for the specified object

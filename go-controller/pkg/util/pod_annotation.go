@@ -239,7 +239,7 @@ func unmarshalPodAnnotationAllNetworks(annotations map[string]string) (map[strin
 // GetPodCIDRsWithFullMask returns the pod's IP addresses in a CIDR with FullMask format
 // Internally it calls GetAllPodIPs
 func GetPodCIDRsWithFullMask(pod *v1.Pod) ([]*net.IPNet, error) {
-	podIPs, err := GetAllPodIPs(pod)
+	podIPs, err := GetAllPodIPs(pod, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -261,24 +261,44 @@ func GetPodCIDRsWithFullMask(pod *v1.Pod) ([]*net.IPNet, error) {
 // GetAllPodIPs returns the pod's IP addresses, first from the OVN annotation
 // and then falling back to the Pod Status IPs. This function is intended to
 // also return IPs for HostNetwork and other non-OVN-IPAM-ed pods.
-func GetAllPodIPs(pod *v1.Pod) ([]net.IP, error) {
-	annotation, err := UnmarshalPodAnnotation(pod.Annotations, types.DefaultNetworkName)
-	if err == nil && annotation != nil {
+func GetAllPodIPs(pod *v1.Pod, netInfo *NetInfo) ([]net.IP, error) {
+	// if netInfo is nil, this is called fro default network
+	isSecondaryNetwork := (netInfo != nil && netInfo.IsSecondary)
+	ips := []net.IP{}
+	nadKeyName := types.DefaultNetworkName
+	if isSecondaryNetwork {
+		on, network, err := IsNetworkOnPod(pod, netInfo)
+		if err != nil {
+			return nil, err
+		} else if !on {
+			// the pod is not attached to this specific network, don't return error
+			return ips, nil
+		}
+		nadKeyName = GetNadKeyName(network.Namespace, network.Name)
+	}
+	annotation, _ := UnmarshalPodAnnotation(pod.Annotations, nadKeyName)
+	if annotation != nil {
 		// Use the OVN annotation if valid
-		ips := make([]net.IP, 0, len(annotation.IPs))
 		for _, ip := range annotation.IPs {
 			ips = append(ips, ip.IP)
 		}
 		// An OVN annotation should never have empty IPs, but just in case
-		if len(ips) > 0 {
-			return ips, nil
+		if len(ips) == 0 {
+			klog.Warningf("No IPs found in existing OVN annotation for nad %s! Pod Name: %s, Annotation: %#v",
+				nadKeyName, pod.Name, annotation)
 		}
-		klog.Warningf("No IPs found in existing OVN annotation! Pod Name: %s, Annotation: %#v",
-			pod.Name, annotation)
+	}
+	if len(ips) != 0 {
+		return ips, nil
 	}
 
-	// Otherwise if the annotation is not valid try to use Kube API pod IPs
-	ips := make([]net.IP, 0, len(pod.Status.PodIPs))
+	if isSecondaryNetwork {
+		return []net.IP{}, fmt.Errorf("no pod annotation of pod %s/%s found for network %s",
+			pod.Namespace, pod.Name, netInfo.NetName)
+	}
+
+	// Otherwise, default network, if the annotation is not valid try to use Kube API pod IPs
+	ips = make([]net.IP, 0, len(pod.Status.PodIPs))
 	for _, podIP := range pod.Status.PodIPs {
 		ip := utilnet.ParseIPSloppy(podIP.IP)
 		if ip == nil {
