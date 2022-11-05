@@ -42,7 +42,8 @@ func (_ ovnkubeMasterLeaderMetricsProvider) NewLeaderMetric() leaderelection.Swi
 
 type NetworkController interface {
 	Start(ctx context.Context) error
-	Stop()
+	Stop(deleteLogicalEntities bool) error
+	GetNetworkName() string
 }
 
 // NetworkControllerManager structure is the object manages all controllers for all networks
@@ -59,6 +60,8 @@ type NetworkControllerManager struct {
 	sbClient libovsdbclient.Client
 	// has SCTP support
 	SCTPSupport bool
+	// ACL logging support enabled
+	aclLoggingEnabled bool
 
 	stopChan chan struct{}
 	wg       *sync.WaitGroup
@@ -171,13 +174,13 @@ func NewNetworkControllerManager(ovnClient *util.OVNClientset, identity string, 
 			EgressFirewallClient: ovnClient.EgressFirewallClient,
 			CloudNetworkClient:   ovnClient.CloudNetworkClient,
 		},
-		stopChan:     make(chan struct{}),
-		watchFactory: wf,
-		recorder:     recorder,
-		nbClient:     libovsdbOvnNBClient,
-		sbClient:     libovsdbOvnSBClient,
-		podRecorder:  &podRecorder,
-
+		stopChan:           make(chan struct{}),
+		watchFactory:       wf,
+		recorder:           recorder,
+		nbClient:           libovsdbOvnNBClient,
+		sbClient:           libovsdbOvnSBClient,
+		podRecorder:        &podRecorder,
+		aclLoggingEnabled:  true,
 		wg:                 wg,
 		identity:           identity,
 		networkControllers: make(map[string]NetworkController),
@@ -191,6 +194,13 @@ func (cm *NetworkControllerManager) Init() error {
 	err := cm.configureSCTPSupport()
 	if err != nil {
 		return err
+	}
+
+	err = cm.createACLLoggingMeter()
+	if err != nil {
+		klog.Warningf("ACL logging support enabled, however acl-logging meter could not be created: %v. "+
+			"Disabling ACL logging support", err)
+		cm.aclLoggingEnabled = false
 	}
 
 	err = cm.enableOVNLogicalDataPathGroups()
@@ -239,10 +249,40 @@ func (cm *NetworkControllerManager) configureMetrics(stopChan <-chan struct{}) {
 	metrics.MonitorIPSec(cm.nbClient)
 }
 
+func (cm *NetworkControllerManager) createACLLoggingMeter() error {
+	band := &nbdb.MeterBand{
+		Action: ovntypes.MeterAction,
+		Rate:   config.Logging.ACLLoggingRateLimit,
+	}
+	ops, err := libovsdbops.CreateMeterBandOps(cm.nbClient, nil, band)
+	if err != nil {
+		return fmt.Errorf("can't create meter band %v: %v", band, err)
+	}
+
+	meterFairness := true
+	meter := &nbdb.Meter{
+		Name: ovntypes.OvnACLLoggingMeter,
+		Fair: &meterFairness,
+		Unit: ovntypes.PacketsPerSecond,
+	}
+	ops, err = libovsdbops.CreateOrUpdateMeterOps(cm.nbClient, ops, meter, []*nbdb.MeterBand{band},
+		&meter.Bands, &meter.Fair, &meter.Unit)
+	if err != nil {
+		return fmt.Errorf("can't create meter %v: %v", meter, err)
+	}
+
+	_, err = libovsdbops.TransactAndCheck(cm.nbClient, ops)
+	if err != nil {
+		return fmt.Errorf("can't transact ACL logging meter: %v", err)
+	}
+
+	return nil
+}
+
 // NewDefaultController creates and returns the controller for default network
 func (cm *NetworkControllerManager) NewDefaultNetworkController() {
 	bnc := ovn.NewBaseNetworkController(cm.client, cm.kube, cm.watchFactory, cm.recorder, cm.nbClient,
-		cm.sbClient, cm.podRecorder, cm.SCTPSupport)
+		cm.sbClient, cm.podRecorder, cm.SCTPSupport, cm.aclLoggingEnabled)
 	defaultController := ovn.NewDefaultNetworkController(bnc)
 	cm.networkControllers[ovntypes.DefaultNetworkName] = defaultController
 }
@@ -277,10 +317,14 @@ func (cm *NetworkControllerManager) Run(ctx context.Context) error {
 
 // Stop gracefully stops all managed controllers
 func (cm *NetworkControllerManager) Stop() {
+	var err error
 	// stop the net-attach-def controller
 	// and for each Controller of secondary network, call oc.Stop()
 	for _, oc := range cm.networkControllers {
-		oc.Stop()
+		err = oc.Stop(false)
+		if err != nil {
+			klog.Errorf("Failed to stop controller of network %s", oc.GetNetworkName())
+		}
 	}
 	close(cm.stopChan)
 }

@@ -33,14 +33,14 @@ func (oc *DefaultNetworkController) ovnTopologyCleanup() error {
 	return err
 }
 
-func (bnc *BaseNetworkController) updateL3TopologyVersion() error {
+func (nci *NetworkControllerInfo) updateL3TopologyVersion() error {
 	currentTopologyVersion := strconv.Itoa(ovntypes.OvnCurrentTopologyVersion)
-	clusterRouterName := ovntypes.OVNClusterRouter
+	clusterRouterName := nci.GetPrefix() + ovntypes.OVNClusterRouter
 	logicalRouter := nbdb.LogicalRouter{
 		Name:        clusterRouterName,
 		ExternalIDs: map[string]string{"k8s-ovn-topo-version": currentTopologyVersion},
 	}
-	err := libovsdbops.UpdateLogicalRouterSetExternalIDs(bnc.nbClient, &logicalRouter)
+	err := libovsdbops.UpdateLogicalRouterSetExternalIDs(nci.nbClient, &logicalRouter)
 	if err != nil {
 		return fmt.Errorf("failed to generate set topology version, err: %v", err)
 	}
@@ -113,10 +113,10 @@ func (oc *DefaultNetworkController) cleanTopologyAnnotation() error {
 // determineOVNTopoVersionFromOVN determines what OVN Topology version is being used
 // If "k8s-ovn-topo-version" key in external_ids column does not exist, it is prior to OVN topology versioning
 // and therefore set version number to OvnCurrentTopologyVersion
-func (oc *DefaultNetworkController) determineOVNTopoVersionFromOVN() (int, error) {
-	clusterRouterName := ovntypes.OVNClusterRouter
+func (nci *NetworkControllerInfo) determineOVNTopoVersionFromOVN() (int, error) {
+	clusterRouterName := nci.GetPrefix() + ovntypes.OVNClusterRouter
 	logicalRouter := &nbdb.LogicalRouter{Name: clusterRouterName}
-	logicalRouter, err := libovsdbops.GetLogicalRouter(oc.nbClient, logicalRouter)
+	logicalRouter, err := libovsdbops.GetLogicalRouter(nci.nbClient, logicalRouter)
 	if err != nil && err != libovsdbclient.ErrNotFound {
 		return 0, fmt.Errorf("error getting router %s: %v", clusterRouterName, err)
 	}

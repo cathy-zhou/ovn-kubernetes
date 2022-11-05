@@ -117,15 +117,15 @@ func (oc *DefaultNetworkController) upgradeOVNTopology(existingNodes *kapi.NodeL
 }
 
 // createOvnClusterRouter creates the central router for the network
-func (bnc *BaseNetworkController) createOvnClusterRouter(multicastSupport bool) (*nbdb.LogicalRouter, error) {
+func (nci *NetworkControllerInfo) createOvnClusterRouter(multicastSupport bool) (*nbdb.LogicalRouter, error) {
 	// Create default Control Plane Protection (COPP) entry for routers
-	defaultCOPPUUID, err := EnsureDefaultCOPP(bnc.nbClient)
+	defaultCOPPUUID, err := EnsureDefaultCOPP(nci.nbClient)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create router control plane protection: %w", err)
 	}
 
 	// Create a single common distributed router for the cluster.
-	logicalRouterName := types.OVNClusterRouter
+	logicalRouterName := nci.GetPrefix() + types.OVNClusterRouter
 	logicalRouter := nbdb.LogicalRouter{
 		Name: logicalRouterName,
 		ExternalIDs: map[string]string{
@@ -136,13 +136,16 @@ func (bnc *BaseNetworkController) createOvnClusterRouter(multicastSupport bool) 
 		},
 		Copp: &defaultCOPPUUID,
 	}
+	if nci.IsSecondary() {
+		logicalRouter.ExternalIDs[types.NetworkNameExternalID] = nci.GetNetworkName()
+	}
 	if multicastSupport {
 		logicalRouter.Options = map[string]string{
 			"mcast_relay": "true",
 		}
 	}
 
-	err = libovsdbops.CreateOrUpdateLogicalRouter(bnc.nbClient, &logicalRouter)
+	err = libovsdbops.CreateOrUpdateLogicalRouter(nci.nbClient, &logicalRouter)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create distributed router %s, error: %v",
 			logicalRouterName, err)
@@ -373,14 +376,14 @@ func (oc *DefaultNetworkController) syncGatewayLogicalNetwork(node *kapi.Node, l
 // gateway-chassis, which in effect pins the logical switch to the current node in OVN.
 // Otherwise, ovn-controller will flood-fill unrelated datapaths unnecessarily, causing scale
 // problems.
-func (bnc *BaseNetworkController) syncNodeClusterRouterPort(node *kapi.Node, hostSubnets []*net.IPNet) error {
+func (nci *NetworkControllerInfo) syncNodeClusterRouterPort(node *kapi.Node, hostSubnets []*net.IPNet) error {
 	chassisID, err := util.ParseNodeChassisIDAnnotation(node)
 	if err != nil {
 		return err
 	}
 
 	if len(hostSubnets) == 0 {
-		hostSubnets, err = util.ParseNodeHostSubnetAnnotation(node, types.DefaultNetworkName)
+		hostSubnets, err = util.ParseNodeHostSubnetAnnotation(node, nci.GetNetworkName())
 		if err != nil {
 			return err
 		}
@@ -396,8 +399,8 @@ func (bnc *BaseNetworkController) syncNodeClusterRouterPort(node *kapi.Node, hos
 		}
 	}
 
-	switchName := node.Name
-	logicalRouterName := types.OVNClusterRouter
+	switchName := nci.GetPrefix() + node.Name
+	logicalRouterName := nci.GetPrefix() + types.OVNClusterRouter
 	lrpName := types.RouterToSwitchPrefix + switchName
 	lrpNetworks := []string{}
 	for _, hostSubnet := range hostSubnets {
@@ -411,7 +414,7 @@ func (bnc *BaseNetworkController) syncNodeClusterRouterPort(node *kapi.Node, hos
 	}
 	logicalRouter := nbdb.LogicalRouter{Name: logicalRouterName}
 
-	err = libovsdbops.CreateOrUpdateLogicalRouterPorts(bnc.nbClient, &logicalRouter,
+	err = libovsdbops.CreateOrUpdateLogicalRouterPorts(nci.nbClient, &logicalRouter,
 		[]*nbdb.LogicalRouterPort{&logicalRouterPort}, &logicalRouterPort.MAC, &logicalRouterPort.Networks)
 	if err != nil {
 		klog.Errorf("Failed to add logical router port %+v to router %s: %v", logicalRouterPort, logicalRouterName, err)
@@ -425,7 +428,7 @@ func (bnc *BaseNetworkController) syncNodeClusterRouterPort(node *kapi.Node, hos
 		Priority:    1,
 	}
 
-	err = libovsdbops.CreateOrUpdateGatewayChassis(bnc.nbClient, &logicalRouterPort, &gatewayChassis,
+	err = libovsdbops.CreateOrUpdateGatewayChassis(nci.nbClient, &logicalRouterPort, &gatewayChassis,
 		&gatewayChassis.Name, &gatewayChassis.ChassisName, &gatewayChassis.Priority)
 	if err != nil {
 		klog.Errorf("Failed to add gateway chassis %s to logical router port %s, error: %v", chassisID, lrpName, err)
@@ -435,11 +438,11 @@ func (bnc *BaseNetworkController) syncNodeClusterRouterPort(node *kapi.Node, hos
 	return nil
 }
 
-func (bnc *BaseNetworkController) createNodeLogicalSwitch(nodeName string, hostSubnets []*net.IPNet,
+func (nci *NetworkControllerInfo) createNodeLogicalSwitch(nodeName string, hostSubnets []*net.IPNet,
 	loadBalancerGroupUUID string, multicastSupport bool) (*nbdb.LogicalSwitch, error) {
 	// logical router port MAC is based on IPv4 subnet if there is one, else IPv6
 	var nodeLRPMAC net.HardwareAddr
-	switchName := nodeName
+	switchName := nci.GetPrefix() + nodeName
 	for _, hostSubnet := range hostSubnets {
 		gwIfAddr := util.GetNodeGatewayIfAddr(hostSubnet)
 		nodeLRPMAC = util.IPAddrToHWAddr(gwIfAddr.IP)
@@ -450,6 +453,9 @@ func (bnc *BaseNetworkController) createNodeLogicalSwitch(nodeName string, hostS
 
 	logicalSwitch := nbdb.LogicalSwitch{
 		Name: switchName,
+	}
+	if nci.IsSecondary() {
+		logicalSwitch.ExternalIDs = map[string]string{types.NetworkNameExternalID: nci.GetNetworkName()}
 	}
 
 	var v4Gateway, v6Gateway net.IP
@@ -487,10 +493,10 @@ func (bnc *BaseNetworkController) createNodeLogicalSwitch(nodeName string, hostS
 		MAC:      nodeLRPMAC.String(),
 		Networks: logicalRouterPortNetwork,
 	}
-	logicalRouterName := types.OVNClusterRouter
+	logicalRouterName := nci.GetPrefix() + types.OVNClusterRouter
 	logicalRouter := nbdb.LogicalRouter{Name: logicalRouterName}
 
-	err := libovsdbops.CreateOrUpdateLogicalRouterPorts(bnc.nbClient, &logicalRouter,
+	err := libovsdbops.CreateOrUpdateLogicalRouterPorts(nci.nbClient, &logicalRouter,
 		[]*nbdb.LogicalRouterPort{&logicalRouterPort}, &logicalRouterPort.Networks, &logicalRouterPort.MAC)
 	if err != nil {
 		return nil, fmt.Errorf("failed to add logical router port %+v to router %s: %v", logicalRouterPort, logicalRouterName, err)
@@ -516,7 +522,7 @@ func (bnc *BaseNetworkController) createNodeLogicalSwitch(nodeName string, hostS
 		}
 	}
 
-	err = libovsdbops.CreateOrUpdateLogicalSwitch(bnc.nbClient, &logicalSwitch, &logicalSwitch.OtherConfig,
+	err = libovsdbops.CreateOrUpdateLogicalSwitch(nci.nbClient, &logicalSwitch, &logicalSwitch.OtherConfig,
 		&logicalSwitch.LoadBalancerGroup)
 	if err != nil {
 		return nil, fmt.Errorf("failed to add logical switch %+v: %v", logicalSwitch, err)
@@ -530,7 +536,7 @@ func (bnc *BaseNetworkController) createNodeLogicalSwitch(nodeName string, hostS
 		Options:   map[string]string{"router-port": types.RouterToSwitchPrefix + switchName},
 	}
 	sw := nbdb.LogicalSwitch{Name: switchName}
-	err = libovsdbops.CreateOrUpdateLogicalSwitchPortsOnSwitch(bnc.nbClient, &sw, &logicalSwitchPort)
+	err = libovsdbops.CreateOrUpdateLogicalSwitchPortsOnSwitch(nci.nbClient, &sw, &logicalSwitchPort)
 	if err != nil {
 		klog.Errorf("Failed to add logical port %+v to switch %s: %v", logicalSwitchPort, switchName, err)
 		return nil, err
@@ -538,7 +544,7 @@ func (bnc *BaseNetworkController) createNodeLogicalSwitch(nodeName string, hostS
 
 	// multicast is only supported in default network for now
 	if multicastSupport {
-		err = libovsdbops.AddPortsToPortGroup(bnc.nbClient, types.ClusterRtrPortGroupName, logicalSwitchPort.UUID)
+		err = libovsdbops.AddPortsToPortGroup(nci.nbClient, types.ClusterRtrPortGroupName, logicalSwitchPort.UUID)
 		if err != nil {
 			klog.Errorf(err.Error())
 			return nil, err
@@ -592,12 +598,12 @@ func (oc *DefaultNetworkController) ensureNodeLogicalNetwork(node *kapi.Node, ho
 	return oc.lsManager.AddSwitch(logicalSwitch.Name, logicalSwitch.UUID, hostSubnets)
 }
 
-func (bnc *BaseNetworkController) createNodeSubnetAnnotation(node *kapi.Node,
+func (nci *NetworkControllerInfo) createNodeSubnetAnnotation(node *kapi.Node,
 	masterSubnetAllocator *subnetallocator.HostSubnetAllocator) ([]*net.IPNet, error) {
-	existingSubnets, err := util.ParseNodeHostSubnetAnnotation(node, types.DefaultNetworkName)
+	existingSubnets, err := util.ParseNodeHostSubnetAnnotation(node, nci.GetNetworkName())
 	if err != nil && !util.IsAnnotationNotSetError(err) {
 		// Log the error and try to allocate new subnets
-		klog.Infof("Failed to get node %s host subnets annotations: %v", node.Name, err)
+		klog.Infof("Failed to get node %s host subnets annotations for network %s: %v", node.Name, nci.GetNetworkName(), err)
 	}
 
 	hostSubnets, allocatedSubnets, err := masterSubnetAllocator.AllocateNodeSubnets(node.Name, existingSubnets, config.IPv4Mode, config.IPv6Mode)
@@ -673,7 +679,7 @@ func (oc *DefaultNetworkController) addNode(node *kapi.Node) ([]*net.IPNet, erro
 		return nil, err
 	}
 
-	hostSubnetsMap := map[string][]*net.IPNet{types.DefaultNetworkName: hostSubnets}
+	hostSubnetsMap := map[string][]*net.IPNet{oc.GetNetworkName(): hostSubnets}
 	err = oc.UpdateNodeAnnotationWithRetry(node.Name, hostSubnetsMap, updatedNodeAnnotation)
 	if err != nil {
 		return nil, err
@@ -738,27 +744,27 @@ func (oc *DefaultNetworkController) deleteStaleNodeChassis(node *kapi.Node) erro
 }
 
 // deleteNodeLogicalNetwork removes the logical switch and logical router port associated with the node
-func (bnc *BaseNetworkController) deleteNodeLogicalNetwork(nodeName string) error {
-	switchName := nodeName
+func (nci *NetworkControllerInfo) deleteNodeLogicalNetwork(nodeName string) error {
+	switchName := nci.GetPrefix() + nodeName
 	// Remove switch to lb associations from the LBCache before removing the switch
-	lbCache, err := ovnlb.GetLBCache(bnc.nbClient)
+	lbCache, err := ovnlb.GetLBCache(nci.nbClient)
 	if err != nil {
 		return fmt.Errorf("failed to get load_balancer cache for node %s: %v", nodeName, err)
 	}
 	lbCache.RemoveSwitch(switchName)
 
 	// Remove the logical switch associated with the node
-	err = libovsdbops.DeleteLogicalSwitch(bnc.nbClient, switchName)
+	err = libovsdbops.DeleteLogicalSwitch(nci.nbClient, switchName)
 	if err != nil {
 		return fmt.Errorf("failed to delete logical switch %s: %v", switchName, err)
 	}
 
-	logicalRouterName := types.OVNClusterRouter
+	logicalRouterName := nci.GetPrefix() + types.OVNClusterRouter
 	logicalRouter := nbdb.LogicalRouter{Name: logicalRouterName}
 	logicalRouterPort := nbdb.LogicalRouterPort{
 		Name: types.RouterToSwitchPrefix + switchName,
 	}
-	err = libovsdbops.DeleteLogicalRouterPorts(bnc.nbClient, &logicalRouter, &logicalRouterPort)
+	err = libovsdbops.DeleteLogicalRouterPorts(nci.nbClient, &logicalRouter, &logicalRouterPort)
 	if err != nil {
 		return fmt.Errorf("failed to delete router port %s: %v", logicalRouterPort.Name, err)
 	}
@@ -881,15 +887,15 @@ func (oc *DefaultNetworkController) syncNodesPeriodic() {
 	}
 }
 
-func (bnc *BaseNetworkController) updateFoundNodes(node *kapi.Node,
+func (nci *NetworkControllerInfo) updateFoundNodes(node *kapi.Node,
 	masterSubnetAllocator *subnetallocator.HostSubnetAllocator, foundNodes sets.String) []*net.IPNet {
 	if noHostSubnet(node) {
 		return []*net.IPNet{}
 	}
-	hostSubnets, _ := util.ParseNodeHostSubnetAnnotation(node, types.DefaultNetworkName)
+	hostSubnets, _ := util.ParseNodeHostSubnetAnnotation(node, nci.GetNetworkName())
 	foundNodes.Insert(node.Name)
 
-	klog.V(5).Infof("Node %s contains subnets: %v", node.Name, hostSubnets)
+	klog.V(5).Infof("Node %s contains subnets: %v network %s", node.Name, hostSubnets, nci.GetNetworkName())
 	if err := masterSubnetAllocator.MarkSubnetsAllocated(node.Name, hostSubnets...); err != nil {
 		utilruntime.HandleError(err)
 	}
@@ -930,7 +936,8 @@ func (oc *DefaultNetworkController) syncNodes(nodes []interface{}) error {
 	}
 
 	p := func(item *nbdb.LogicalSwitch) bool {
-		return len(item.OtherConfig) > 0
+		_, ok := item.ExternalIDs[types.NetworkNameExternalID]
+		return len(item.OtherConfig) > 0 && !ok
 	}
 	nodeSwitches, err := libovsdbops.FindLogicalSwitchesWithPredicate(oc.nbClient, p)
 	if err != nil {
@@ -1169,35 +1176,5 @@ func (oc *DefaultNetworkController) deleteNodeEvent(node *kapi.Node) error {
 	oc.mgmtPortFailed.Delete(node.Name)
 	oc.gatewaysFailed.Delete(node.Name)
 	oc.nodeClusterRouterPortFailed.Delete(node.Name)
-	return nil
-}
-
-func (oc *DefaultNetworkController) createACLLoggingMeter() error {
-	band := &nbdb.MeterBand{
-		Action: types.MeterAction,
-		Rate:   config.Logging.ACLLoggingRateLimit,
-	}
-	ops, err := libovsdbops.CreateMeterBandOps(oc.nbClient, nil, band)
-	if err != nil {
-		return fmt.Errorf("can't create meter band %v: %v", band, err)
-	}
-
-	meterFairness := true
-	meter := &nbdb.Meter{
-		Name: types.OvnACLLoggingMeter,
-		Fair: &meterFairness,
-		Unit: types.PacketsPerSecond,
-	}
-	ops, err = libovsdbops.CreateOrUpdateMeterOps(oc.nbClient, ops, meter, []*nbdb.MeterBand{band},
-		&meter.Bands, &meter.Fair, &meter.Unit)
-	if err != nil {
-		return fmt.Errorf("can't create meter %v: %v", meter, err)
-	}
-
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
-	if err != nil {
-		return fmt.Errorf("can't transact ACL logging meter: %v", err)
-	}
-
 	return nil
 }

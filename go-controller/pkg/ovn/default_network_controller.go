@@ -40,7 +40,7 @@ import (
 // DefaultNetworkController structure is the object which holds the controls for starting
 // and reacting upon the watched resources (e.g. pods, endpoints) for default l3 network
 type DefaultNetworkController struct {
-	BaseNetworkController
+	NetworkControllerInfo
 
 	// wg and stopChan per-Controller
 	wg       *sync.WaitGroup
@@ -120,9 +120,6 @@ type DefaultNetworkController struct {
 
 	egressFirewallDNS *EgressDNS
 
-	// Is ACL logging enabled while configuring meters?
-	aclLoggingEnabled bool
-
 	joinSwIPManager *lsm.JoinSwitchIPManager
 
 	// retry framework for pods
@@ -187,7 +184,11 @@ func newDefaultNetworkControllerCommon(bnc *BaseNetworkController,
 		hybridOverlaySubnetAllocator = subnetallocator.NewHostSubnetAllocator()
 	}
 	oc := &DefaultNetworkController{
-		BaseNetworkController:        *bnc,
+		NetworkControllerInfo: NetworkControllerInfo{
+			BaseNetworkController: *bnc,
+			NetConfInfo:           nil,
+			NetInfo:               (*util.NetNameInfo)(nil),
+		},
 		stopChan:                     defaultStopChan,
 		wg:                           defaultWg,
 		masterSubnetAllocator:        subnetallocator.NewHostSubnetAllocator(),
@@ -218,7 +219,6 @@ func newDefaultNetworkControllerCommon(bnc *BaseNetworkController,
 		loadbalancerClusterCache: make(map[kapi.Protocol]string),
 		multicastSupport:         config.EnableMulticast,
 		loadBalancerGroupUUID:    "",
-		aclLoggingEnabled:        true,
 		joinSwIPManager:          nil,
 		svcController:            svcController,
 		svcFactory:               svcFactory,
@@ -292,9 +292,11 @@ func (oc *DefaultNetworkController) Start(ctx context.Context) error {
 }
 
 // Stop gracefully stops the controller
-func (oc *DefaultNetworkController) Stop() {
+// deleteLogicalEntities will never be true for default network
+func (oc *DefaultNetworkController) Stop(deleteLogicalEntities bool) error {
 	oc.wg.Wait()
 	close(oc.stopChan)
+	return nil
 }
 
 // Init runs a subnet IPAM and a controller that watches arrival/departure
@@ -337,13 +339,6 @@ func (oc *DefaultNetworkController) Init() error {
 				"Disabling Multicast Support")
 			oc.multicastSupport = false
 		}
-	}
-
-	err = oc.createACLLoggingMeter()
-	if err != nil {
-		klog.Warningf("ACL logging support enabled, however acl-logging meter could not be created: %v. "+
-			"Disabling ACL logging support", err)
-		oc.aclLoggingEnabled = false
 	}
 
 	// FIXME: When https://github.com/ovn-org/libovsdb/issues/235 is fixed,
@@ -628,7 +623,7 @@ func (h *defaultNetworkControllerEventHandler) IsResourceScheduled(obj interface
 
 // AddResource adds the specified object to the cluster according to its type and returns the error,
 // if any, yielded during object creation.
-// Given an object to add and a boolean specifying if the function was executed from iterateRetryResources,
+// Given an object to add and a boolean specifying if the function was executed from iterateRetryResources
 func (h *defaultNetworkControllerEventHandler) AddResource(obj interface{}, fromRetryLoop bool) error {
 	var err error
 

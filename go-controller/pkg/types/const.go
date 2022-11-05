@@ -156,4 +156,12 @@ const (
 	OVSDBWaitTimeout = 0
 
 	ClusterLBGroupName = "clusterLBGroup"
+
+	// key for network name external-id
+	NetworkNameExternalID = "network_name"
+	// key for nad name external-id, only used for secondary logical switch port of a pod
+	NadNameExternalID = "nad_name"
+
+	// different secondary network topology type
+	Layer3AttachDefTopoType = "layer3"
 )

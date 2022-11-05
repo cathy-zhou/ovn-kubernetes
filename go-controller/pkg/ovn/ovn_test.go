@@ -163,6 +163,7 @@ func NewOvnController(ovnClient *util.OVNClientset, wf *factory.WatchFactory, st
 		libovsdbOvnSBClient,
 		&podRecorder,
 		false,
+		true,
 	)
 
 	return newDefaultNetworkControllerCommon(bnc, stopChan, wg, addressSetFactory)

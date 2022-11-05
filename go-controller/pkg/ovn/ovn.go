@@ -65,6 +65,17 @@ type BaseNetworkController struct {
 
 	// has SCTP support
 	SCTPSupport bool
+
+	// Is ACL logging enabled while configuring meters?
+	aclLoggingEnabled bool
+}
+
+// NetworkControllerInfo structure holds network specific configuration
+type NetworkControllerInfo struct {
+	BaseNetworkController
+	// per controller nad/netconf name information
+	util.NetInfo
+	util.NetConfInfo
 }
 
 type namespaceManager struct {
@@ -94,17 +105,18 @@ func getPodNamespacedName(pod *kapi.Pod) string {
 
 // NewBaseNetworkController creates BaseNetworkController shared by controllers
 func NewBaseNetworkController(client clientset.Interface, kube kube.Interface, wf *factory.WatchFactory,
-	recorder record.EventRecorder, nbClient libovsdbclient.Client,
-	sbClient libovsdbclient.Client, podRecorder *metrics.PodRecorder, SCTPSupport bool) *BaseNetworkController {
+	recorder record.EventRecorder, nbClient libovsdbclient.Client, sbClient libovsdbclient.Client,
+	podRecorder *metrics.PodRecorder, SCTPSupport bool, aclLoggingEnabled bool) *BaseNetworkController {
 	return &BaseNetworkController{
-		client:       client,
-		kube:         kube,
-		watchFactory: wf,
-		recorder:     recorder,
-		nbClient:     nbClient,
-		sbClient:     sbClient,
-		podRecorder:  podRecorder,
-		SCTPSupport:  SCTPSupport,
+		client:            client,
+		kube:              kube,
+		watchFactory:      wf,
+		recorder:          recorder,
+		nbClient:          nbClient,
+		sbClient:          sbClient,
+		podRecorder:       podRecorder,
+		SCTPSupport:       SCTPSupport,
+		aclLoggingEnabled: aclLoggingEnabled,
 	}
 }
 
