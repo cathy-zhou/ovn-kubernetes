@@ -797,7 +797,7 @@ func (n *OvnNode) checkAndDeleteStaleConntrackEntriesForNamespace(newNs *kapi.Na
 	}
 	for _, pod := range pods {
 		pod := pod
-		podIPs, err := util.GetAllPodIPs(pod)
+		podIPs, err := util.GetAllPodIPs(pod, nil)
 		if err != nil {
 			klog.Errorf("Unable to fetch IP for pod %s/%s: %v", pod.Namespace, pod.Name, err)
 		}

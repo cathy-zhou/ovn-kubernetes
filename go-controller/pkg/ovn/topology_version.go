@@ -35,7 +35,7 @@ func (oc *DefaultL3Controller) ovnTopologyCleanup() error {
 
 func (cInfo *controllerInfo) updateL3TopologyVersion() error {
 	currentTopologyVersion := strconv.Itoa(ovntypes.OvnCurrentTopologyVersion)
-	logicalRouterName := ovntypes.OVNClusterRouter
+	logicalRouterName := cInfo.Prefix + ovntypes.OVNClusterRouter
 	logicalRouter := nbdb.LogicalRouter{
 		Name:        logicalRouterName,
 		ExternalIDs: map[string]string{"k8s-ovn-topo-version": currentTopologyVersion},

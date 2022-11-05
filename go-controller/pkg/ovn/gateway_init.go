@@ -59,7 +59,7 @@ func (oc *DefaultL3Controller) cleanupStalePodSNATs(nodeName string, nodeIPs []*
 	podIPsOnNode := sets.NewString() // collects all podIPs on node
 	for _, pod := range pods.Items {
 		pod := pod
-		podIPs, err := util.GetAllPodIPs(&pod)
+		podIPs, err := util.GetAllPodIPs(&pod, &oc.NetInfo)
 		if err != nil {
 			return fmt.Errorf("unable to fetch podIPs for pod %s/%s", pod.Namespace, pod.Name)
 		}

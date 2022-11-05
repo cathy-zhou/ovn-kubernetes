@@ -222,6 +222,11 @@ func IsClusterIP(svcVIP string) bool {
 	return false
 }
 
+func GetSecondaryNetworkLogicalPortName(podNamespace, podName, nadKeyName string) string {
+	netPrefix := GetSecondaryNetworkPrefix(nadKeyName)
+	return netPrefix + composePortName(podNamespace, podName)
+}
+
 func GetLogicalPortName(podNamespace, podName string) string {
 	return composePortName(podNamespace, podName)
 }

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	nettypes "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	libovsdbclient "github.com/ovn-org/libovsdb/client"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
@@ -228,10 +229,31 @@ func (cm *ControllerManager) Init(ctx context.Context) error {
 
 func (cm *ControllerManager) NewDefaultController(addressSetFactory addressset.AddressSetFactory) *ovn.DefaultL3Controller {
 	cInfo := ovn.NewControllerInfo(cm.client, cm.kube, cm.watchFactory, cm.recorder, cm.nbClient,
-		cm.sbClient, cm.podRecorder, cm.SCTPSupport)
+		cm.sbClient, cm.podRecorder, cm.SCTPSupport, nil)
 	defaultController := ovn.NewDefaultL3Controller(cInfo, cm.defaultStopChan, cm.defaultWg, addressSetFactory)
 	cm.allOvnControllers[ovntypes.DefaultNetworkName] = defaultController
 	return defaultController
+}
+
+func (cm *ControllerManager) NewSecondaryController(netattachdef *nettypes.NetworkAttachmentDefinition) (ovn.Controller, error) {
+	netInfo, netConfInfo, err := util.ParseNADInfo(netattachdef)
+	if err != nil {
+		if err == util.ErrorAttachDefNotOvnManaged {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	cInfo := ovn.NewControllerInfo(cm.client, cm.kube, cm.watchFactory, cm.recorder, cm.nbClient,
+		cm.sbClient, cm.podRecorder, cm.SCTPSupport, netInfo)
+
+	// Note that net-attach-def add/delete/update events are serialized, so we don't need locks here.
+	// Check if any Controller of the same netconf.Name already exists, if so, check its conf to see if they are the same.
+	existingOc, ok := cm.allOvnControllers[netInfo.NetName]
+	if !ok {
+		existingOc = nil
+	}
+	return ovn.NewSecondaryL3Controller(existingOc, cInfo, netConfInfo, util.GetNadKeyName(netattachdef.Namespace, netattachdef.Name))
 }
 
 func (cm *ControllerManager) Run() error {

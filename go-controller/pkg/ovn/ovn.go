@@ -75,6 +75,9 @@ type controllerInfo struct {
 
 	// has SCTP support
 	SCTPSupport bool
+
+	// per controller nad/netconf name information
+	util.NetInfo
 }
 
 type Controller interface {
@@ -250,7 +253,16 @@ func getPodNamespacedName(pod *kapi.Pod) string {
 
 func NewControllerInfo(client clientset.Interface, kube kube.Interface, wf *factory.WatchFactory,
 	recorder record.EventRecorder, nbClient libovsdbclient.Client, sbClient libovsdbclient.Client,
-	podRecorder *metrics.PodRecorder, SCTPSupport bool) *controllerInfo {
+	podRecorder *metrics.PodRecorder, SCTPSupport bool, netInfo *util.NetInfo) *controllerInfo {
+	if netInfo == nil {
+		// default network
+		netInfo = &util.NetInfo{
+			NetName:       ovntypes.DefaultNetworkName,
+			Prefix:        "",
+			IsSecondary:   false,
+			NetAttachDefs: &sync.Map{},
+		}
+	}
 	return &controllerInfo{
 		client:       client,
 		kube:         kube,
@@ -260,6 +272,7 @@ func NewControllerInfo(client clientset.Interface, kube kube.Interface, wf *fact
 		sbClient:     sbClient,
 		podRecorder:  podRecorder,
 		SCTPSupport:  SCTPSupport,
+		NetInfo:      *netInfo,
 	}
 }
 

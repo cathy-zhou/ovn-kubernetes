@@ -154,4 +154,7 @@ const (
 	OVSDBWaitTimeout = 0
 
 	ClusterLBGroupName = "clusterLBGroup"
+
+	// key for network name external-id
+	NetworkNameExternalID = "network_name"
 )
