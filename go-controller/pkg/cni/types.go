@@ -39,6 +39,7 @@ type KubeAPIAuth struct {
 // PodInterfaceInfo consists of interface info result from cni server if cni client configure's interface
 type PodInterfaceInfo struct {
 	util.PodAnnotation
+	IsSecondary bool
 
 	MTU                  int    `json:"mtu"`
 	RoutableMTU          int    `json:"routable-mtu"`
@@ -49,6 +50,11 @@ type PodInterfaceInfo struct {
 	PodUID               string `json:"pod-uid"`
 	VfNetdevName         string `json:"vf-netdev-name"`
 	EnableUDPAggregation bool   `json:"enable-udp-aggregation"`
+
+	// network name, for default network, it is "default", otherwise it is net-attach-def's netconf spec name
+	NetName string `json:"netName"`
+	// nadName, for default network, it is "default", otherwise, in the form of net-attach-def's <Namespace>/<Name>
+	NadName string `json:"nadName"`
 }
 
 // Explicit type for CNI commands the server handles
@@ -142,6 +148,14 @@ type PodRequest struct {
 	ctx context.Context
 	// cancel should be called to cancel this request
 	cancel context.CancelFunc
+
+	// network information associated with the given netconf
+	netInfo util.NetInfo
+
+	// for ovs interfaces plumbed for secondary networks, their iface-id's prefix is derived from the specific nadName;
+	// also, need to find the pod annotation, dpu pod connection/status annotations of the given nad ("default"
+	// for default network).
+	effectiveNADName string
 }
 
 type cniRequestFunc func(request *PodRequest, podLister corev1listers.PodLister, useOVSExternalIDs bool, kclient kubernetes.Interface, kubeAuth *KubeAPIAuth) ([]byte, error)
