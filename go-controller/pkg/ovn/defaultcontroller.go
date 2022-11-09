@@ -171,8 +171,8 @@ func (oc *DefaultNetworkController) RecordErrorEvent(eventObjType reflect.Type, 
 			klog.Errorf("Couldn't get a reference to pod %s/%s to post an event: '%v'",
 				pod.Namespace, pod.Name, err)
 		} else {
-			klog.V(5).Infof("Posting a %s event for Pod %s/%s", kapi.EventTypeWarning, pod.Namespace, pod.Name)
-			oc.recorder.Eventf(podRef, kapi.EventTypeWarning, reason, eventErr.Error())
+			klog.V(5).Infof("Posting a %s event for Pod %v %s/%s", kapi.EventTypeWarning, podRef, pod.Namespace, pod.Name)
+			//oc.recorder.Eventf(podRef, kapi.EventTypeWarning, reason, eventErr.Error())
 		}
 	}
 }
