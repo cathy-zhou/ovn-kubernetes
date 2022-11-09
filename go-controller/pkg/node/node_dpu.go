@@ -15,6 +15,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -29,6 +30,11 @@ func (n *OvnNode) watchPodsDPU(isOvnUpEnabled bool) error {
 	podLister := corev1listers.NewPodLister(n.watchFactory.LocalPodInformer().GetIndexer())
 	kclient := n.Kube.(*kube.Kube)
 
+	// cathy expected nadName to be nadKeyName
+	// Support default network for now
+	nadName := types.DefaultNetworkName
+	//netInfo := util.NetInfo{NetName: types.DefaultNetworkName, Prefix: "", IsSecondary: false}
+	isSecondary := false
 	_, err := n.watchFactory.AddPodHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			pod := obj.(*kapi.Pod)
@@ -48,7 +54,9 @@ func (n *OvnNode) watchPodsDPU(isOvnUpEnabled bool) error {
 					retryPods.Store(pod.UID, true)
 					return
 				}
-				podInterfaceInfo, err := cni.PodAnnotation2PodInfo(pod.Annotations, isOvnUpEnabled, string(pod.UID), "")
+				podInterfaceInfo, err := cni.PodAnnotation2PodInfo(pod.Annotations, isOvnUpEnabled, string(pod.UID),
+					//"", nadName, config.Default.MTU, netInfo)
+					"", nadName, config.Default.MTU, isSecondary)
 				if err != nil {
 					retryPods.Store(pod.UID, true)
 					return
@@ -84,7 +92,9 @@ func (n *OvnNode) watchPodsDPU(isOvnUpEnabled bool) error {
 					klog.Infof("Failed to get rep name, %s. retrying", err)
 					return
 				}
-				podInterfaceInfo, err := cni.PodAnnotation2PodInfo(pod.Annotations, isOvnUpEnabled, string(pod.UID), "")
+				podInterfaceInfo, err := cni.PodAnnotation2PodInfo(pod.Annotations, isOvnUpEnabled, string(pod.UID),
+					//"", nadName, config.Default.MTU, netInfo)
+					"", nadName, config.Default.MTU, isSecondary)
 				if err != nil {
 					return
 				}
