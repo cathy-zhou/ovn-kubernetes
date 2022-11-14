@@ -348,6 +348,7 @@ type OVNKubernetesFeatureConfig struct {
 	EgressIPNodeHealthCheckPort     int  `gcfg:"egressip-node-healthcheck-port"`
 	EnableMultiNetwork              bool `gcfg:"enable-multi-network"`
 	EnableStatelessNetPol           bool `gcfg:"enable-stateless-netpol"`
+	EnableMultiNetworkPolicy        bool `gcfg:"enable-multi-networkpolicy"`
 }
 
 // GatewayMode holds the node gateway mode
@@ -920,6 +921,12 @@ var OVNK8sFeatureFlags = []cli.Flag{
 		Usage:       "Configure to use stateless network policy feature with ovn-kubernetes.",
 		Destination: &cliConfig.OVNKubernetesFeature.EnableStatelessNetPol,
 		Value:       OVNKubernetesFeature.EnableStatelessNetPol,
+	},
+	&cli.BoolFlag{
+		Name:        "enable-multi-networkpolicy",
+		Usage:       "Configure to use multiple networkAttachmentDefinition CRD feature with ovn-kubernetes.",
+		Destination: &cliConfig.OVNKubernetesFeature.EnableMultiNetworkPolicy,
+		Value:       OVNKubernetesFeature.EnableMultiNetworkPolicy,
 	},
 }
 
