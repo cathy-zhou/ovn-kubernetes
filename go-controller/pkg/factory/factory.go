@@ -137,7 +137,7 @@ var (
 	PeerPodSelectorType                   reflect.Type = reflect.TypeOf(&peerPodSelector{})
 	LocalPodSelectorType                  reflect.Type = reflect.TypeOf(&localPodSelector{})
 	NetworkattachmentdefinitionType       reflect.Type = reflect.TypeOf(&networkattachmentdefinitionapi.NetworkAttachmentDefinition{})
-	multinetworkpolicyType                reflect.Type = reflect.TypeOf(&multinetworkpolicyapi.MultiNetworkPolicy{})
+	MultinetworkpolicyType                reflect.Type = reflect.TypeOf(&multinetworkpolicyapi.MultiNetworkPolicy{})
 
 	// Resource types used in ovnk node
 	NamespaceExGwType                         reflect.Type = reflect.TypeOf(&namespaceExGw{})
@@ -260,7 +260,7 @@ func NewMasterWatchFactory(ovnClientset *util.OVNClientset) (*WatchFactory, erro
 	}
 
 	if config.OVNKubernetesFeature.EnableMultiNetworkPolicy {
-		wf.informers[multinetworkpolicyType], err = newInformer(multinetworkpolicyType, wf.mnpFactory.K8sCniCncfIo().V1beta1().MultiNetworkPolicies().Informer())
+		wf.informers[MultinetworkpolicyType], err = newInformer(MultinetworkpolicyType, wf.mnpFactory.K8sCniCncfIo().V1beta1().MultiNetworkPolicies().Informer())
 		if err != nil {
 			return nil, err
 		}
@@ -464,7 +464,7 @@ func getObjectMeta(objType reflect.Type, obj interface{}) (*metav1.ObjectMeta, e
 		if networkattachmentdefinition, ok := obj.(*networkattachmentdefinitionapi.NetworkAttachmentDefinition); ok {
 			return &networkattachmentdefinition.ObjectMeta, nil
 		}
-	case multinetworkpolicyType:
+	case MultinetworkpolicyType:
 		if multinetworkpolicy, ok := obj.(*multinetworkpolicyapi.MultiNetworkPolicy); ok {
 			return &multinetworkpolicy.ObjectMeta, nil
 		}
@@ -731,12 +731,12 @@ func (wf *WatchFactory) RemoveCloudPrivateIPConfigHandler(handler *Handler) {
 
 // AddMultiNetworkPolicyHandler adds a handler function that will be executed on MultiNetworkPolicy object changes
 func (wf *WatchFactory) AddMultiNetworkPolicyHandler(handlerFuncs cache.ResourceEventHandler, processExisting func([]interface{}) error) (*Handler, error) {
-	return wf.addHandler(multinetworkpolicyType, "", nil, handlerFuncs, processExisting, defaultHandlerPriority)
+	return wf.addHandler(MultinetworkpolicyType, "", nil, handlerFuncs, processExisting, defaultHandlerPriority)
 }
 
 // RemoveMultiNetworkPolicyHandler removes an MultiNetworkPolicy object event handler function
 func (wf *WatchFactory) RemoveMultiNetworkPolicyHandler(handler *Handler) {
-	wf.removeHandler(multinetworkpolicyType, handler)
+	wf.removeHandler(MultinetworkpolicyType, handler)
 }
 
 // AddNamespaceHandler adds a handler function that will be executed on Namespace object changes

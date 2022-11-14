@@ -432,7 +432,7 @@ func newInformerLister(oType reflect.Type, sharedInformer cache.SharedIndexInfor
 		return egressqoslister.NewEgressQoSLister(sharedInformer.GetIndexer()), nil
 	case NetworkattachmentdefinitionType:
 		return networkattachmentdefinitionlister.NewNetworkAttachmentDefinitionLister(sharedInformer.GetIndexer()), nil
-	case multinetworkpolicyType:
+	case MultinetworkpolicyType:
 		return multinetworkpolicylister.NewMultiNetworkPolicyLister(sharedInformer.GetIndexer()), nil
 	}
 
