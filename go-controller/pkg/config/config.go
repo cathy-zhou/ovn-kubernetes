@@ -348,6 +348,7 @@ type OVNKubernetesFeatureConfig struct {
 	EgressIPNodeHealthCheckPort     int  `gcfg:"egressip-node-healthcheck-port"`
 	EnableMultiNetwork              bool `gcfg:"enable-multi-network"`
 	EnableStatelessNetPol           bool `gcfg:"enable-stateless-netpol"`
+	EnableMultiNetworkPolicy        bool `gcfg:"enable-multi-networkpolicy"`
 }
 
 // GatewayMode holds the node gateway mode
@@ -920,6 +921,12 @@ var OVNK8sFeatureFlags = []cli.Flag{
 		Usage:       "Configure to use stateless network policy feature with ovn-kubernetes.",
 		Destination: &cliConfig.OVNKubernetesFeature.EnableStatelessNetPol,
 		Value:       OVNKubernetesFeature.EnableStatelessNetPol,
+	},
+	&cli.BoolFlag{
+		Name:        "enable-multi-networkpolicy",
+		Usage:       "Configure to use multiple networkAttachmentDefinition CRD feature with ovn-kubernetes.",
+		Destination: &cliConfig.OVNKubernetesFeature.EnableMultiNetworkPolicy,
+		Value:       OVNKubernetesFeature.EnableMultiNetworkPolicy,
 	},
 }
 
@@ -1656,6 +1663,10 @@ func buildOVNKubernetesFeatureConfig(ctx *cli.Context, cli, file *config) error 
 	// And CLI overrides over config file and default values
 	if err := overrideFields(&OVNKubernetesFeature, &cli.OVNKubernetesFeature, &savedOVNKubernetesFeature); err != nil {
 		return err
+	}
+	if !OVNKubernetesFeature.EnableMultiNetwork && OVNKubernetesFeature.EnableMultiNetworkPolicy {
+		klog.Warningf("Disable multinetwork policy support as multinetwork support is disabled")
+		OVNKubernetesFeature.EnableMultiNetworkPolicy = false
 	}
 	return nil
 }
