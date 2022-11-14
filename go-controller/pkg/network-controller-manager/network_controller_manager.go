@@ -242,9 +242,9 @@ func (cm *NetworkControllerManager) configureMetrics() {
 
 // NewDefaultController creates and returns the controller for default network
 func (cm *NetworkControllerManager) NewDefaultController() {
-	cc := ovn.NewControllerConnection(cm.client, cm.kube, cm.watchFactory, cm.recorder, cm.nbClient,
+	bnc := ovn.NewBaseNetworkController(cm.client, cm.kube, cm.watchFactory, cm.recorder, cm.nbClient,
 		cm.sbClient, cm.podRecorder, cm.SCTPSupport)
-	defaultController := ovn.NewDefaultController(cc)
+	defaultController := ovn.NewDefaultController(bnc)
 	cm.ovnControllers[ovntypes.DefaultNetworkName] = defaultController
 }
 

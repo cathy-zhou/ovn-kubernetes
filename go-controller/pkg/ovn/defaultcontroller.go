@@ -37,7 +37,7 @@ import (
 // DefaultNetworkController structure is the object which holds the controls for starting
 // and reacting upon the watched resources (e.g. pods, endpoints) for default l3 network
 type DefaultNetworkController struct {
-	ControllerConnection
+	BaseNetworkController
 
 	// wg and stopChan per-Controller
 	wg       *sync.WaitGroup
@@ -169,27 +169,27 @@ type DefaultNetworkController struct {
 
 // NewDefaultController creates a new OVN controller for creating logical network
 // infrastructure and policy for default l3 network
-func NewDefaultController(cc ControllerConnection) *DefaultNetworkController {
+func NewDefaultController(bnc *BaseNetworkController) *DefaultNetworkController {
 	stopChan := make(chan struct{})
 	wg := &sync.WaitGroup{}
-	return newDefaultControllerCommon(cc, stopChan, wg, nil)
+	return newDefaultControllerCommon(bnc, stopChan, wg, nil)
 }
 
-func newDefaultControllerCommon(cc ControllerConnection,
+func newDefaultControllerCommon(bnc *BaseNetworkController,
 	defaultStopChan chan struct{}, defaultWg *sync.WaitGroup,
 	addressSetFactory addressset.AddressSetFactory) *DefaultNetworkController {
 
 	if addressSetFactory == nil {
-		addressSetFactory = addressset.NewOvnAddressSetFactory(cc.nbClient)
+		addressSetFactory = addressset.NewOvnAddressSetFactory(bnc.nbClient)
 	}
-	svcController, svcFactory := newServiceController(cc.client, cc.nbClient, cc.recorder)
-	egressSvcController := newEgressServiceController(cc.client, cc.nbClient, svcFactory, defaultStopChan)
+	svcController, svcFactory := newServiceController(bnc.client, bnc.nbClient, bnc.recorder)
+	egressSvcController := newEgressServiceController(bnc.client, bnc.nbClient, svcFactory, defaultStopChan)
 	var hybridOverlaySubnetAllocator *subnetallocator.HostSubnetAllocator
 	if config.HybridOverlay.Enabled {
 		hybridOverlaySubnetAllocator = subnetallocator.NewHostSubnetAllocator()
 	}
 	oc := &DefaultNetworkController{
-		ControllerConnection:         cc,
+		BaseNetworkController:        *bnc,
 		stopChan:                     defaultStopChan,
 		wg:                           defaultWg,
 		masterSubnetAllocator:        subnetallocator.NewHostSubnetAllocator(),
@@ -210,8 +210,8 @@ func newDefaultControllerCommon(cc ControllerConnection,
 			pendingCloudPrivateIPConfigsMutex: &sync.Mutex{},
 			pendingCloudPrivateIPConfigsOps:   make(map[string]map[string]*cloudPrivateIPConfigOp),
 			allocator:                         allocator{&sync.Mutex{}, make(map[string]*egressNode)},
-			nbClient:                          cc.nbClient,
-			watchFactory:                      cc.watchFactory,
+			nbClient:                          bnc.nbClient,
+			watchFactory:                      bnc.watchFactory,
 			egressIPTotalTimeout:              config.OVNKubernetesFeature.EgressIPReachabiltyTotalTimeout,
 			egressIPNodeHealthCheckPort:       config.OVNKubernetesFeature.EgressIPNodeHealthCheckPort,
 		},

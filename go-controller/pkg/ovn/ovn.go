@@ -47,8 +47,8 @@ type ACLLoggingLevels struct {
 	Deny  string `json:"deny,omitempty"`
 }
 
-// ControllerConnection structure is place holder for all fields shared among controllers.
-type ControllerConnection struct {
+// BaseNetworkController structure is place holder for all fields shared among controllers.
+type BaseNetworkController struct {
 	client       clientset.Interface
 	kube         kube.Interface
 	watchFactory *factory.WatchFactory
@@ -101,11 +101,11 @@ func getPodNamespacedName(pod *kapi.Pod) string {
 	return util.GetLogicalPortName(pod.Namespace, pod.Name)
 }
 
-// NewControllerConnection creates ControllerConnection shared by controllers
-func NewControllerConnection(client clientset.Interface, kube kube.Interface, wf *factory.WatchFactory,
+// NewBaseNetworkController creates BaseNetworkController shared by controllers
+func NewBaseNetworkController(client clientset.Interface, kube kube.Interface, wf *factory.WatchFactory,
 	recorder record.EventRecorder, nbClient libovsdbclient.Client,
-	sbClient libovsdbclient.Client, podRecorder *metrics.PodRecorder, SCTPSupport bool) ControllerConnection {
-	return ControllerConnection{
+	sbClient libovsdbclient.Client, podRecorder *metrics.PodRecorder, SCTPSupport bool) *BaseNetworkController {
+	return &BaseNetworkController{
 		client:       client,
 		kube:         kube,
 		watchFactory: wf,
