@@ -277,18 +277,14 @@ func (nci *NetworkControllerInfo) deletePodLogicalPort(pod *kapi.Pod, portInfo *
 	}
 	allOps = append(allOps, ops...)
 
-	// TBD for secondary network
 	var txOkCallBack func()
-	txOkCallBack = nil
-	if !nci.IsSecondary {
-		var recordOps []ovsdb.Operation
-		recordOps, txOkCallBack, _, err = metrics.GetConfigDurationRecorder().AddOVN(nci.nbClient, "pod", pod.Namespace,
-			pod.Name)
-		if err != nil {
-			klog.Errorf("Failed to record config duration: %v", err)
-		}
-		allOps = append(allOps, recordOps...)
+	var recordOps []ovsdb.Operation
+	recordOps, txOkCallBack, _, err = metrics.GetConfigDurationRecorder().AddOVN(nci.nbClient, "pod", pod.Namespace,
+		pod.Name, &nci.NetInfo)
+	if err != nil {
+		klog.Errorf("Failed to record config duration: %v", err)
 	}
+	allOps = append(allOps, recordOps...)
 
 	_, err = libovsdbops.TransactAndCheck(nci.nbClient, allOps)
 	if err != nil {
@@ -483,8 +479,8 @@ func (nci *NetworkControllerInfo) addRoutesGatewayIP(pod *kapi.Pod, network *net
 // podExpectedInLogicalCache returns true if pod should be added to oc.logicalPortCache.
 // For some pods, like hostNetwork pods, overlay node pods, or completed pods waiting for them to be added
 // to oc.logicalPortCache will never succeed.
-func (oc *DefaultNetworkController) podExpectedInLogicalCache(pod *kapi.Pod) bool {
-	return util.PodWantsNetwork(pod) && !oc.lsManager.IsNonHostSubnetSwitch(pod.Spec.NodeName) && !util.PodCompleted(pod)
+func (nci *NetworkControllerInfo) podExpectedInLogicalCache(lsManager *lsm.LogicalSwitchManager, pod *kapi.Pod) bool {
+	return util.PodWantsNetwork(pod) && !lsManager.IsNonHostSubnetSwitch(pod.Spec.NodeName) && !util.PodCompleted(pod)
 }
 
 func (nci *NetworkControllerInfo) addPodLogicalPort(pod *kapi.Pod, lsManager *lsm.LogicalSwitchManager,
@@ -701,7 +697,7 @@ func (nci *NetworkControllerInfo) addPodLogicalPort(pod *kapi.Pod, lsManager *ls
 	return ops, lsp, podAnnotation, needsIP && !lspExist, nil
 }
 
-func (oc *DefaultNetworkController) addLogicalPort(pod *kapi.Pod) (err error) {
+func (oc *DefaultNetworkController) addLogicalPort(pod *kapi.Pod) error {
 	switchName := pod.Spec.NodeName
 
 	// If a node does node have an assigned hostsubnet don't wait for the logical switch to appear
@@ -722,7 +718,7 @@ func (oc *DefaultNetworkController) addLogicalPort(pod *kapi.Pod) (err error) {
 	// Keep track of how long syncs take.
 	start := time.Now()
 	defer func() {
-		klog.Infof("[%s/%s] addLogicalPort took %v, libovsdb time %v: %v",
+		klog.Infof("[%s/%s] addLogicalPort took %v, libovsdb time %v",
 			pod.Namespace, pod.Name, time.Since(start), libovsdbExecuteTime)
 	}()
 
@@ -774,7 +770,7 @@ func (oc *DefaultNetworkController) addLogicalPort(pod *kapi.Pod) (err error) {
 	}
 
 	recordOps, txOkCallBack, _, err := metrics.GetConfigDurationRecorder().AddOVN(oc.nbClient, "pod", pod.Namespace,
-		pod.Name)
+		pod.Name, &oc.NetInfo)
 	if err != nil {
 		klog.Errorf("Config duration recorder: %v", err)
 	}
@@ -811,7 +807,7 @@ func (oc *DefaultNetworkController) addLogicalPort(pod *kapi.Pod) (err error) {
 		return err
 	}
 	if oc.multicastSupport && isNamespaceMulticastEnabled(ns.Annotations) {
-		if err := podAddAllowMulticastPolicy(oc.nbClient, pod.Namespace, portInfo); err != nil {
+		if err := podAddAllowMulticastPolicy(oc.nbClient, pod.Namespace, portInfo, &oc.NetInfo); err != nil {
 			return err
 		}
 	}

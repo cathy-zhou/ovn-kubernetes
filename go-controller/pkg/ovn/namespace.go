@@ -140,7 +140,7 @@ func (oc *DefaultNetworkController) addPodToNamespace(ns string, ips []*net.IPNe
 	return oc.getRoutingExternalGWs(nsInfo), oc.getRoutingPodGWs(nsInfo), ops, nil
 }
 
-func (bnc *BaseNetworkController) deletePodFromNamespace(nsm *namespaceManager, ns string,
+func (nci *NetworkControllerInfo) deletePodFromNamespace(nsm *namespaceManager, ns string,
 	podIfAddrs []*net.IPNet, portUUID string, multicastSupport bool) ([]ovsdb.Operation, error) {
 	// for secondary network, namespace may be nil
 	nsInfo, nsUnlock := nsm.getNamespaceLocked(ns, true)
@@ -158,7 +158,7 @@ func (bnc *BaseNetworkController) deletePodFromNamespace(nsm *namespaceManager, 
 
 	// Remove the port from the multicast allow policy.
 	if multicastSupport && nsInfo.multicastEnabled && len(portUUID) > 0 {
-		if err = podDeleteAllowMulticastPolicy(bnc.nbClient, ns, portUUID); err != nil {
+		if err = podDeleteAllowMulticastPolicy(nci.nbClient, ns, portUUID, &nci.NetInfo); err != nil {
 			return nil, err
 		}
 	}
@@ -195,9 +195,9 @@ func (oc *DefaultNetworkController) multicastUpdateNamespace(ns *kapi.Namespace,
 	var err error
 	nsInfo.multicastEnabled = enabled
 	if enabled {
-		err = oc.createMulticastAllowPolicy(ns.Name, nsInfo)
+		err = oc.createMulticastAllowPolicy(&oc.NetworkPolicyInfo, ns.Name, nsInfo)
 	} else {
-		err = deleteMulticastAllowPolicy(oc.nbClient, ns.Name)
+		err = deleteMulticastAllowPolicy(oc.nbClient, ns.Name, &oc.NetInfo)
 	}
 	if err != nil {
 		return err
@@ -210,7 +210,7 @@ func (oc *DefaultNetworkController) multicastUpdateNamespace(ns *kapi.Namespace,
 func (oc *DefaultNetworkController) multicastDeleteNamespace(ns *kapi.Namespace, nsInfo *namespaceInfo) error {
 	if nsInfo.multicastEnabled {
 		nsInfo.multicastEnabled = false
-		if err := deleteMulticastAllowPolicy(oc.nbClient, ns.Name); err != nil {
+		if err := deleteMulticastAllowPolicy(oc.nbClient, ns.Name, &oc.NetInfo); err != nil {
 			return err
 		}
 	}
@@ -255,7 +255,7 @@ func (oc *DefaultNetworkController) configureNamespace(nsInfo *namespaceInfo, ns
 	}
 
 	if annotation, ok := ns.Annotations[util.AclLoggingAnnotation]; ok {
-		if err := oc.aclLoggingUpdateNsInfo(annotation, nsInfo); err == nil {
+		if err := aclLoggingUpdateNsInfo(oc.aclLoggingEnabled, annotation, nsInfo); err == nil {
 			klog.Infof("Namespace %s: ACL logging is set to deny=%s allow=%s", ns.Name, nsInfo.aclLogging.Deny, nsInfo.aclLogging.Allow)
 		} else {
 			klog.Warningf("Namespace %s: ACL logging contained malformed annotation, "+
@@ -364,12 +364,12 @@ func (oc *DefaultNetworkController) updateNamespace(old, newer *kapi.Namespace) 
 	if aclAnnotation != oldACLAnnotation {
 		// When input cannot be parsed correctly, aclLoggingUpdateNsInfo disables logging and returns an error. Hence,
 		// log a warning to make users aware of issues with the annotation. See aclLoggingUpdateNsInfo for more details.
-		if err := oc.aclLoggingUpdateNsInfo(aclAnnotation, nsInfo); err != nil {
+		if err := aclLoggingUpdateNsInfo(oc.aclLoggingEnabled, aclAnnotation, nsInfo); err != nil {
 			klog.Warningf("Namespace %s: ACL logging contained malformed annotation, "+
 				"ACL logging is set to deny=%s allow=%s, err: %q",
 				newer.Name, nsInfo.aclLogging.Deny, nsInfo.aclLogging.Allow, err)
 		}
-		if err := oc.handleNetPolNamespaceUpdate(old.Name, nsInfo); err != nil {
+		if err := oc.handleNetPolNamespaceUpdate(&oc.NetworkPolicyInfo, old.Name, nsInfo); err != nil {
 			errors = append(errors, err)
 		} else {
 			klog.Infof("Namespace %s: NetworkPolicy ACL logging setting updated to deny=%s allow=%s",
@@ -449,9 +449,10 @@ func (nsm *namespaceManager) getNamespaceLocked(ns string, readOnly bool) (*name
 // with its mutex locked.
 // ns is the name of the namespace, while namespace is the optional k8s namespace object
 // if no k8s namespace object is provided, this function will attempt to find it via informer cache
-func (oc *DefaultNetworkController) ensureNamespaceLocked(ns string, readOnly bool, namespace *kapi.Namespace) (*namespaceInfo, func(), error) {
-	oc.namespacesMutex.Lock()
-	nsInfo := oc.namespaces[ns]
+func (bnc *BaseNetworkController) ensureNamespaceLockedCommon(nsm *namespaceManager, addressSetFactory addressset.AddressSetFactory,
+	ips []net.IP, ns string, readOnly bool, namespace *kapi.Namespace) (*kapi.Namespace, *namespaceInfo, func(), error) {
+	nsm.namespacesMutex.Lock()
+	nsInfo := nsm.namespaces[ns]
 	nsInfoExisted := false
 	if nsInfo == nil {
 		nsInfo = &namespaceInfo{
@@ -462,19 +463,19 @@ func (oc *DefaultNetworkController) ensureNamespaceLocked(ns string, readOnly bo
 		}
 		// we are creating nsInfo and going to set it in namespaces map
 		// so safe to hold the lock while we create and add it
-		defer oc.namespacesMutex.Unlock()
+		defer nsm.namespacesMutex.Unlock()
 		// create the adddress set for the new namespace
 		var err error
-		nsInfo.addressSet, err = oc.createNamespaceAddrSetAllPods(ns)
+		nsInfo.addressSet, err = addressSetFactory.NewAddressSet(ns, ips)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create address set for namespace: %s, error: %v", ns, err)
+			return nil, nil, nil, fmt.Errorf("failed to create address set for namespace: %s, error: %v", ns, err)
 		}
-		oc.namespaces[ns] = nsInfo
+		nsm.namespaces[ns] = nsInfo
 	} else {
 		nsInfoExisted = true
 		// if we found an existing nsInfo, do not hold the namespaces lock
 		// while waiting for nsInfo to Lock
-		oc.namespacesMutex.Unlock()
+		nsm.namespacesMutex.Unlock()
 	}
 
 	var unlockFunc func()
@@ -488,25 +489,49 @@ func (oc *DefaultNetworkController) ensureNamespaceLocked(ns string, readOnly bo
 
 	if nsInfoExisted {
 		// Check that the namespace wasn't deleted while we were waiting for the lock
-		oc.namespacesMutex.Lock()
-		defer oc.namespacesMutex.Unlock()
-		if nsInfo != oc.namespaces[ns] {
+		nsm.namespacesMutex.Lock()
+		defer nsm.namespacesMutex.Unlock()
+		if nsInfo != nsm.namespaces[ns] {
 			unlockFunc()
-			return nil, nil, fmt.Errorf("namespace %s, was removed during ensure", ns)
+			return nil, nil, nil, fmt.Errorf("namespace %s, was removed during ensure", ns)
 		}
 	}
 
 	// nsInfo and namespace didn't exist, get it from lister
 	if namespace == nil {
 		var err error
-		namespace, err = oc.watchFactory.GetNamespace(ns)
+		namespace, err = bnc.watchFactory.GetNamespace(ns)
 		if err != nil {
-			namespace, err = oc.client.CoreV1().Namespaces().Get(context.TODO(), ns, metav1.GetOptions{})
+			namespace, err = bnc.client.CoreV1().Namespaces().Get(context.TODO(), ns, metav1.GetOptions{})
 			if err != nil {
 				klog.Warningf("Unable to find namespace during ensure in informer cache or kube api server. " +
 					"Will defer configuring namespace.")
 			}
 		}
+	}
+	return namespace, nsInfo, unlockFunc, nil
+}
+
+// ensureNamespaceLocked locks namespacesMutex, gets/creates an entry for ns, configures OVN nsInfo, and returns it
+// with its mutex locked.
+// ns is the name of the namespace, while namespace is the optional k8s namespace object
+// if no k8s namespace object is provided, this function will attempt to find it via informer cache
+func (oc *DefaultNetworkController) ensureNamespaceLocked(ns string, readOnly bool, namespace *kapi.Namespace) (*namespaceInfo, func(), error) {
+	var ips []net.IP
+	// special handling of host network namespace
+	if config.Kubernetes.HostNetworkNamespace != "" &&
+		ns == config.Kubernetes.HostNetworkNamespace {
+		ips = oc.GetAllHostNamespaceAddresss(ns)
+	}
+	ips = oc.GetAllNamespacePodAddresss(ns)
+
+	namespace, nsInfo, unlockFunc, err := oc.ensureNamespaceLockedCommon(&oc.namespaceManager, oc.addressSetFactory,
+		ips, ns, readOnly, namespace)
+	if err != nil {
+		if unlockFunc != nil {
+			unlockFunc()
+		}
+		return nil, nil, err
 	}
 
 	if namespace != nil {
@@ -577,8 +602,9 @@ func (nsm *namespaceManager) deleteNamespaceLocked(stopChan chan struct{}, ns st
 	return nsInfo
 }
 
-func (oc *DefaultNetworkController) createNamespaceAddrSetAllPods(ns string) (addressset.AddressSet, error) {
+func (oc *DefaultNetworkController) GetAllHostNamespaceAddresss(ns string) []net.IP {
 	var ips []net.IP
+
 	// special handling of host network namespace
 	if config.Kubernetes.HostNetworkNamespace != "" &&
 		ns == config.Kubernetes.HostNetworkNamespace {
@@ -611,15 +637,20 @@ func (oc *DefaultNetworkController) createNamespaceAddrSetAllPods(ns string) (ad
 			}
 		}
 	}
+	return ips
+}
+
+func (nci *NetworkControllerInfo) GetAllNamespacePodAddresss(ns string) []net.IP {
+	var ips []net.IP
 	// Get all the pods in the namespace and append their IP to the address_set
-	existingPods, err := oc.watchFactory.GetPods(ns)
+	existingPods, err := nci.watchFactory.GetPods(ns)
 	if err != nil {
 		klog.Errorf("Failed to get all the pods (%v)", err)
 	} else {
 		ips = make([]net.IP, 0, len(existingPods))
 		for _, pod := range existingPods {
 			if util.PodWantsNetwork(pod) && !util.PodCompleted(pod) && util.PodScheduled(pod) {
-				podIPs, err := util.GetAllPodIPs(pod, &oc.NetInfo)
+				podIPs, err := util.GetAllPodIPs(pod, &nci.NetInfo)
 				if err != nil {
 					klog.Warningf(err.Error())
 					continue
@@ -628,5 +659,5 @@ func (oc *DefaultNetworkController) createNamespaceAddrSetAllPods(ns string) (ad
 			}
 		}
 	}
-	return oc.addressSetFactory.NewAddressSet(ns, ips)
+	return ips
 }

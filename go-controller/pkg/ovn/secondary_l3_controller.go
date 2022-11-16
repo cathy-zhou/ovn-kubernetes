@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
+	knet "k8s.io/api/networking/v1"
 	"net"
 	"reflect"
 	"strings"
@@ -16,9 +17,11 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
+	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/subnetallocator"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	kapi "k8s.io/api/core/v1"
@@ -35,8 +38,9 @@ type SecondaryL3Controller struct {
 	wg       *sync.WaitGroup
 	stopChan chan struct{}
 
-	nodeHandler *factory.Handler
-	podHandler  *factory.Handler
+	namespaceHandler *factory.Handler
+	nodeHandler      *factory.Handler
+	podHandler       *factory.Handler
 
 	// configured cluster subnets
 	clusterSubnets []config.CIDRNetworkEntry
@@ -44,11 +48,12 @@ type SecondaryL3Controller struct {
 	// FIXME DUAL-STACK -  Make IP Allocators more dual-stack friendly
 	masterSubnetAllocator *subnetallocator.HostSubnetAllocator
 
-	// A cache of all logical switches seen by the watcher and their subnets
-	lsManager *lsm.LogicalSwitchManager
+	// Info related to network policy, including addressSetFactory, network policies map
+	// and map of existing shared port groups for network policies
+	NetworkPolicyInfo
 
-	// A cache of all logical ports known to the controller
-	logicalPortCache *portCache
+	// Is ACL logging enabled while configuring meters?
+	aclLoggingEnabled bool
 
 	// retry framework for pods
 	retryPods *retry.RetryFramework
@@ -58,6 +63,9 @@ type SecondaryL3Controller struct {
 	// Node-specific syncMaps used by node event handler
 	addNodeFailed               sync.Map
 	nodeClusterRouterPortFailed sync.Map
+
+	// retry framework for namespaces
+	retryNamespaces *retry.RetryFramework
 
 	//podRecorder metrics.PodRecorder
 	isStarted bool
@@ -74,6 +82,7 @@ func NewSecondaryL3Controller(bnc *BaseNetworkController, netInfo *util.NetInfo,
 		return nil, fmt.Errorf("cluster subnet %s for network %s is invalid: %v",
 			l3NetConfInfo.NetCidr, netInfo.NetName, err)
 	}
+	addressSetFactory := addressset.NewOvnAddressSetFactory(bnc.nbClient, netInfo)
 
 	stopChan := make(chan struct{})
 	oc = &SecondaryL3Controller{
@@ -86,8 +95,14 @@ func NewSecondaryL3Controller(bnc *BaseNetworkController, netInfo *util.NetInfo,
 		wg:                    &sync.WaitGroup{},
 		clusterSubnets:        clusterSubnets,
 		masterSubnetAllocator: subnetallocator.NewHostSubnetAllocator(),
-		lsManager:             lsm.NewLogicalSwitchManager(),
-		logicalPortCache:      newPortCache(stopChan),
+		NetworkPolicyInfo: NetworkPolicyInfo{
+			lsManager:              lsm.NewLogicalSwitchManager(),
+			logicalPortCache:       newPortCache(stopChan),
+			namespaceManager:       namespaceManager{namespaces: make(map[string]*namespaceInfo), namespacesMutex: sync.Mutex{}},
+			addressSetFactory:      addressSetFactory,
+			networkPolicies:        syncmap.NewSyncMap[*networkPolicy](),
+			sharedNetpolPortGroups: syncmap.NewSyncMap[*defaultDenyPortGroups](),
+		},
 	}
 
 	oc.initRetryFrameworkForMaster()
@@ -180,6 +195,10 @@ func (oc *SecondaryL3Controller) Stop(deleteLogicalEntities bool) error {
 		oc.watchFactory.RemoveNodeHandler(oc.nodeHandler)
 	}
 
+	if oc.namespaceHandler != nil {
+		oc.watchFactory.RemoveNamespaceHandler(oc.namespaceHandler)
+	}
+
 	if !deleteLogicalEntities {
 		return nil
 	}
@@ -189,14 +208,18 @@ func (oc *SecondaryL3Controller) Stop(deleteLogicalEntities bool) error {
 
 	// first delete node logical switches
 	ops, err = libovsdbops.DeleteLogicalSwitchesWithPredicateOps(oc.nbClient, ops,
-		func(item *nbdb.LogicalSwitch) bool { return item.ExternalIDs["network_name"] == oc.NetName })
+		func(item *nbdb.LogicalSwitch) bool {
+			return item.ExternalIDs[ovntypes.NetworkNameExternalID] == oc.NetName
+		})
 	if err != nil {
 		return fmt.Errorf("failed to get ops for deleting switches of network %s", oc.NetName)
 	}
 
 	// now delete cluster router
 	ops, err = libovsdbops.DeleteLogicalRoutersWithPredicateOps(oc.nbClient, ops,
-		func(item *nbdb.LogicalRouter) bool { return item.ExternalIDs["network_name"] == oc.NetName })
+		func(item *nbdb.LogicalRouter) bool {
+			return item.ExternalIDs[ovntypes.NetworkNameExternalID] == oc.NetName
+		})
 	if err != nil {
 		return fmt.Errorf("failed to get ops for deleting routers of network %s", oc.NetName)
 	}
@@ -232,6 +255,12 @@ func (oc *SecondaryL3Controller) Run() error {
 	klog.Infof("Starting all the Watchers...")
 	start := time.Now()
 
+	// WatchNamespaces() should be started first because it has no other
+	// dependencies, and WatchNodes() depends on it
+	if err := oc.WatchNamespaces(); err != nil {
+		return err
+	}
+
 	if err := oc.WatchNodes(); err != nil {
 		return err
 	}
@@ -249,6 +278,16 @@ func (oc *SecondaryL3Controller) Run() error {
 	}
 
 	return nil
+}
+
+// WatchNamespaces starts the watching of namespace resource and calls
+// back the appropriate handler logic
+func (oc *SecondaryL3Controller) WatchNamespaces() error {
+	handler, err := oc.retryNamespaces.WatchResource()
+	if err == nil {
+		oc.namespaceHandler = handler
+	}
+	return err
 }
 
 // WatchNodes starts the watching of node resource and calls
@@ -281,6 +320,18 @@ func (oc *SecondaryL3Controller) AddResource(eventObjType reflect.Type, obj inte
 		}
 		return oc.ensurePod(nil, pod, true)
 
+	case factory.PolicyType:
+		np, ok := obj.(*knet.NetworkPolicy)
+		if !ok {
+			return fmt.Errorf("could not cast %T object to *knet.NetworkPolicy", obj)
+		}
+
+		if err = oc.addNetworkPolicyCommon(oc, &oc.NetworkPolicyInfo, np); err != nil {
+			klog.Infof("Network Policy add failed for %s/%s, will try again later: %v",
+				np.Namespace, np.Name, err)
+			return err
+		}
+
 	case factory.NodeType:
 		node, ok := obj.(*kapi.Node)
 		if !ok {
@@ -300,6 +351,13 @@ func (oc *SecondaryL3Controller) AddResource(eventObjType reflect.Type, obj inte
 				node.Name, oc.NetName, err)
 			return err
 		}
+
+	case factory.NamespaceType:
+		ns, ok := obj.(*kapi.Namespace)
+		if !ok {
+			return fmt.Errorf("could not cast %T object to *kapi.Namespace", obj)
+		}
+		return oc.AddNamespace(ns)
 
 	default:
 		return fmt.Errorf("no add function for object type %s", eventObjType)
@@ -331,6 +389,9 @@ func (oc *SecondaryL3Controller) UpdateResource(eventObjType reflect.Type, oldOb
 		clusterRtrSync := failed || nodeChassisChanged(oldNode, newNode) || nodeSubnetChanged(oldNode, newNode)
 
 		return oc.addUpdateNodeEvent(newNode, &nodeSyncs{syncNode: nodeSync, syncClusterRouterPort: clusterRtrSync})
+	case factory.NamespaceType:
+		oldNs, newNs := oldObj.(*kapi.Namespace), newObj.(*kapi.Namespace)
+		return oc.updateNamespace(oldNs, newNs)
 	}
 	return fmt.Errorf("no update function for object type %s", eventObjType)
 }
@@ -689,5 +750,98 @@ func (oc *SecondaryL3Controller) syncNodes(nodes []interface{}) error {
 			}
 		}
 	}
+	return nil
+}
+
+/// AddNamespace creates corresponding addressset in ovn db
+func (oc *SecondaryL3Controller) AddNamespace(ns *kapi.Namespace) error {
+	klog.Infof("[%s] adding namespace for network %s", ns.Name, oc.NetName)
+	// Keep track of how long syncs take.
+	start := time.Now()
+	defer func() {
+		klog.Infof("[%s] adding namespace for network %s took %v", ns.Name, oc.NetName, time.Since(start))
+	}()
+
+	_, nsUnlock, err := oc.ensureNamespaceLocked(ns.Name, false, ns)
+	if err != nil {
+		return fmt.Errorf("failed to ensure namespace locked: %v", err)
+	}
+	defer nsUnlock()
+	return nil
+}
+
+// ensureNamespaceLocked locks namespacesMutex, gets/creates an entry for ns, configures OVN nsInfo, and returns it
+// with its mutex locked.
+// ns is the name of the namespace, while namespace is the optional k8s namespace object
+// if no k8s namespace object is provided, this function will attempt to find it via informer cache
+func (oc *SecondaryL3Controller) ensureNamespaceLocked(ns string, readOnly bool, namespace *kapi.Namespace) (*namespaceInfo, func(), error) {
+	ips := oc.GetAllNamespacePodAddresss(ns)
+
+	namespace, nsInfo, unlockFunc, err := oc.ensureNamespaceLockedCommon(&oc.namespaceManager, oc.addressSetFactory,
+		ips, ns, readOnly, namespace)
+	if err != nil {
+		if unlockFunc != nil {
+			unlockFunc()
+		}
+		return nil, nil, err
+	}
+
+	if namespace != nil {
+		if annotation, ok := namespace.Annotations[util.AclLoggingAnnotation]; ok {
+			if err := aclLoggingUpdateNsInfo(oc.aclLoggingEnabled, annotation, nsInfo); err == nil {
+				klog.Infof("Namespace %s: ACL logging is set to deny=%s allow=%s", namespace.Name,
+					nsInfo.aclLogging.Deny, nsInfo.aclLogging.Allow)
+			} else {
+				klog.Warningf("Namespace %s: ACL logging contained malformed annotation, "+
+					"ACL logging is set to deny=%s allow=%s, err: %q",
+					namespace.Name, nsInfo.aclLogging.Deny, nsInfo.aclLogging.Allow, err)
+			}
+		}
+	}
+
+	return nsInfo, unlockFunc, nil
+}
+
+func (oc *SecondaryL3Controller) updateNamespace(old, newer *kapi.Namespace) error {
+	var errors []error
+	klog.Infof("[%s] updating namespace for network %s", old.Name, oc.NetName)
+
+	nsInfo, nsUnlock := oc.namespaceManager.getNamespaceLocked(old.Name, false)
+	if nsInfo == nil {
+		klog.Warningf("Update event for unknown namespace %q network %s", old.Name, oc.NetName)
+		return nil
+	}
+	defer nsUnlock()
+
+	aclAnnotation := newer.Annotations[util.AclLoggingAnnotation]
+	oldACLAnnotation := old.Annotations[util.AclLoggingAnnotation]
+	// support for ACL logging update, if new annotation is empty, make sure we propagate new setting
+	if aclAnnotation != oldACLAnnotation {
+		// When input cannot be parsed correctly, aclLoggingUpdateNsInfo disables logging and returns an error. Hence,
+		// log a warning to make users aware of issues with the annotation. See aclLoggingUpdateNsInfo for more details.
+		if err := aclLoggingUpdateNsInfo(oc.aclLoggingEnabled, aclAnnotation, nsInfo); err != nil {
+			klog.Warningf("Namespace %s: ACL logging contained malformed annotation, "+
+				"ACL logging is set to deny=%s allow=%s, err: %q",
+				newer.Name, nsInfo.aclLogging.Deny, nsInfo.aclLogging.Allow, err)
+		}
+		if err := oc.handleNetPolNamespaceUpdate(&oc.NetworkPolicyInfo, old.Name, nsInfo); err != nil {
+			errors = append(errors, err)
+		} else {
+			klog.Infof("Namespace %s: NetworkPolicy ACL logging setting updated to deny=%s allow=%s",
+				old.Name, nsInfo.aclLogging.Deny, nsInfo.aclLogging.Allow)
+		}
+	}
+
+	return kerrors.NewAggregate(errors)
+}
+
+func (oc *SecondaryL3Controller) deleteNamespace(ns *kapi.Namespace) error {
+	klog.Infof("[%s] deleting namespace", ns.Name)
+
+	nsInfo := oc.namespaceManager.deleteNamespaceLocked(oc.stopChan, ns.Name)
+	if nsInfo == nil {
+		return nil
+	}
+	defer nsInfo.Unlock()
 	return nil
 }

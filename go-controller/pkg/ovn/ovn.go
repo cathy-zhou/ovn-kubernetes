@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
 	"net"
 	"reflect"
 	"sync"
@@ -18,10 +19,12 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
+	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	egresssvc "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/egress_services"
 	svccontroller "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/services"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/unidling"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/healthcheck"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
 	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
@@ -65,6 +68,9 @@ type BaseNetworkController struct {
 
 	// has SCTP support
 	SCTPSupport bool
+
+	// ACLLoggingMeter enabled
+	aclLoggingEnabled bool
 }
 
 // NetworkControllerInfo structure holds network specific configuration
@@ -73,6 +79,37 @@ type NetworkControllerInfo struct {
 	// per controller nad/netconf name information
 	util.NetInfo
 	util.NetConfInfo
+}
+
+type NetworkPolicyInfo struct {
+	// A cache of all logical switches seen by the watcher and their subnets
+	lsManager *lsm.LogicalSwitchManager
+
+	// A cache of all logical ports known to the controller
+	logicalPortCache *portCache
+
+	// Info about known namespaces. You must use oc.getNamespaceLocked() or
+	// oc.waitForNamespaceLocked() to read this map, and oc.createNamespaceLocked()
+	// or oc.deleteNamespaceLocked() to modify it. namespacesMutex is only held
+	// from inside those functions.
+	namespaceManager
+
+	// An address set factory that creates address sets
+	addressSetFactory addressset.AddressSetFactory
+
+	// network policies map, key should be retrieved with getPolicyKey(policy *knet.NetworkPolicy).
+	// network policies that failed to be created will also be added here, and can be retried or cleaned up later.
+	// network policy is only deleted from this map after successful cleanup.
+	// Allowed order of locking is namespace Lock -> oc.networkPolicies key Lock -> networkPolicy.Lock
+	// Don't take namespace Lock while holding networkPolicy key lock to avoid deadlock.
+	networkPolicies *syncmap.SyncMap[*networkPolicy]
+
+	// map of existing shared port groups for network policies
+	// port group exists in the db if and only if port group key is present in this map
+	// key is namespace
+	// allowed locking order is namespace Lock -> networkPolicy.Lock -> sharedNetpolPortGroups key Lock
+	// make sure to keep this order to avoid deadlocks
+	sharedNetpolPortGroups *syncmap.SyncMap[*defaultDenyPortGroups]
 }
 
 type Controller interface {
@@ -119,16 +156,17 @@ func getPodNamespacedName(pod *kapi.Pod) string {
 // NewBaseNetworkController creates BaseNetworkController shared by controllers
 func NewBaseNetworkController(client clientset.Interface, kube kube.Interface, wf *factory.WatchFactory,
 	recorder record.EventRecorder, nbClient libovsdbclient.Client,
-	sbClient libovsdbclient.Client, podRecorder *metrics.PodRecorder, SCTPSupport bool) *BaseNetworkController {
+	sbClient libovsdbclient.Client, podRecorder *metrics.PodRecorder, SCTPSupport bool, aclLoggingEnabled bool) *BaseNetworkController {
 	return &BaseNetworkController{
-		client:       client,
-		kube:         kube,
-		watchFactory: wf,
-		recorder:     recorder,
-		nbClient:     nbClient,
-		sbClient:     sbClient,
-		podRecorder:  podRecorder,
-		SCTPSupport:  SCTPSupport,
+		client:            client,
+		kube:              kube,
+		watchFactory:      wf,
+		recorder:          recorder,
+		nbClient:          nbClient,
+		sbClient:          sbClient,
+		podRecorder:       podRecorder,
+		SCTPSupport:       SCTPSupport,
+		aclLoggingEnabled: aclLoggingEnabled,
 	}
 }
 
@@ -489,12 +527,12 @@ func (oc *DefaultNetworkController) WatchNodes() error {
 // *) If one of "allow" or "deny" can be parsed and has a valid value, but the other key is not present in the
 //
 //	annotation, then assume that this key should be disabled by setting its nsInfo value to "".
-func (oc *DefaultNetworkController) aclLoggingUpdateNsInfo(annotation string, nsInfo *namespaceInfo) error {
+func aclLoggingUpdateNsInfo(aclLoggingEnabled bool, annotation string, nsInfo *namespaceInfo) error {
 	var aclLevels ACLLoggingLevels
 	var errors []error
 
 	// If logging is disabled or if the annotation is "" or "{}", use empty strings. Otherwise, parse the annotation.
-	if oc.aclLoggingEnabled && annotation != "" && annotation != "{}" {
+	if aclLoggingEnabled && annotation != "" && annotation != "{}" {
 		err := json.Unmarshal([]byte(annotation), &aclLevels)
 		if err != nil {
 			// Disable Allow and Deny logging to ensure idempotency.

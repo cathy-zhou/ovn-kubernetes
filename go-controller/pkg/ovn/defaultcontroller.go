@@ -52,18 +52,6 @@ type DefaultNetworkController struct {
 	// cluster's east-west traffic.
 	loadbalancerClusterCache map[kapi.Protocol]string
 
-	// A cache of all logical switches seen by the watcher and their subnets
-	lsManager *lsm.LogicalSwitchManager
-
-	// A cache of all logical ports known to the controller
-	logicalPortCache *portCache
-
-	// Info about known namespaces. You must use oc.getNamespaceLocked() or
-	// oc.waitForNamespaceLocked() to read this map, and oc.createNamespaceLocked()
-	// or oc.deleteNamespaceLocked() to modify it. namespacesMutex is only held
-	// from inside those functions.
-	namespaceManager
-
 	externalGWCache map[ktypes.NamespacedName]*externalRouteInfo
 	exGWCacheMutex  sync.RWMutex
 
@@ -84,22 +72,9 @@ type DefaultNetworkController struct {
 	egressQoSNodeSynced cache.InformerSynced
 	egressQoSNodeQueue  workqueue.RateLimitingInterface
 
-	// An address set factory that creates address sets
-	addressSetFactory addressset.AddressSetFactory
-
-	// network policies map, key should be retrieved with getPolicyKey(policy *knet.NetworkPolicy).
-	// network policies that failed to be created will also be added here, and can be retried or cleaned up later.
-	// network policy is only deleted from this map after successful cleanup.
-	// Allowed order of locking is namespace Lock -> oc.networkPolicies key Lock -> networkPolicy.Lock
-	// Don't take namespace Lock while holding networkPolicy key lock to avoid deadlock.
-	networkPolicies *syncmap.SyncMap[*networkPolicy]
-
-	// map of existing shared port groups for network policies
-	// port group exists in the db if and only if port group key is present in this map
-	// key is namespace
-	// allowed locking order is namespace Lock -> networkPolicy.Lock -> sharedNetpolPortGroups key Lock
-	// make sure to keep this order to avoid deadlocks
-	sharedNetpolPortGroups *syncmap.SyncMap[*defaultDenyPortGroups]
+	// Info related to network policy, including addressSetFactory, network policies map
+	// and map of existing shared port groups for network policies
+	NetworkPolicyInfo
 
 	// Supports multicast?
 	multicastSupport bool
@@ -179,8 +154,15 @@ func newDefaultControllerCommon(bnc *BaseNetworkController,
 	defaultStopChan chan struct{}, defaultWg *sync.WaitGroup,
 	addressSetFactory addressset.AddressSetFactory) *DefaultNetworkController {
 
+	netInfo := util.NetInfo{
+		NetName:     ovntypes.DefaultNetworkName,
+		Prefix:      "",
+		IsSecondary: false,
+		NadNames:    &sync.Map{},
+	}
+
 	if addressSetFactory == nil {
-		addressSetFactory = addressset.NewOvnAddressSetFactory(bnc.nbClient)
+		addressSetFactory = addressset.NewOvnAddressSetFactory(bnc.nbClient, &netInfo)
 	}
 	svcController, svcFactory := newServiceController(bnc.client, bnc.nbClient, bnc.recorder)
 	egressSvcController := newEgressServiceController(bnc.client, bnc.nbClient, svcFactory, defaultStopChan)
@@ -192,25 +174,22 @@ func newDefaultControllerCommon(bnc *BaseNetworkController,
 		NetworkControllerInfo: NetworkControllerInfo{
 			BaseNetworkController: *bnc,
 			NetConfInfo:           &util.DefaultNetConfInfo{},
-			NetInfo: util.NetInfo{
-				NetName:     ovntypes.DefaultNetworkName,
-				Prefix:      "",
-				IsSecondary: false,
-				NadNames:    &sync.Map{},
-			},
+			NetInfo:               netInfo,
 		},
 		stopChan:                     defaultStopChan,
 		wg:                           defaultWg,
 		masterSubnetAllocator:        subnetallocator.NewHostSubnetAllocator(),
 		hybridOverlaySubnetAllocator: hybridOverlaySubnetAllocator,
-		lsManager:                    lsm.NewLogicalSwitchManager(),
-		logicalPortCache:             newPortCache(defaultStopChan),
-		namespaceManager:             namespaceManager{namespaces: make(map[string]*namespaceInfo), namespacesMutex: sync.Mutex{}},
 		externalGWCache:              make(map[ktypes.NamespacedName]*externalRouteInfo),
 		exGWCacheMutex:               sync.RWMutex{},
-		addressSetFactory:            addressSetFactory,
-		networkPolicies:              syncmap.NewSyncMap[*networkPolicy](),
-		sharedNetpolPortGroups:       syncmap.NewSyncMap[*defaultDenyPortGroups](),
+		NetworkPolicyInfo: NetworkPolicyInfo{
+			lsManager:              lsm.NewLogicalSwitchManager(),
+			logicalPortCache:       newPortCache(defaultStopChan),
+			namespaceManager:       namespaceManager{namespaces: make(map[string]*namespaceInfo), namespacesMutex: sync.Mutex{}},
+			addressSetFactory:      addressSetFactory,
+			networkPolicies:        syncmap.NewSyncMap[*networkPolicy](),
+			sharedNetpolPortGroups: syncmap.NewSyncMap[*defaultDenyPortGroups](),
+		},
 		eIPC: egressIPController{
 			egressIPAssignmentMutex:           &sync.Mutex{},
 			podAssignmentMutex:                &sync.Mutex{},
@@ -401,7 +380,7 @@ func (oc *DefaultNetworkController) AddResource(eventObjType reflect.Type, obj i
 
 	case factory.PeerNamespaceAndPodSelectorType:
 		extraParameters := extraParameters.(*NetworkPolicyExtraParameters)
-		return oc.handlePeerNamespaceAndPodAdd(extraParameters.np, extraParameters.gp,
+		return oc.handlePeerNamespaceAndPodAdd(oc, extraParameters.np, extraParameters.gp,
 			extraParameters.podSelector, obj)
 
 	case factory.PeerPodForNamespaceAndPodSelectorType:
@@ -410,11 +389,12 @@ func (oc *DefaultNetworkController) AddResource(eventObjType reflect.Type, obj i
 
 	case factory.PeerNamespaceSelectorType:
 		extraParameters := extraParameters.(*NetworkPolicyExtraParameters)
-		return oc.handlePeerNamespaceSelectorAdd(extraParameters.np, extraParameters.gp, obj)
+		return oc.handlePeerNamespaceSelectorAdd(&oc.NetworkPolicyInfo, extraParameters.np, extraParameters.gp, obj)
 
 	case factory.LocalPodSelectorType:
 		extraParameters := extraParameters.(*NetworkPolicyExtraParameters)
 		return oc.handleLocalPodSelectorAddFunc(
+			&oc.NetworkPolicyInfo,
 			extraParameters.np,
 			obj)
 
@@ -531,6 +511,7 @@ func (oc *DefaultNetworkController) UpdateResource(eventObjType reflect.Type, ol
 	case factory.LocalPodSelectorType:
 		extraParameters := extraParameters.(*NetworkPolicyExtraParameters)
 		return oc.handleLocalPodSelectorAddFunc(
+			&oc.NetworkPolicyInfo,
 			extraParameters.np,
 			newObj)
 
@@ -671,7 +652,7 @@ func (oc *DefaultNetworkController) DeleteResource(eventObjType reflect.Type, ob
 
 	case factory.PeerNamespaceSelectorType:
 		extraParameters := extraParameters.(*NetworkPolicyExtraParameters)
-		return oc.handlePeerNamespaceSelectorDel(extraParameters.np, extraParameters.gp, obj)
+		return oc.handlePeerNamespaceSelectorDel(&oc.NetworkPolicyInfo, extraParameters.np, extraParameters.gp, obj)
 
 	case factory.LocalPodSelectorType:
 		extraParameters := extraParameters.(*NetworkPolicyExtraParameters)

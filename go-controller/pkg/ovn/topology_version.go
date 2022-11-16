@@ -28,7 +28,7 @@ func (oc *DefaultNetworkController) ovnTopologyCleanup() error {
 
 	// Cleanup address sets in non dual stack formats in all versions known to possibly exist.
 	if ver <= ovntypes.OvnPortBindingTopoVersion {
-		err = addressset.NonDualStackAddressSetCleanup(oc.nbClient)
+		err = addressset.NonDualStackAddressSetCleanup(&oc.NetInfo, oc.nbClient)
 	}
 	return err
 }

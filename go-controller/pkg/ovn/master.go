@@ -164,13 +164,6 @@ func (oc *DefaultNetworkController) StartClusterMaster() error {
 		}
 	}
 
-	err = oc.createACLLoggingMeter()
-	if err != nil {
-		klog.Warningf("ACL logging support enabled, however acl-logging meter could not be created: %v. "+
-			"Disabling ACL logging support", err)
-		oc.aclLoggingEnabled = false
-	}
-
 	// FIXME: When https://github.com/ovn-org/libovsdb/issues/235 is fixed,
 	// use IsTableSupported(nbdb.LoadBalancerGroup).
 	if _, _, err := util.RunOVNNbctl("--columns=_uuid", "list", "Load_Balancer_Group"); err != nil {
@@ -247,7 +240,7 @@ func (oc *DefaultNetworkController) SetupMaster(existingNodeNames []string) erro
 	oc.defaultCOPPUUID = *(logicalRouter.Copp)
 
 	// Create a cluster-wide port group that all logical switch ports are part of
-	pg := libovsdbops.BuildPortGroup(types.ClusterPortGroupName, types.ClusterPortGroupName, nil, nil)
+	pg := buildPortGroup(types.ClusterPortGroupName, types.ClusterPortGroupName, nil, nil, &oc.NetInfo)
 	err = libovsdbops.CreateOrUpdatePortGroups(oc.nbClient, pg)
 	if err != nil {
 		klog.Errorf("Failed to create cluster port group: %v", err)
@@ -257,7 +250,7 @@ func (oc *DefaultNetworkController) SetupMaster(existingNodeNames []string) erro
 	// Create a cluster-wide port group with all node-to-cluster router
 	// logical switch ports.  Currently the only user is multicast but it might
 	// be used for other features in the future.
-	pg = libovsdbops.BuildPortGroup(types.ClusterRtrPortGroupName, types.ClusterRtrPortGroupName, nil, nil)
+	pg = buildPortGroup(types.ClusterRtrPortGroupName, types.ClusterRtrPortGroupName, nil, nil, &oc.NetInfo)
 	err = libovsdbops.CreateOrUpdatePortGroups(oc.nbClient, pg)
 	if err != nil {
 		klog.Errorf("Failed to create cluster port group: %v", err)
@@ -538,7 +531,7 @@ func (nci *NetworkControllerInfo) createNodeLogicalSwitch(nodeName string, hostS
 		Name: switchName,
 	}
 	if nci.IsSecondary {
-		logicalSwitch.ExternalIDs = map[string]string{"network_name": nci.NetName}
+		logicalSwitch.ExternalIDs = map[string]string{types.NetworkNameExternalID: nci.NetName}
 	}
 
 	var v4Gateway, v6Gateway net.IP
@@ -1259,35 +1252,5 @@ func (oc *DefaultNetworkController) deleteNodeEvent(node *kapi.Node) error {
 	oc.mgmtPortFailed.Delete(node.Name)
 	oc.gatewaysFailed.Delete(node.Name)
 	oc.nodeClusterRouterPortFailed.Delete(node.Name)
-	return nil
-}
-
-func (oc *DefaultNetworkController) createACLLoggingMeter() error {
-	band := &nbdb.MeterBand{
-		Action: types.MeterAction,
-		Rate:   config.Logging.ACLLoggingRateLimit,
-	}
-	ops, err := libovsdbops.CreateMeterBandOps(oc.nbClient, nil, band)
-	if err != nil {
-		return fmt.Errorf("can't create meter band %v: %v", band, err)
-	}
-
-	meterFairness := true
-	meter := &nbdb.Meter{
-		Name: types.OvnACLLoggingMeter,
-		Fair: &meterFairness,
-		Unit: types.PacketsPerSecond,
-	}
-	ops, err = libovsdbops.CreateOrUpdateMeterOps(oc.nbClient, ops, meter, []*nbdb.MeterBand{band},
-		&meter.Bands, &meter.Fair, &meter.Unit)
-	if err != nil {
-		return fmt.Errorf("can't create meter %v: %v", meter, err)
-	}
-
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
-	if err != nil {
-		return fmt.Errorf("can't transact ACL logging meter: %v", err)
-	}
-
 	return nil
 }

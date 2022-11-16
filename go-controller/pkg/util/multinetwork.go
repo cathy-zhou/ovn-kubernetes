@@ -169,7 +169,7 @@ func ParseNetConf(netattachdef *nettypes.NetworkAttachmentDefinition) (*ovncnity
 //    error:  error in case of failure
 func IsNetworkOnPod(pod *kapi.Pod, netInfo *NetInfo) (bool, *nettypes.NetworkSelectionElement, error) {
 	podDesc := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
-	if !netInfo.IsSecondary {
+	if netInfo == nil || !netInfo.IsSecondary {
 		defaultNetwork, err := GetK8sPodDefaultNetwork(pod)
 		if err != nil {
 			// multus won't add this Pod if this fails, should never happen
@@ -199,4 +199,22 @@ func IsNetworkOnPod(pod *kapi.Pod, netInfo *NetInfo) (bool, *nettypes.NetworkSel
 		return false, nil, nil
 	}
 	return true, nses[0], nil
+}
+
+// GetPodLogicalPortNames gets logical port names on the given network
+func GetPodLogicalPortNames(pod *kapi.Pod, netInfo *NetInfo) (string, error) {
+	on, network, err := IsNetworkOnPod(pod, netInfo)
+	if err != nil {
+		return "", err
+	}
+	if !on {
+		return "", fmt.Errorf("pod %s/%s is not on the given network %s", pod.Namespace, pod.Name, netInfo.NetName)
+	}
+	// the pod is attached to this given network
+	portName := GetLogicalPortName(pod.Namespace, pod.Name)
+	if netInfo.IsSecondary {
+		nadName := GetNadKeyName(network.Namespace, network.Name)
+		portName = GetSecondaryNetworkLogicalPortName(pod.Namespace, pod.Name, nadName)
+	}
+	return portName, nil
 }

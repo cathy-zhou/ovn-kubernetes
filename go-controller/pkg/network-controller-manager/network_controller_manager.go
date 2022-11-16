@@ -55,6 +55,8 @@ type NetworkControllerManager struct {
 	sbClient libovsdbclient.Client
 	// has SCTP support
 	SCTPSupport bool
+	// ACLLoggingMeter enabled
+	aclLoggingEnabled bool
 
 	// default wait group and stop channel, used by default network controller
 	wg       *sync.WaitGroup
@@ -194,6 +196,14 @@ func (cm *NetworkControllerManager) Init() error {
 		return err
 	}
 
+	cm.aclLoggingEnabled = true
+	err = cm.createACLLoggingMeter()
+	if err != nil {
+		klog.Warningf("ACL logging support enabled, however acl-logging meter could not be created: %v. "+
+			"Disabling ACL logging support", err)
+		cm.aclLoggingEnabled = false
+	}
+
 	cm.configureMetrics()
 
 	cm.NewDefaultController()
@@ -212,6 +222,36 @@ func (cm *NetworkControllerManager) configureSCTPSupport() error {
 		klog.Info("SCTP support detected in OVN")
 	}
 	cm.SCTPSupport = hasSCTPSupport
+	return nil
+}
+
+func (cm *NetworkControllerManager) createACLLoggingMeter() error {
+	band := &nbdb.MeterBand{
+		Action: ovntypes.MeterAction,
+		Rate:   config.Logging.ACLLoggingRateLimit,
+	}
+	ops, err := libovsdbops.CreateMeterBandOps(cm.nbClient, nil, band)
+	if err != nil {
+		return fmt.Errorf("can't create meter band %v: %v", band, err)
+	}
+
+	meterFairness := true
+	meter := &nbdb.Meter{
+		Name: ovntypes.OvnACLLoggingMeter,
+		Fair: &meterFairness,
+		Unit: ovntypes.PacketsPerSecond,
+	}
+	ops, err = libovsdbops.CreateOrUpdateMeterOps(cm.nbClient, ops, meter, []*nbdb.MeterBand{band},
+		&meter.Bands, &meter.Fair, &meter.Unit)
+	if err != nil {
+		return fmt.Errorf("can't create meter %v: %v", meter, err)
+	}
+
+	_, err = libovsdbops.TransactAndCheck(cm.nbClient, ops)
+	if err != nil {
+		return fmt.Errorf("can't transact ACL logging meter: %v", err)
+	}
+
 	return nil
 }
 
@@ -245,7 +285,7 @@ func (cm *NetworkControllerManager) configureMetrics() {
 // NewDefaultController creates and returns the controller for default network
 func (cm *NetworkControllerManager) NewDefaultController() {
 	bnc := ovn.NewBaseNetworkController(cm.client, cm.kube, cm.watchFactory, cm.recorder, cm.nbClient,
-		cm.sbClient, cm.podRecorder, cm.SCTPSupport)
+		cm.sbClient, cm.podRecorder, cm.SCTPSupport, cm.aclLoggingEnabled)
 	defaultController := ovn.NewDefaultController(bnc)
 	cm.ovnControllers[ovntypes.DefaultNetworkName] = defaultController
 }

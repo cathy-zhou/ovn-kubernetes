@@ -60,7 +60,7 @@ type nadController struct {
 
 func (cm *NetworkControllerManager) NewNadController() *nadController {
 	cc := ovn.NewBaseNetworkController(cm.client, cm.kube, cm.watchFactory, cm.recorder, cm.nbClient,
-		cm.sbClient, cm.podRecorder, cm.SCTPSupport)
+		cm.sbClient, cm.podRecorder, cm.SCTPSupport, cm.aclLoggingEnabled)
 	nadFactory := netattachdefinformers.NewSharedInformerFactoryWithOptions(
 		cm.ovnClientset.NetworkAttchDefClient,
 		avoidResync,
