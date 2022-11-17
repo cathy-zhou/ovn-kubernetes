@@ -685,6 +685,7 @@ func (nci *NetworkControllerInfo) addPodLogicalPort(pod *kapi.Pod, lsManager *ls
 	if nci.IsSecondary() {
 		lsp.ExternalIDs[ovntypes.NetworkNameExternalID] = nci.GetNetworkName()
 		lsp.ExternalIDs[ovntypes.NadNameExternalID] = nadName
+		lsp.ExternalIDs[ovntypes.TopoTypeExternalID] = nci.GetTopologyType()
 	}
 
 	// CNI depends on the flows from port security, delay setting it until end

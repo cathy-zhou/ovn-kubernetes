@@ -24,7 +24,7 @@ type NetInfo interface {
 	IsSecondary() bool
 	GetPrefix() string
 	AddNad(nadName string)
-	DeleteNad(nadName string) bool
+	DeleteNad(nadName string)
 	IsNadExist(nadName string) bool
 }
 
@@ -67,19 +67,10 @@ func (nInfo *NetNameInfo) AddNad(nadName string) {
 }
 
 // DeleteNad deletes the specified nad and return true if no nads left
-func (nInfo *NetNameInfo) DeleteNad(nadName string) bool {
-	if nInfo == nil {
-		// default network always exists
-		return false
+func (nInfo *NetNameInfo) DeleteNad(nadName string) {
+	if nInfo != nil {
+		nInfo.nadNames.Delete(nadName)
 	}
-	nInfo.nadNames.Delete(nadName)
-	// check if there any other nads sharing the same CNI conf name left, if yes, just return
-	nadLeft := false
-	nInfo.nadNames.Range(func(key, value interface{}) bool {
-		nadLeft = true
-		return false
-	})
-	return !nadLeft
 }
 
 // IsNadExist returns true if the given nad exists, used
@@ -154,7 +145,7 @@ func ParseNADInfo(netattachdef *nettypes.NetworkAttachmentDefinition) (NetInfo, 
 	}
 
 	// default network netInfo is nil
-	nInfo = nil
+	nInfo = (*NetNameInfo)(nil)
 	if netconf.IsSecondary {
 		nInfo = &NetNameInfo{
 			netName:  netconf.Name,

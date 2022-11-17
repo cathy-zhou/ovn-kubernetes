@@ -243,13 +243,11 @@ type SecondaryLayer3NetworkController struct {
 	// Node-specific syncMaps used by node event handler
 	addNodeFailed               sync.Map
 	nodeClusterRouterPortFailed sync.Map
-
-	isStarted bool
 }
 
 // NewSecondaryLayer3NetworkController create a new OVN controller for the given secondary l3 nad
 func NewSecondaryLayer3NetworkController(bnc *BaseNetworkController, nInfo util.NetInfo,
-	netconfInfo *util.Layer3NetConfInfo) (*SecondaryLayer3NetworkController, error) {
+	netconfInfo *util.Layer3NetConfInfo) *SecondaryLayer3NetworkController {
 	stopChan := make(chan struct{})
 	oc := &SecondaryLayer3NetworkController{
 		NetworkControllerInfo: NetworkControllerInfo{
@@ -265,7 +263,7 @@ func NewSecondaryLayer3NetworkController(bnc *BaseNetworkController, nInfo util.
 	}
 
 	oc.initRetryFramework()
-	return oc, nil
+	return oc
 }
 
 func (oc *SecondaryLayer3NetworkController) initRetryFramework() {
@@ -303,10 +301,6 @@ func (oc *SecondaryLayer3NetworkController) newRetryFrameworkWithParameters(
 
 // Start starts the secondary layer3 controller, handles all events and creates all needed logical entities
 func (oc *SecondaryLayer3NetworkController) Start(ctx context.Context) error {
-	if oc.isStarted {
-		return nil
-	}
-
 	err := oc.Init()
 	if err != nil {
 		return err
@@ -316,7 +310,6 @@ func (oc *SecondaryLayer3NetworkController) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	oc.isStarted = true
 	return nil
 }
 
@@ -336,6 +329,13 @@ func (oc *SecondaryLayer3NetworkController) Stop(deleteLogicalEntities bool) err
 	if !deleteLogicalEntities {
 		return nil
 	}
+
+	return oc.DeleteLogicalEntities(oc.GetNetworkName())
+}
+
+// Cleanup logical entities for the given network, called from net-attach-def routine
+// could be called from an dummy Controller (only has BaseNetworkController set)
+func (oc *SecondaryLayer3NetworkController) DeleteLogicalEntities(netName string) error {
 	// cleanup related OVN logical entities
 	var ops []ovsdb.Operation
 	var err error
@@ -343,43 +343,42 @@ func (oc *SecondaryLayer3NetworkController) Stop(deleteLogicalEntities bool) err
 	// first delete node logical switches
 	ops, err = libovsdbops.DeleteLogicalSwitchesWithPredicateOps(oc.nbClient, ops,
 		func(item *nbdb.LogicalSwitch) bool {
-			return item.ExternalIDs[types.NetworkNameExternalID] == oc.GetNetworkName()
+			return item.ExternalIDs[types.NetworkNameExternalID] == netName
 		})
 	if err != nil {
-		return fmt.Errorf("failed to get ops for deleting switches of network %s", oc.GetNetworkName())
+		return fmt.Errorf("failed to get ops for deleting switches of network %s", netName)
 	}
 
 	// now delete cluster router
 	ops, err = libovsdbops.DeleteLogicalRoutersWithPredicateOps(oc.nbClient, ops,
 		func(item *nbdb.LogicalRouter) bool {
-			return item.ExternalIDs[types.NetworkNameExternalID] == oc.GetNetworkName()
+			return item.ExternalIDs[types.NetworkNameExternalID] == netName
 		})
 	if err != nil {
-		return fmt.Errorf("failed to get ops for deleting routers of network %s", oc.GetNetworkName())
+		return fmt.Errorf("failed to get ops for deleting routers of network %s", netName)
 	}
 
 	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
 	if err != nil {
-		return fmt.Errorf("failed to deleting routers/switches of network %s", oc.GetNetworkName())
+		return fmt.Errorf("failed to deleting routers/switches of network %s", netName)
 	}
 
 	// cleanup related OVN logical entities
 	existingNodes, err := oc.watchFactory.GetNodes()
 	if err != nil {
 		klog.Errorf("Error in initializing/fetching subnets: %v", err)
-	} else {
-		// remove hostsubnet annoation for this network
-		for _, node := range existingNodes {
-			oc.lsManager.DeleteSwitch(oc.GetPrefix() + node.Name)
-			if noHostSubnet(node) {
-				continue
-			}
-			hostSubnetsMap := map[string][]*net.IPNet{oc.GetNetworkName(): nil}
-			err = oc.UpdateNodeAnnotationWithRetry(node.Name, hostSubnetsMap, nil)
-			if err != nil {
-				return fmt.Errorf("failed to clear node %q subnet annotation for network %s",
-					node.Name, oc.GetNetworkName())
-			}
+		return nil
+	}
+	// remove hostsubnet annoation for this network
+	for _, node := range existingNodes {
+		if noHostSubnet(node) {
+			continue
+		}
+		hostSubnetsMap := map[string][]*net.IPNet{netName: nil}
+		err = oc.UpdateNodeAnnotationWithRetry(node.Name, hostSubnetsMap, nil)
+		if err != nil {
+			return fmt.Errorf("failed to clear node %q subnet annotation for network %s",
+				node.Name, netName)
 		}
 	}
 	return nil
@@ -411,6 +410,9 @@ func (oc *SecondaryLayer3NetworkController) Run() error {
 // WatchNodes starts the watching of node resource and calls
 // back the appropriate handler logic
 func (oc *SecondaryLayer3NetworkController) WatchNodes() error {
+	if oc.nodeHandler != nil {
+		return nil
+	}
 	handler, err := oc.retryNodes.WatchResource()
 	if err == nil {
 		oc.nodeHandler = handler
@@ -420,6 +422,9 @@ func (oc *SecondaryLayer3NetworkController) WatchNodes() error {
 
 // WatchPods starts the watching of the Pod resource and calls back the appropriate handler logic
 func (oc *SecondaryLayer3NetworkController) WatchPods() error {
+	if oc.podHandler != nil {
+		return nil
+	}
 	handler, err := oc.retryPods.WatchResource()
 	if err == nil {
 		oc.podHandler = handler

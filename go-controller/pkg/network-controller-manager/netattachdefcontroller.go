@@ -2,7 +2,6 @@ package networkControllerManager
 
 import (
 	"fmt"
-	"net"
 	"sync"
 	"time"
 
@@ -25,8 +24,8 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
 	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	"golang.org/x/time/rate"
 )
 
@@ -45,22 +44,19 @@ const (
 	maxRetries      = 10
 )
 
-type nadController struct {
-	BaseNetworkController *ovn.BaseNetworkController
-	cNameManager          *controllerNameManager
-	watchFactory          *factory.WatchFactory
-	nbClient              libovsdbclient.Client
-	stopChan              <-chan struct{}
-	nadFactory            networkattachmentdefinitioninformerfactory.SharedInformerFactory
-	netAttachDefLister    networkattachmentdefinitionlisters.NetworkAttachmentDefinitionLister
-	netAttachDefSynced    cache.InformerSynced
-	queue                 workqueue.RateLimitingInterface
-	loopPeriod            time.Duration
+type netAttachDefinitionController struct {
+	SecondaryNetworkControllerManager
+	bnc                *ovn.BaseNetworkController
+	watchFactory       *factory.WatchFactory
+	nbClient           libovsdbclient.Client
+	nadFactory         networkattachmentdefinitioninformerfactory.SharedInformerFactory
+	netAttachDefLister networkattachmentdefinitionlisters.NetworkAttachmentDefinitionLister
+	netAttachDefSynced cache.InformerSynced
+	queue              workqueue.RateLimitingInterface
+	loopPeriod         time.Duration
 }
 
-func (cm *NetworkControllerManager) NewNadController() *nadController {
-	cc := ovn.NewBaseNetworkController(cm.client, cm.kube, cm.watchFactory, cm.recorder, cm.nbClient,
-		cm.sbClient, cm.podRecorder, cm.SCTPSupport, cm.aclLoggingEnabled)
+func (cm *NetworkControllerManager) NewNadController() *netAttachDefinitionController {
 	nadFactory := netattachdefinformers.NewSharedInformerFactoryWithOptions(
 		cm.ovnClientset.NetworkAttchDefClient,
 		avoidResync,
@@ -70,17 +66,20 @@ func (cm *NetworkControllerManager) NewNadController() *nadController {
 		workqueue.NewItemExponentialFailureRateLimiter(5*time.Millisecond, 1000*time.Second),
 		&workqueue.BucketRateLimiter{Limiter: rate.NewLimiter(rate.Limit(qps), qps*5)})
 
-	nadController := &nadController{
-		nbClient: cm.nbClient,
-		//stopChan:              stopChan,
-		nadFactory:            nadFactory,
-		watchFactory:          cm.watchFactory,
-		BaseNetworkController: cc,
-		cNameManager:          &cm.controllerNameManager,
-		netAttachDefLister:    netAttachDefInformer.Lister(),
-		netAttachDefSynced:    netAttachDefInformer.Informer().HasSynced,
-		queue:                 workqueue.NewNamedRateLimitingQueue(rateLimter, "net-attach-def"),
-		loopPeriod:            time.Second,
+	nadController := &netAttachDefinitionController{
+		bnc:                cm.newBaseNetworkController(),
+		nbClient:           cm.nbClient,
+		nadFactory:         nadFactory,
+		watchFactory:       cm.watchFactory,
+		netAttachDefLister: netAttachDefInformer.Lister(),
+		netAttachDefSynced: netAttachDefInformer.Informer().HasSynced,
+		queue:              workqueue.NewNamedRateLimitingQueue(rateLimter, "net-attach-def"),
+		loopPeriod:         time.Second,
+
+		SecondaryNetworkControllerManager: &secondaryNetworkControllerNameManager{
+			perNadNetConfInfo:     syncmap.NewSyncMap[*nadNetConfInfo](),
+			perNetworkNadNameInfo: syncmap.NewSyncMap[*nadNameInfo](),
+		},
 	}
 	netAttachDefInformer.Informer().AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
@@ -90,13 +89,13 @@ func (cm *NetworkControllerManager) NewNadController() *nadController {
 	return nadController
 }
 
-func (nadController *nadController) Run(stopChan <-chan struct{}) error {
+func (nadController *netAttachDefinitionController) Run(stopChan <-chan struct{}) error {
 	defer utilruntime.HandleCrash()
 	defer nadController.queue.ShutDown()
 
-	nadController.nadFactory.Start(nadController.stopChan)
+	nadController.nadFactory.Start(stopChan)
 	klog.Infof("Starting controller %s", controllerName)
-	if !cache.WaitForNamedCacheSync(controllerName, nadController.stopChan, nadController.netAttachDefSynced) {
+	if !cache.WaitForNamedCacheSync(controllerName, stopChan, nadController.netAttachDefSynced) {
 		return fmt.Errorf("error syncing cache")
 	}
 
@@ -111,7 +110,7 @@ func (nadController *nadController) Run(stopChan <-chan struct{}) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			wait.Until(nadController.worker, nadController.loopPeriod, nadController.stopChan)
+			wait.Until(nadController.worker, nadController.loopPeriod, stopChan)
 		}()
 	}
 	wg.Wait()
@@ -148,7 +147,7 @@ func findAllSecondaryNetworkLogicalEntities(nbClient libovsdbclient.Client) ([]*
 	return nodeSwitches, clusterRouters, nil
 }
 
-func (nadController *nadController) repairNads() (err error) {
+func (nadController *netAttachDefinitionController) repairNads() (err error) {
 	startTime := time.Now()
 	klog.V(4).Infof("Starting repairing loop for %s", controllerName)
 	defer func() {
@@ -161,11 +160,15 @@ func (nadController *nadController) repairNads() (err error) {
 		return fmt.Errorf("failed to get list of all net-attach-def")
 	}
 
-	// need to walk through all the nads and update nadNames of Controller.GetNetInfo(). Controllers will be created as
-	// the result, but they can only be started afterwards.
+	// need to walk through all the nads and update nadNames of Controller. Controllers will be created as
+	// the result, but they can only be started afterwards when all nads are added to the network controller.
 	for _, nad := range existingNads {
-		_ = nadController.cNameManager.SyncSecondaryNetworkNad(nadController.BaseNetworkController, nad,
-			util.GetNadName(nad.Namespace, nad.Name), false)
+		_ = nadController.AddSecondaryNetworkNad(nadController.bnc, nad, false)
+	}
+
+	existingNetworksMap := map[string]bool{}
+	for _, oc := range nadController.GetAllControllers() {
+		existingNetworksMap[oc.GetNetworkName()] = true
 	}
 
 	// Get all the existing secondary networks and its logical entities
@@ -175,26 +178,42 @@ func (nadController *nadController) repairNads() (err error) {
 	}
 
 	var ops []ovsdb.Operation
-	staleNetworks := map[string]bool{}
+	staleNetworks := map[string]SecondaryNetworkController{}
 	for _, ls := range switches {
-		netName := ls.ExternalIDs["network_name"]
-		if _, ok := nadController.cNameManager.networkControllers[netName]; ok {
+		netName := ls.ExternalIDs[ovntypes.NetworkNameExternalID]
+		if _, ok := existingNetworksMap[netName]; ok {
 			// network still exists, no cleanup to do
 			continue
 		}
-		staleNetworks[netName] = true
+		if topoType, ok := ls.ExternalIDs[ovntypes.TopoTypeExternalID]; ok {
+			// Create dummy network controllers to cleanup logical entities
+			klog.V(5).Infof("Found stale %s network %s", topoType, netName)
+			if topoType == ovntypes.Layer3AttachDefTopoType {
+				staleNetworks[netName] = ovn.NewSecondaryLayer3NetworkController(nadController.bnc, nil, nil)
+				continue
+			}
+		}
+		klog.Infof("Missing %s external-id on switch %s, simply deleted it", ovntypes.TopoTypeExternalID, ls.Name)
 		ops, err = libovsdbops.DeleteLogicalSwitchOps(nadController.nbClient, ops, ls.Name)
 		if err != nil {
 			klog.Errorf("Failed to get ops to delete stale logical switch %s for network %s: %v", ls.Name, netName, err)
 		}
 	}
 	for _, lr := range routers {
-		netName := lr.ExternalIDs["network_name"]
-		if _, ok := nadController.cNameManager.networkControllers[netName]; ok {
+		netName := lr.ExternalIDs[ovntypes.NetworkNameExternalID]
+		if _, ok := existingNetworksMap[netName]; ok {
 			// network still exists, no cleanup to do
 			continue
 		}
-		staleNetworks[netName] = true
+		if topoType, ok := lr.ExternalIDs[ovntypes.TopoTypeExternalID]; ok {
+			// Create dummy network controllers to cleanup logical entities
+			klog.V(5).Infof("Found stale %s network %s", topoType, netName)
+			if topoType == ovntypes.Layer3AttachDefTopoType {
+				staleNetworks[netName] = ovn.NewSecondaryLayer3NetworkController(nadController.bnc, nil, nil)
+				continue
+			}
+		}
+		klog.Infof("Missing %s external-id on router %s, simply deleted it", ovntypes.TopoTypeExternalID, lr.Name)
 		ops, err = libovsdbops.DeleteLogicalRouterOps(nadController.nbClient, ops, lr)
 		if err != nil {
 			klog.Errorf("Failed to get ops to delete logical router %s for network %s: %v", lr.Name, netName, err)
@@ -205,31 +224,22 @@ func (nadController *nadController) repairNads() (err error) {
 		klog.Errorf("Failed to delete stale OVN logical entities", err)
 	}
 
-	allNodes, err := nadController.watchFactory.GetNodes()
-	if err != nil {
-		return fmt.Errorf("failed to get all nodes to update subnet annotation: %v", err)
-	}
-
-	hostSubnetsMap := map[string][]*net.IPNet{}
-	for netName := range staleNetworks {
-		hostSubnetsMap[netName] = nil
-	}
-	for _, node := range allNodes {
-		err = nadController.BaseNetworkController.UpdateNodeAnnotationWithRetry(node.Name, hostSubnetsMap, nil)
+	for netName, oc := range staleNetworks {
+		klog.Infof("Delete logical entities for stale network %s", netName)
+		err = oc.DeleteLogicalEntities(netName)
 		if err != nil {
-			klog.Errorf("Failed to remove subnet annotation on node %s for all stale networks %v: %v",
-				node.Name, staleNetworks, err)
+			klog.Errorf("Failed to delete stale OVN logical entities for network %s: %v", netName, err)
 		}
 	}
 	return nil
 }
 
-func (nadController *nadController) worker() {
+func (nadController *netAttachDefinitionController) worker() {
 	for nadController.processNextWorkItem() {
 	}
 }
 
-func (nadController *nadController) processNextWorkItem() bool {
+func (nadController *netAttachDefinitionController) processNextWorkItem() bool {
 	key, quit := nadController.queue.Get()
 	if quit {
 		return false
@@ -245,7 +255,7 @@ func (nadController *nadController) processNextWorkItem() bool {
 	return true
 }
 
-func (nadController *nadController) sync(key string) error {
+func (nadController *netAttachDefinitionController) sync(key string) error {
 	startTime := time.Now()
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
@@ -261,10 +271,14 @@ func (nadController *nadController) sync(key string) error {
 		return err
 	}
 
-	return nadController.cNameManager.SyncSecondaryNetworkNad(nadController.BaseNetworkController, nad, key, true)
+	if nad == nil {
+		return nadController.DeleteSecondaryNetworkNad(key)
+	} else {
+		return nadController.AddSecondaryNetworkNad(nadController.bnc, nad, true)
+	}
 }
 
-func (nadController *nadController) handleErr(err error, key interface{}) {
+func (nadController *netAttachDefinitionController) handleErr(err error, key interface{}) {
 	ns, name, keyErr := cache.SplitMetaNamespaceKey(key.(string))
 	if keyErr != nil {
 		klog.ErrorS(err, "Failed to split meta namespace cache key", "key", key)
@@ -289,7 +303,7 @@ func (nadController *nadController) handleErr(err error, key interface{}) {
 	utilruntime.HandleError(err)
 }
 
-func (nadController *nadController) addNetworkAttachDefinition(obj interface{}) {
+func (nadController *netAttachDefinitionController) addNetworkAttachDefinition(obj interface{}) {
 	key, err := cache.MetaNamespaceKeyFunc(obj)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("couldn't get key for object %+v: %v", obj, err))
@@ -301,7 +315,7 @@ func (nadController *nadController) addNetworkAttachDefinition(obj interface{}) 
 	nadController.queue.Add(key)
 }
 
-func (nadController *nadController) deleteNetworkAttachDefinition(obj interface{}) {
+func (nadController *netAttachDefinitionController) deleteNetworkAttachDefinition(obj interface{}) {
 	key, err := cache.MetaNamespaceKeyFunc(obj)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("couldn't get key for object %+v: %v", obj, err))

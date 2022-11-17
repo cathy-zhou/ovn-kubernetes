@@ -138,6 +138,7 @@ func (nci *NetworkControllerInfo) createOvnClusterRouter(multicastSupport bool) 
 	}
 	if nci.IsSecondary() {
 		logicalRouter.ExternalIDs[types.NetworkNameExternalID] = nci.GetNetworkName()
+		logicalRouter.ExternalIDs[types.TopoTypeExternalID] = nci.GetTopologyType()
 	}
 	if multicastSupport {
 		logicalRouter.Options = map[string]string{
@@ -455,7 +456,10 @@ func (nci *NetworkControllerInfo) createNodeLogicalSwitch(nodeName string, hostS
 		Name: switchName,
 	}
 	if nci.IsSecondary() {
-		logicalSwitch.ExternalIDs = map[string]string{types.NetworkNameExternalID: nci.GetNetworkName()}
+		logicalSwitch.ExternalIDs = map[string]string{
+			types.NetworkNameExternalID: nci.GetNetworkName(),
+			types.TopoTypeExternalID:    nci.GetTopologyType(),
+		}
 	}
 
 	var v4Gateway, v6Gateway net.IP
