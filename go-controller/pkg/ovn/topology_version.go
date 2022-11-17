@@ -16,7 +16,7 @@ import (
 )
 
 func (oc *DefaultNetworkController) ovnTopologyCleanup() error {
-	ver, err := oc.determineOVNTopoVersionFromOVN()
+	ver, err := oc.determineL3OVNTopoVersionFromOVN()
 	if err != nil {
 		return err
 	}

@@ -491,10 +491,32 @@ func (bnc *BaseNetworkController) updateL3TopologyVersion() error {
 	return nil
 }
 
-// determineOVNTopoVersionFromOVN determines what OVN Topology version is being used
-// If "k8s-ovn-topo-version" key in external_ids column does not exist, it is prior to OVN topology versioning
-// and therefore set version number to OvnCurrentTopologyVersion
-func (bnc *BaseNetworkController) determineOVNTopoVersionFromOVN() (int, error) {
+func (bnc *BaseNetworkController) updateL2TopologyVersion() error {
+	var switchName string
+
+	currentTopologyVersion := strconv.Itoa(types.OvnCurrentTopologyVersion)
+	topoType := bnc.GetTopologyType()
+	if topoType == types.Layer2AttachDefTopoType {
+		switchName = bnc.GetPrefix() + types.OvnLayer2Switch
+	} else {
+		return fmt.Errorf("topology type %s is not supported", topoType)
+	}
+	logicalSwitch := nbdb.LogicalSwitch{
+		Name:        switchName,
+		ExternalIDs: map[string]string{"k8s-ovn-topo-version": currentTopologyVersion},
+	}
+	err := libovsdbops.UpdateLogicalSwtichSetExternalIDs(bnc.nbClient, &logicalSwitch)
+	if err != nil {
+		return fmt.Errorf("failed to generate set topology version, err: %v", err)
+	}
+	klog.Infof("Updated Logical_Switch %s topology version to %s", switchName, currentTopologyVersion)
+	return nil
+}
+
+// determineL3OVNTopoVersionFromOVN determines what OVN Topology version for layer 3 networks, including
+// the default network. If "k8s-ovn-topo-version" key in external_ids column does not exist, it is prior
+// to OVN topology versioning and therefore set version number to OvnCurrentTopologyVersion
+func (bnc *BaseNetworkController) determineL3OVNTopoVersionFromOVN() (int, error) {
 	clusterRouterName := bnc.GetPrefix() + types.OVNClusterRouter
 	logicalRouter := &nbdb.LogicalRouter{Name: clusterRouterName}
 	logicalRouter, err := libovsdbops.GetLogicalRouter(bnc.nbClient, logicalRouter)
@@ -507,12 +529,48 @@ func (bnc *BaseNetworkController) determineOVNTopoVersionFromOVN() (int, error) 
 	}
 	v, exists := logicalRouter.ExternalIDs["k8s-ovn-topo-version"]
 	if !exists {
-		klog.Infof("No version string found. The OVN topology is before versioning is introduced. Upgrade needed")
+		klog.Infof("No version string found for network %s. The OVN topology is before versioning is introduced. Upgrade needed", bnc.GetNetworkName())
 		return 0, nil
 	}
 	ver, err := strconv.Atoi(v)
 	if err != nil {
-		return 0, fmt.Errorf("invalid OVN topology version string for the cluster, err: %v", err)
+		return 0, fmt.Errorf("invalid OVN topology version string for network %s, err: %v", bnc.GetNetworkName(), err)
+	}
+	return ver, nil
+}
+
+// determineL2OVNTopoVersionFromOVN determines what OVN Topology version for layer 2 networks.
+// If "k8s-ovn-topo-version" key in external_ids column does not exist, it is prior
+// to OVN topology versioning and therefore set version number to OvnCurrentTopologyVersion
+//lint:ignore U1000 Ignore unused function temporarily for debugging
+func (bnc *BaseNetworkController) determineL2OVNTopoVersionFromOVN() (int, error) {
+	if !bnc.IsSecondary() {
+		return 0, fmt.Errorf("default network is not layer 2 network")
+	}
+	topoType := bnc.GetTopologyType()
+	var switchName string
+	if topoType == types.Layer2AttachDefTopoType {
+		switchName = bnc.GetPrefix() + types.OvnLayer2Switch
+	} else {
+		return 0, fmt.Errorf("topology type %s not supported", topoType)
+	}
+	logicalSwitch := &nbdb.LogicalSwitch{Name: switchName}
+	logicalSwitch, err := libovsdbops.GetLogicalSwitch(bnc.nbClient, logicalSwitch)
+	if err != nil && err != libovsdbclient.ErrNotFound {
+		return 0, fmt.Errorf("error getting switch %s: %v", switchName, err)
+	}
+	if err == libovsdbclient.ErrNotFound {
+		// no switch exists, DB is empty, nothing to upgrade
+		return math.MaxInt32, nil
+	}
+	v, exists := logicalSwitch.ExternalIDs["k8s-ovn-topo-version"]
+	if !exists {
+		klog.Infof("No version string found for network %s. The OVN topology is before versioning is introduced. Upgrade needed", bnc.GetNetworkName())
+		return 0, nil
+	}
+	ver, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid OVN topology version string for network %s, err: %v", bnc.GetNetworkName(), err)
 	}
 	return ver, nil
 }

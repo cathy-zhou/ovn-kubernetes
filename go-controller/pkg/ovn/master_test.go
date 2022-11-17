@@ -978,7 +978,7 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 		gomega.Expect(clusterController).NotTo(gomega.BeNil())
 		clusterController.defaultCOPPUUID, err = EnsureDefaultCOPP(libovsdbOvnNBClient)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		subnets, err := config.ParseClusterSubnetEntries(clusterCIDR)
+		subnets, err := config.ParseClusterSubnetEntries(clusterCIDR, true)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		err = clusterController.masterSubnetAllocator.InitRanges(subnets)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())

@@ -28,6 +28,9 @@ const (
 	OVNClusterRouter = "ovn_cluster_router"
 	OVNJoinSwitch    = "join"
 
+	// types.OvnLayer2Switch is the name of layer2 topology switch
+	OvnLayer2Switch = "ovn_layer2_switch"
+
 	JoinSwitchPrefix             = "join_"
 	ExternalSwitchPrefix         = "ext_"
 	GWRouterPrefix               = "GR_"
@@ -165,5 +168,6 @@ const (
 	TopoTypeExternalID = "topology_type"
 
 	// different secondary network topology type defined in CNI netconf
-	Layer3AttachDefTopoType = "layer3"
+	Layer3AttachDefTopoType = "layer3" // layer 3 network
+	Layer2AttachDefTopoType = "layer2" // layer 2 network
 )

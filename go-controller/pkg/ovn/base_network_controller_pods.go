@@ -101,6 +101,8 @@ func (bnc *BaseNetworkController) deleteStaleLogicalSwitchPorts(expectedLogicalP
 			}
 			switchNames = append(switchNames, switchName)
 		}
+	} else if topoType == ovntypes.Layer2AttachDefTopoType {
+		switchNames = []string{bnc.GetPrefix() + ovntypes.OvnLayer2Switch}
 	} else {
 		return fmt.Errorf("topology type %s not supported", topoType)
 	}
@@ -343,10 +345,14 @@ func (bnc *BaseNetworkController) addRoutesGatewayIP(pod *kapi.Pod, network *net
 	podAnnotation *util.PodAnnotation, nodeSubnets []*net.IPNet) error {
 	if bnc.IsSecondary() {
 		topoType := bnc.GetTopologyType()
-		if topoType != ovntypes.Layer3AttachDefTopoType {
+		if topoType != ovntypes.Layer3AttachDefTopoType && topoType != ovntypes.Layer2AttachDefTopoType {
 			return fmt.Errorf("topology type %s not supported", topoType)
 		}
 		podAnnotation.Gateways = append(podAnnotation.Gateways, network.GatewayRequest...)
+		if topoType == ovntypes.Layer2AttachDefTopoType {
+			// no route needed for directly connected subnets
+			return nil
+		}
 		// secondary layer3 network, see if its network-attachment's annotation has default-route key.
 		// If present, then we need to add default route for it
 		for _, podIfAddr := range podAnnotation.IPs {
@@ -446,6 +452,8 @@ func (bnc *BaseNetworkController) getExpectedSwitchName(pod *kapi.Pod) (string, 
 		switch topoType {
 		case ovntypes.Layer3AttachDefTopoType:
 			switchName = bnc.GetPrefix() + pod.Spec.NodeName
+		case ovntypes.Layer2AttachDefTopoType:
+			switchName = bnc.GetPrefix() + ovntypes.OvnLayer2Switch
 		default:
 			return "", fmt.Errorf("topology type %s not supported", topoType)
 		}

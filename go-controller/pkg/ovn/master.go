@@ -87,7 +87,7 @@ func (oc *DefaultNetworkController) upgradeToSingleSwitchOVNTopology(existingNod
 }
 
 func (oc *DefaultNetworkController) upgradeOVNTopology(existingNodes *kapi.NodeList) error {
-	ver, err := oc.determineOVNTopoVersionFromOVN()
+	ver, err := oc.determineL3OVNTopoVersionFromOVN()
 	if err != nil {
 		return err
 	}
