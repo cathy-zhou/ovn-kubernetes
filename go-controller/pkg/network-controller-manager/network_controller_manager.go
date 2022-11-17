@@ -60,7 +60,8 @@ type NetworkControllerManager struct {
 	// has SCTP support
 	SCTPSupport bool
 
-	wg *sync.WaitGroup
+	stopChan chan struct{}
+	wg       *sync.WaitGroup
 
 	// unique identity for controllerManager running on different ovnkube-master instance,
 	// used for leader election
@@ -73,7 +74,7 @@ type NetworkControllerManager struct {
 }
 
 // Start waits until this process is the leader before starting master functions
-func (cm *NetworkControllerManager) Start(ctx context.Context, stopChan <-chan struct{}, cancel context.CancelFunc) error {
+func (cm *NetworkControllerManager) Start(ctx context.Context, cancel context.CancelFunc) error {
 	// Set up leader election process first
 	rl, err := resourcelock.New(
 		// TODO (rravaiol) (bpickard)
@@ -112,7 +113,7 @@ func (cm *NetworkControllerManager) Start(ctx context.Context, stopChan <-chan s
 					metrics.MetricMasterReadyDuration.Set(end.Seconds())
 				}()
 
-				if err := cm.Init(stopChan); err != nil {
+				if err := cm.Init(); err != nil {
 					klog.Error(err)
 					cancel()
 					return
@@ -170,6 +171,7 @@ func NewNetworkControllerManager(ovnClient *util.OVNClientset, identity string, 
 			EgressFirewallClient: ovnClient.EgressFirewallClient,
 			CloudNetworkClient:   ovnClient.CloudNetworkClient,
 		},
+		stopChan:     make(chan struct{}),
 		watchFactory: wf,
 		recorder:     recorder,
 		nbClient:     libovsdbOvnNBClient,
@@ -183,7 +185,9 @@ func NewNetworkControllerManager(ovnClient *util.OVNClientset, identity string, 
 }
 
 // Init initializes the controller manager and create/start default controller
-func (cm *NetworkControllerManager) Init(stopChan <-chan struct{}) error {
+func (cm *NetworkControllerManager) Init() error {
+	cm.configureMetrics(cm.stopChan)
+
 	err := cm.configureSCTPSupport()
 	if err != nil {
 		return err
@@ -194,9 +198,7 @@ func (cm *NetworkControllerManager) Init(stopChan <-chan struct{}) error {
 		return err
 	}
 
-	cm.configureMetrics(stopChan)
-
-	cm.NewDefaultController()
+	cm.NewDefaultNetworkController()
 	return nil
 }
 
@@ -231,27 +233,30 @@ func (cm *NetworkControllerManager) enableOVNLogicalDataPathGroups() error {
 }
 
 func (cm *NetworkControllerManager) configureMetrics(stopChan <-chan struct{}) {
+	metrics.RegisterMasterPerformance(cm.nbClient)
+	metrics.RegisterMasterFunctional()
 	metrics.RunTimestamp(stopChan, cm.sbClient, cm.nbClient)
 	metrics.MonitorIPSec(cm.nbClient)
-	if config.Metrics.EnableConfigDuration {
-		// with k=10,
-		//  for a cluster with 10 nodes, measurement of 1 in every 100 requests
-		//  for a cluster with 100 nodes, measurement of 1 in every 1000 requests
-		metrics.GetConfigDurationRecorder().Run(cm.nbClient, cm.kube, 10, time.Second*5, stopChan)
-	}
-	cm.podRecorder.Run(cm.sbClient, stopChan)
 }
 
 // NewDefaultController creates and returns the controller for default network
-func (cm *NetworkControllerManager) NewDefaultController() {
+func (cm *NetworkControllerManager) NewDefaultNetworkController() {
 	bnc := ovn.NewBaseNetworkController(cm.client, cm.kube, cm.watchFactory, cm.recorder, cm.nbClient,
 		cm.sbClient, cm.podRecorder, cm.SCTPSupport)
-	defaultController := ovn.NewDefaultController(bnc)
+	defaultController := ovn.NewDefaultNetworkController(bnc)
 	cm.ovnControllers[ovntypes.DefaultNetworkName] = defaultController
 }
 
 // Run starts to handle all the secondary net-attach-def and creates and manages all the secondary controllers
 func (cm *NetworkControllerManager) Run(ctx context.Context) error {
+	if config.Metrics.EnableConfigDuration {
+		// with k=10,
+		//  for a cluster with 10 nodes, measurement of 1 in every 100 requests
+		//  for a cluster with 100 nodes, measurement of 1 in every 1000 requests
+		metrics.GetConfigDurationRecorder().Run(cm.nbClient, cm.kube, 10, time.Second*5, cm.stopChan)
+	}
+	cm.podRecorder.Run(cm.sbClient, cm.stopChan)
+
 	if err := cm.watchFactory.Start(); err != nil {
 		return err
 	}
@@ -273,4 +278,5 @@ func (cm *NetworkControllerManager) Stop() {
 	for _, oc := range cm.ovnControllers {
 		oc.Stop()
 	}
+	close(cm.stopChan)
 }

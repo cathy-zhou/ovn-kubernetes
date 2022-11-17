@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"time"
 
 	ocpcloudnetworkapi "github.com/openshift/api/cloudnetwork/v1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
@@ -12,14 +13,18 @@ import (
 	egressipv1 "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressip/v1"
 	egressqoslisters "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressqos/v1/apis/listers/egressqos/v1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	egresssvc "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/egress_services"
 	svccontroller "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/services"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/unidling"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/subnetallocator"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
+	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	kapi "k8s.io/api/core/v1"
@@ -31,15 +36,6 @@ import (
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 )
-
-type defaultNetworkControllerEventHandler struct {
-	masterEventHandler masterEventHandler
-	watchFactory       *factory.WatchFactory
-	objType            reflect.Type
-	oc                 *DefaultNetworkController
-	extraParameters    interface{}
-	syncFunc           func([]interface{}) error
-}
 
 // DefaultNetworkController structure is the object which holds the controls for starting
 // and reacting upon the watched resources (e.g. pods, endpoints) for default l3 network
@@ -174,15 +170,15 @@ type DefaultNetworkController struct {
 	allInitialPodsProcessed uint32
 }
 
-// NewDefaultController creates a new OVN controller for creating logical network
+// NewDefaultNetworkController creates a new OVN controller for creating logical network
 // infrastructure and policy for default l3 network
-func NewDefaultController(bnc *BaseNetworkController) *DefaultNetworkController {
+func NewDefaultNetworkController(bnc *BaseNetworkController) *DefaultNetworkController {
 	stopChan := make(chan struct{})
 	wg := &sync.WaitGroup{}
-	return newDefaultControllerCommon(bnc, stopChan, wg, nil)
+	return newDefaultNetworkControllerCommon(bnc, stopChan, wg, nil)
 }
 
-func newDefaultControllerCommon(bnc *BaseNetworkController,
+func newDefaultNetworkControllerCommon(bnc *BaseNetworkController,
 	defaultStopChan chan struct{}, defaultWg *sync.WaitGroup,
 	addressSetFactory addressset.AddressSetFactory) *DefaultNetworkController {
 
@@ -232,49 +228,49 @@ func newDefaultControllerCommon(bnc *BaseNetworkController,
 		egressSvcController:      egressSvcController,
 	}
 
-	oc.initRetryFrameworkForMaster()
+	oc.initRetryFramework()
 	return oc
 }
 
-func (oc *DefaultNetworkController) initRetryFrameworkForMaster() {
+func (oc *DefaultNetworkController) initRetryFramework() {
 	// Init the retry framework for pods, namespaces, nodes, network policies, egress firewalls,
 	// egress IP (and dependent namespaces, pods, nodes), cloud private ip config.
-	oc.retryPods = oc.newRetryFrameworkMasterWithParameters(factory.PodType, nil, nil)
-	oc.retryNetworkPolicies = oc.newRetryFrameworkMasterWithParameters(factory.PolicyType, nil, nil)
-	oc.retryNodes = oc.newRetryFrameworkMasterWithParameters(factory.NodeType, nil, nil)
-	oc.retryEgressFirewalls = oc.newRetryFrameworkMasterWithParameters(factory.EgressFirewallType, nil, nil)
-	oc.retryEgressIPs = oc.newRetryFrameworkMasterWithParameters(factory.EgressIPType, nil, nil)
-	oc.retryEgressIPNamespaces = oc.newRetryFrameworkMasterWithParameters(factory.EgressIPNamespaceType, nil, nil)
-	oc.retryEgressIPPods = oc.newRetryFrameworkMasterWithParameters(factory.EgressIPPodType, nil, nil)
-	oc.retryEgressNodes = oc.newRetryFrameworkMasterWithParameters(factory.EgressNodeType, nil, nil)
-	oc.retryCloudPrivateIPConfig = oc.newRetryFrameworkMasterWithParameters(factory.CloudPrivateIPConfigType, nil, nil)
-	oc.retryNamespaces = oc.newRetryFrameworkMasterWithParameters(factory.NamespaceType, nil, nil)
+	oc.retryPods = oc.newRetryFrameworkWithParameters(factory.PodType, nil, nil)
+	oc.retryNetworkPolicies = oc.newRetryFrameworkWithParameters(factory.PolicyType, nil, nil)
+	oc.retryNodes = oc.newRetryFrameworkWithParameters(factory.NodeType, nil, nil)
+	oc.retryEgressFirewalls = oc.newRetryFrameworkWithParameters(factory.EgressFirewallType, nil, nil)
+	oc.retryEgressIPs = oc.newRetryFrameworkWithParameters(factory.EgressIPType, nil, nil)
+	oc.retryEgressIPNamespaces = oc.newRetryFrameworkWithParameters(factory.EgressIPNamespaceType, nil, nil)
+	oc.retryEgressIPPods = oc.newRetryFrameworkWithParameters(factory.EgressIPPodType, nil, nil)
+	oc.retryEgressNodes = oc.newRetryFrameworkWithParameters(factory.EgressNodeType, nil, nil)
+	oc.retryCloudPrivateIPConfig = oc.newRetryFrameworkWithParameters(factory.CloudPrivateIPConfigType, nil, nil)
+	oc.retryNamespaces = oc.newRetryFrameworkWithParameters(factory.NamespaceType, nil, nil)
 }
 
-// newRetryFrameworkMasterWithParameters builds and returns a retry framework for the input resource
+// newRetryFrameworkWithParameters builds and returns a retry framework for the input resource
 // type and assigns all ovnk-master-specific function attributes in the returned struct;
 // these functions will then be called by the retry logic in the retry package when
 // WatchResource() is called.
-// newRetryFrameworkMasterWithParameters takes as input a resource type (required)
+// newRetryFrameworkWithParameters takes as input a resource type (required)
 // and the following optional parameters: a namespace and a label filter for the
 // shared informer, a sync function to process all objects of this type at startup,
 // and resource-specific extra parameters (used now for network-policy-dependant types).
 // In order to create a retry framework for most resource types, newRetryFrameworkMaster is
-// to be preferred, as it calls newRetryFrameworkMasterWithParameters with all optional parameters unset.
-// newRetryFrameworkMasterWithParameters is instead called directly by the watchers that are
+// to be preferred, as it calls newRetryFrameworkWithParameters with all optional parameters unset.
+// newRetryFrameworkWithParameters is instead called directly by the watchers that are
 // dynamically created when a network policy is added: PeerNamespaceAndPodSelectorType,
 // PeerPodForNamespaceAndPodSelectorType, PeerNamespaceSelectorType, PeerPodSelectorType.
-func (oc *DefaultNetworkController) newRetryFrameworkMasterWithParameters(
+func (oc *DefaultNetworkController) newRetryFrameworkWithParameters(
 	objectType reflect.Type,
 	syncFunc func([]interface{}) error,
 	extraParameters interface{}) *retry.RetryFramework {
 	eventHandler := &defaultNetworkControllerEventHandler{
-		masterEventHandler: masterEventHandler{},
-		objType:            objectType,
-		watchFactory:       oc.watchFactory,
-		oc:                 oc,
-		extraParameters:    extraParameters, // in use by network policy dynamic watchers
-		syncFunc:           syncFunc,
+		baseHandler:     baseNetworkControllerEventHandler{},
+		objType:         objectType,
+		watchFactory:    oc.watchFactory,
+		oc:              oc,
+		extraParameters: extraParameters, // in use by network policy dynamic watchers
+		syncFunc:        syncFunc,
 	}
 	resourceHandler := &retry.ResourceHandler{
 		HasUpdateFunc:          hasResourceAnUpdateFunc(objectType),
@@ -291,7 +287,7 @@ func (oc *DefaultNetworkController) newRetryFrameworkMasterWithParameters(
 
 // Start starts the default controller; handles all events and creates all needed logical entities
 func (oc *DefaultNetworkController) Start(ctx context.Context) error {
-	if err := oc.StartClusterMaster(); err != nil {
+	if err := oc.Init(); err != nil {
 		return err
 	}
 
@@ -304,12 +300,240 @@ func (oc *DefaultNetworkController) Stop() {
 	close(oc.stopChan)
 }
 
+// Init runs a subnet IPAM and the network controller that watches arrival/departure
+// of nodes in the cluster
+// On an addition to the cluster (node create), a new subnet is created for it that will translate
+// to creation of a logical switch (done by the node, but could be created here at the master process too)
+// Upon deletion of a node, the switch will be deleted
+//
+// TODO: Verify that the cluster was not already called with a different global subnet
+//
+//	If true, then either quit or perform a complete reconfiguration of the cluster (recreate switches/routers with new subnet values)
+func (oc *DefaultNetworkController) Init() error {
+	existingNodes, err := oc.kube.GetNodes()
+	if err != nil {
+		klog.Errorf("Error in fetching nodes: %v", err)
+		return err
+	}
+	klog.V(5).Infof("Existing number of nodes: %d", len(existingNodes.Items))
+	err = oc.upgradeOVNTopology(existingNodes)
+	if err != nil {
+		klog.Errorf("Failed to upgrade OVN topology to version %d: %v", ovntypes.OvnCurrentTopologyVersion, err)
+		return err
+	}
+
+	klog.Infof("Allocating subnets")
+	if err := oc.masterSubnetAllocator.InitRanges(config.Default.ClusterSubnets); err != nil {
+		klog.Errorf("Failed to initialize host subnet allocator ranges: %v", err)
+		return err
+	}
+	if config.HybridOverlay.Enabled {
+		if err := oc.hybridOverlaySubnetAllocator.InitRanges(config.HybridOverlay.ClusterSubnets); err != nil {
+			klog.Errorf("Failed to initialize hybrid overlay subnet allocator ranges: %v", err)
+			return err
+		}
+	}
+
+	if oc.multicastSupport {
+		if _, _, err := util.RunOVNSbctl("--columns=_uuid", "list", "IGMP_Group"); err != nil {
+			klog.Warningf("Multicast support enabled, however version of OVN in use does not support IGMP Group. " +
+				"Disabling Multicast Support")
+			oc.multicastSupport = false
+		}
+	}
+
+	err = oc.createACLLoggingMeter()
+	if err != nil {
+		klog.Warningf("ACL logging support enabled, however acl-logging meter could not be created: %v. "+
+			"Disabling ACL logging support", err)
+		oc.aclLoggingEnabled = false
+	}
+
+	// FIXME: When https://github.com/ovn-org/libovsdb/issues/235 is fixed,
+	// use IsTableSupported(nbdb.LoadBalancerGroup).
+	if _, _, err := util.RunOVNNbctl("--columns=_uuid", "list", "Load_Balancer_Group"); err != nil {
+		klog.Warningf("Load Balancer Group support enabled, however version of OVN in use does not support Load Balancer Groups.")
+	} else {
+		loadBalancerGroup := nbdb.LoadBalancerGroup{
+			Name: ovntypes.ClusterLBGroupName,
+		}
+		err := libovsdbops.CreateOrUpdateLoadBalancerGroup(oc.nbClient, &loadBalancerGroup)
+		if err != nil {
+			klog.Errorf("Error creating cluster-wide load balancer group %s: %v", ovntypes.ClusterLBGroupName, err)
+			return err
+		}
+		oc.loadBalancerGroupUUID = loadBalancerGroup.UUID
+	}
+
+	nodeNames := []string{}
+	for _, node := range existingNodes.Items {
+		nodeNames = append(nodeNames, node.Name)
+	}
+	if err := oc.SetupMaster(nodeNames); err != nil {
+		klog.Errorf("Failed to setup master (%v)", err)
+		return err
+	}
+
+	return nil
+}
+
+// Run starts the actual watching.
+func (oc *DefaultNetworkController) Run(ctx context.Context, wg *sync.WaitGroup) error {
+	oc.syncPeriodic()
+	klog.Infof("Starting all the Watchers...")
+	start := time.Now()
+
+	// Sync external gateway routes. External gateway may be set in namespaces
+	// or via pods. So execute an individual sync method at startup
+	oc.cleanExGwECMPRoutes()
+
+	// WatchNamespaces() should be started first because it has no other
+	// dependencies, and WatchNodes() depends on it
+	if err := oc.WatchNamespaces(); err != nil {
+		return err
+	}
+
+	// WatchNodes must be started next because it creates the node switch
+	// which most other watches depend on.
+	// https://github.com/ovn-org/ovn-kubernetes/pull/859
+	if err := oc.WatchNodes(); err != nil {
+		return err
+	}
+
+	// Start service watch factory and sync services
+	oc.svcFactory.Start(oc.stopChan)
+
+	// Services should be started after nodes to prevent LB churn
+	if err := oc.StartServiceController(wg, true); err != nil {
+		return err
+	}
+
+	if err := oc.WatchPods(); err != nil {
+		return err
+	}
+
+	// WatchNetworkPolicy depends on WatchPods and WatchNamespaces
+	if err := oc.WatchNetworkPolicy(); err != nil {
+		return err
+	}
+
+	if config.OVNKubernetesFeature.EnableEgressIP {
+		// This is probably the best starting order for all egress IP handlers.
+		// WatchEgressIPNamespaces and WatchEgressIPPods only use the informer
+		// cache to retrieve the egress IPs when determining if namespace/pods
+		// match. It is thus better if we initialize them first and allow
+		// WatchEgressNodes / WatchEgressIP to initialize after. Those handlers
+		// might change the assignments of the existing objects. If we do the
+		// inverse and start WatchEgressIPNamespaces / WatchEgressIPPod last, we
+		// risk performing a bunch of modifications on the EgressIP objects when
+		// we restart and then have these handlers act on stale data when they
+		// sync.
+		if err := oc.WatchEgressIPNamespaces(); err != nil {
+			return err
+		}
+		if err := oc.WatchEgressIPPods(); err != nil {
+			return err
+		}
+		if err := oc.WatchEgressNodes(); err != nil {
+			return err
+		}
+		if err := oc.WatchEgressIP(); err != nil {
+			return err
+		}
+		if util.PlatformTypeIsEgressIPCloudProvider() {
+			if err := oc.WatchCloudPrivateIPConfig(); err != nil {
+				return err
+			}
+		}
+		if config.OVNKubernetesFeature.EgressIPReachabiltyTotalTimeout == 0 {
+			klog.V(2).Infof("EgressIP node reachability check disabled")
+		} else if config.OVNKubernetesFeature.EgressIPNodeHealthCheckPort != 0 {
+			klog.Infof("EgressIP node reachability enabled and using gRPC port %d",
+				config.OVNKubernetesFeature.EgressIPNodeHealthCheckPort)
+		}
+	}
+
+	if config.OVNKubernetesFeature.EnableEgressFirewall {
+		var err error
+		oc.egressFirewallDNS, err = NewEgressDNS(oc.addressSetFactory, oc.stopChan)
+		if err != nil {
+			return err
+		}
+		oc.egressFirewallDNS.Run(egressFirewallDNSDefaultDuration)
+		err = oc.WatchEgressFirewall()
+		if err != nil {
+			return err
+		}
+	}
+
+	if config.OVNKubernetesFeature.EnableEgressQoS {
+		oc.initEgressQoSController(
+			oc.watchFactory.EgressQoSInformer(),
+			oc.watchFactory.PodCoreInformer(),
+			oc.watchFactory.NodeCoreInformer())
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			oc.runEgressQoSController(1, oc.stopChan)
+		}()
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		oc.egressSvcController.Run(1)
+	}()
+
+	klog.Infof("Completing all the Watchers took %v", time.Since(start))
+
+	if config.Kubernetes.OVNEmptyLbEvents {
+		klog.Infof("Starting unidling controller")
+		unidlingController, err := unidling.NewController(
+			oc.recorder,
+			oc.watchFactory.ServiceInformer(),
+			oc.sbClient,
+		)
+		if err != nil {
+			return err
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			unidlingController.Run(oc.stopChan)
+		}()
+	}
+
+	// Final step to cleanup after resource handlers have synced
+	err := oc.ovnTopologyCleanup()
+	if err != nil {
+		klog.Errorf("Failed to cleanup OVN topology to version %d: %v", ovntypes.OvnCurrentTopologyVersion, err)
+		return err
+	}
+
+	// Master is fully running and resource handlers have synced, update Topology version in OVN and the ConfigMap
+	if err := oc.reportTopologyVersion(ctx); err != nil {
+		klog.Errorf("Failed to report topology version: %v", err)
+		return err
+	}
+
+	return nil
+}
+
+type defaultNetworkControllerEventHandler struct {
+	baseHandler     baseNetworkControllerEventHandler
+	watchFactory    *factory.WatchFactory
+	objType         reflect.Type
+	oc              *DefaultNetworkController
+	extraParameters interface{}
+	syncFunc        func([]interface{}) error
+}
+
 // AreResourcesEqual returns true if, given two objects of a known resource type, the update logic for this resource
 // type considers them equal and therefore no update is needed. It returns false when the two objects are not considered
 // equal and an update needs be executed. This is regardless of how the update is carried out (whether with a dedicated update
 // function or with a delete on the old obj followed by an add on the new obj).
 func (h *defaultNetworkControllerEventHandler) AreResourcesEqual(obj1, obj2 interface{}) (bool, error) {
-	return h.masterEventHandler.areResourcesEqual(h.objType, obj1, obj2)
+	return h.baseHandler.areResourcesEqual(h.objType, obj1, obj2)
 }
 
 // GetInternalCacheEntry returns the internal cache entry for this object, given an object and its type.
@@ -327,7 +551,7 @@ func (h *defaultNetworkControllerEventHandler) GetInternalCacheEntry(obj interfa
 // GetResourceFromInformerCache returns the latest state of the object, given an object key and its type.
 // from the informers cache.
 func (h *defaultNetworkControllerEventHandler) GetResourceFromInformerCache(key string) (interface{}, error) {
-	return h.masterEventHandler.getResourceFromInformerCache(h.objType, h.watchFactory, key)
+	return h.baseHandler.getResourceFromInformerCache(h.objType, h.watchFactory, key)
 }
 
 // RecordAddEvent records the add event on this given object.
@@ -402,12 +626,12 @@ func (h *defaultNetworkControllerEventHandler) RecordErrorEvent(obj interface{},
 // IsResourceScheduled returns true if the given object has been scheduled.
 // Only applied to pods for now. Returns true for all other types.
 func (h *defaultNetworkControllerEventHandler) IsResourceScheduled(obj interface{}) bool {
-	return h.masterEventHandler.isResourceScheduled(h.objType, obj)
+	return h.baseHandler.isResourceScheduled(h.objType, obj)
 }
 
-// Given a *RetryFramework instance, an object to add and a boolean specifying if the function was executed from
-// iterateRetryResources, AddResource adds the specified object to the cluster according to its type and
-// returns the error, if any, yielded during object creation.
+// AddResource adds the specified object to the cluster according to its type and returns the error,
+// if any, yielded during object creation.
+// Given an object to add and a boolean specifying if the function was executed from iterateRetryResources,
 func (h *defaultNetworkControllerEventHandler) AddResource(obj interface{}, fromRetryLoop bool) error {
 	var err error
 
@@ -553,9 +777,10 @@ func (h *defaultNetworkControllerEventHandler) AddResource(obj interface{}, from
 	return nil
 }
 
-// Given a *RetryFramework instance, an old and a new object, UpdateResource updates the specified object in the cluster
-// to its version in newObj according to its type and returns the error, if any, yielded during the object update.
-// The inRetryCache boolean argument is to indicate if the given resource is in the retryCache or not.
+// UpdateResource updates the specified object in the cluster to its version in newObj according to its
+// type and returns the error, if any, yielded during the object update.
+// Given an old and a new object; The inRetryCache boolean argument is to indicate if the given resource
+// is in the retryCache or not.
 func (h *defaultNetworkControllerEventHandler) UpdateResource(oldObj, newObj interface{}, inRetryCache bool) error {
 	switch h.objType {
 	case factory.PodType:
@@ -688,8 +913,8 @@ func (h *defaultNetworkControllerEventHandler) UpdateResource(oldObj, newObj int
 	return fmt.Errorf("no update function for object type %s", h.objType)
 }
 
-// Given a *RetryFramework instance, an object and optionally a cachedObj, DeleteResource deletes the object from the cluster
-// according to the delete logic of its resource type. cachedObj is the internal cache entry for this object,
+// DeleteResource deletes the object from the cluster according to the delete logic of its resource type.
+// Given an object and optionally a cachedObj; cachedObj is the internal cache entry for this object,
 // used for now for pods and network policies.
 func (h *defaultNetworkControllerEventHandler) DeleteResource(obj, cachedObj interface{}) error {
 	switch h.objType {
@@ -841,5 +1066,5 @@ func (h *defaultNetworkControllerEventHandler) SyncFunc(objs []interface{}) erro
 // IsObjectInTerminalState returns true if the given object is a in terminal state.
 // This is used now for pods that are either in a PodSucceeded or in a PodFailed state.
 func (h *defaultNetworkControllerEventHandler) IsObjectInTerminalState(obj interface{}) bool {
-	return h.masterEventHandler.isObjectInTerminalState(h.objType, obj)
+	return h.baseHandler.isObjectInTerminalState(h.objType, obj)
 }

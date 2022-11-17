@@ -15,7 +15,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 )
 
-type masterEventHandler struct{}
+type baseNetworkControllerEventHandler struct{}
 
 // hasResourceAnUpdateFunc returns true if the given resource type has a dedicated update function.
 // It returns false if, upon an update event on this resource type, we instead need to first delete the old
@@ -42,7 +42,7 @@ func hasResourceAnUpdateFunc(objType reflect.Type) bool {
 // type considers them equal and therefore no update is needed. It returns false when the two objects are not considered
 // equal and an update needs be executed. This is regardless of how the update is carried out (whether with a dedicated update
 // function or with a delete on the old obj followed by an add on the new obj).
-func (h *masterEventHandler) areResourcesEqual(objType reflect.Type, obj1, obj2 interface{}) (bool, error) {
+func (h *baseNetworkControllerEventHandler) areResourcesEqual(objType reflect.Type, obj1, obj2 interface{}) (bool, error) {
 	// switch based on type
 	switch objType {
 	case factory.PolicyType:
@@ -116,7 +116,7 @@ func (h *masterEventHandler) areResourcesEqual(objType reflect.Type, obj1, obj2 
 
 // Given an object key and its type, getResourceFromInformerCache returns the latest state of the object
 // from the informers cache.
-func (h *masterEventHandler) getResourceFromInformerCache(objType reflect.Type, watchFactory *factory.WatchFactory,
+func (h *baseNetworkControllerEventHandler) getResourceFromInformerCache(objType reflect.Type, watchFactory *factory.WatchFactory,
 	key string) (interface{}, error) {
 	var obj interface{}
 	var namespace, name string
@@ -166,7 +166,7 @@ func (h *masterEventHandler) getResourceFromInformerCache(objType reflect.Type, 
 
 // Given an object and its type, isResourceScheduled returns true if the object has been scheduled.
 // Only applied to pods for now. Returns true for all other types.
-func (h *masterEventHandler) isResourceScheduled(objType reflect.Type, obj interface{}) bool {
+func (h *baseNetworkControllerEventHandler) isResourceScheduled(objType reflect.Type, obj interface{}) bool {
 	switch objType {
 	case factory.PodType:
 		pod := obj.(*kapi.Pod)
@@ -190,7 +190,7 @@ func needsUpdateDuringRetry(objType reflect.Type) bool {
 
 // Given an object and its type, IsObjectInTerminalState returns true if the object is a in terminal state.
 // This is used now for pods that are either in a PodSucceeded or in a PodFailed state.
-func (h *masterEventHandler) isObjectInTerminalState(objType reflect.Type, obj interface{}) bool {
+func (h *baseNetworkControllerEventHandler) isObjectInTerminalState(objType reflect.Type, obj interface{}) bool {
 	switch objType {
 	case factory.PodType,
 		factory.PeerPodSelectorType,

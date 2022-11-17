@@ -165,5 +165,5 @@ func NewOvnController(ovnClient *util.OVNClientset, wf *factory.WatchFactory, st
 		false,
 	)
 
-	return newDefaultControllerCommon(bnc, stopChan, wg, addressSetFactory)
+	return newDefaultNetworkControllerCommon(bnc, stopChan, wg, addressSetFactory)
 }

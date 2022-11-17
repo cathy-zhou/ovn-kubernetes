@@ -929,7 +929,7 @@ func (oc *DefaultNetworkController) addLocalPodHandler(policy *knet.NetworkPolic
 		_ = oc.handleLocalPodSelectorAddFunc(np, objs...)
 		return nil
 	}
-	retryLocalPods := oc.newRetryFrameworkMasterWithParameters(
+	retryLocalPods := oc.newRetryFrameworkWithParameters(
 		factory.LocalPodSelectorType,
 		syncFunc,
 		&NetworkPolicyExtraParameters{
@@ -1445,7 +1445,7 @@ func (oc *DefaultNetworkController) addPeerPodHandler(podSelector *metav1.LabelS
 		_ = oc.handlePeerPodSelectorAddUpdate(np, gp, objs...)
 		return nil
 	}
-	retryPeerPods := oc.newRetryFrameworkMasterWithParameters(
+	retryPeerPods := oc.newRetryFrameworkWithParameters(
 		factory.PeerPodSelectorType,
 		syncFunc,
 		&NetworkPolicyExtraParameters{
@@ -1483,7 +1483,7 @@ func (oc *DefaultNetworkController) handlePeerNamespaceAndPodAdd(np *networkPoli
 		_ = oc.handlePeerPodSelectorAddUpdate(np, gp, objs...)
 		return nil
 	}
-	retryPeerPods := oc.newRetryFrameworkMasterWithParameters(
+	retryPeerPods := oc.newRetryFrameworkWithParameters(
 		factory.PeerPodForNamespaceAndPodSelectorType,
 		syncFunc,
 		&NetworkPolicyExtraParameters{
@@ -1558,7 +1558,7 @@ func (oc *DefaultNetworkController) addPeerNamespaceAndPodHandler(namespaceSelec
 	// start watching namespaces selected by the namespace selector nsSel;
 	// upon namespace add event, start watching pods in that namespace selected
 	// by the label selector podSel
-	retryPeerNamespaces := oc.newRetryFrameworkMasterWithParameters(
+	retryPeerNamespaces := oc.newRetryFrameworkWithParameters(
 		factory.PeerNamespaceAndPodSelectorType,
 		nil,
 		&NetworkPolicyExtraParameters{
@@ -1675,7 +1675,7 @@ func (oc *DefaultNetworkController) addPeerNamespaceHandler(
 		_ = oc.handlePeerNamespaceSelectorAdd(np, gress, objs...)
 		return nil
 	}
-	retryPeerNamespaces := oc.newRetryFrameworkMasterWithParameters(
+	retryPeerNamespaces := oc.newRetryFrameworkWithParameters(
 		factory.PeerNamespaceSelectorType,
 		syncFunc,
 		&NetworkPolicyExtraParameters{gp: gress, np: np},

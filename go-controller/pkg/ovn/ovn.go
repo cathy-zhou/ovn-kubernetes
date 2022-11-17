@@ -2,7 +2,6 @@ package ovn
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	ref "k8s.io/client-go/tools/reference"
@@ -21,7 +20,6 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	egresssvc "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/egress_services"
 	svccontroller "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/services"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/unidling"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/healthcheck"
 	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -99,148 +97,6 @@ func NewBaseNetworkController(client clientset.Interface, kube kube.Interface, w
 		podRecorder:  podRecorder,
 		SCTPSupport:  SCTPSupport,
 	}
-}
-
-// Run starts the actual watching.
-func (oc *DefaultNetworkController) Run(ctx context.Context, wg *sync.WaitGroup) error {
-	oc.syncPeriodic()
-	klog.Infof("Starting all the Watchers...")
-	start := time.Now()
-
-	// Sync external gateway routes. External gateway may be set in namespaces
-	// or via pods. So execute an individual sync method at startup
-	oc.cleanExGwECMPRoutes()
-
-	// WatchNamespaces() should be started first because it has no other
-	// dependencies, and WatchNodes() depends on it
-	if err := oc.WatchNamespaces(); err != nil {
-		return err
-	}
-
-	// WatchNodes must be started next because it creates the node switch
-	// which most other watches depend on.
-	// https://github.com/ovn-org/ovn-kubernetes/pull/859
-	if err := oc.WatchNodes(); err != nil {
-		return err
-	}
-
-	// Start service watch factory and sync services
-	oc.svcFactory.Start(oc.stopChan)
-
-	// Services should be started after nodes to prevent LB churn
-	if err := oc.StartServiceController(wg, true); err != nil {
-		return err
-	}
-
-	if err := oc.WatchPods(); err != nil {
-		return err
-	}
-
-	// WatchNetworkPolicy depends on WatchPods and WatchNamespaces
-	if err := oc.WatchNetworkPolicy(); err != nil {
-		return err
-	}
-
-	if config.OVNKubernetesFeature.EnableEgressIP {
-		// This is probably the best starting order for all egress IP handlers.
-		// WatchEgressIPNamespaces and WatchEgressIPPods only use the informer
-		// cache to retrieve the egress IPs when determining if namespace/pods
-		// match. It is thus better if we initialize them first and allow
-		// WatchEgressNodes / WatchEgressIP to initialize after. Those handlers
-		// might change the assignments of the existing objects. If we do the
-		// inverse and start WatchEgressIPNamespaces / WatchEgressIPPod last, we
-		// risk performing a bunch of modifications on the EgressIP objects when
-		// we restart and then have these handlers act on stale data when they
-		// sync.
-		if err := oc.WatchEgressIPNamespaces(); err != nil {
-			return err
-		}
-		if err := oc.WatchEgressIPPods(); err != nil {
-			return err
-		}
-		if err := oc.WatchEgressNodes(); err != nil {
-			return err
-		}
-		if err := oc.WatchEgressIP(); err != nil {
-			return err
-		}
-		if util.PlatformTypeIsEgressIPCloudProvider() {
-			if err := oc.WatchCloudPrivateIPConfig(); err != nil {
-				return err
-			}
-		}
-		if config.OVNKubernetesFeature.EgressIPReachabiltyTotalTimeout == 0 {
-			klog.V(2).Infof("EgressIP node reachability check disabled")
-		} else if config.OVNKubernetesFeature.EgressIPNodeHealthCheckPort != 0 {
-			klog.Infof("EgressIP node reachability enabled and using gRPC port %d",
-				config.OVNKubernetesFeature.EgressIPNodeHealthCheckPort)
-		}
-	}
-
-	if config.OVNKubernetesFeature.EnableEgressFirewall {
-		var err error
-		oc.egressFirewallDNS, err = NewEgressDNS(oc.addressSetFactory, oc.stopChan)
-		if err != nil {
-			return err
-		}
-		oc.egressFirewallDNS.Run(egressFirewallDNSDefaultDuration)
-		err = oc.WatchEgressFirewall()
-		if err != nil {
-			return err
-		}
-	}
-
-	if config.OVNKubernetesFeature.EnableEgressQoS {
-		oc.initEgressQoSController(
-			oc.watchFactory.EgressQoSInformer(),
-			oc.watchFactory.PodCoreInformer(),
-			oc.watchFactory.NodeCoreInformer())
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			oc.runEgressQoSController(1, oc.stopChan)
-		}()
-	}
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		oc.egressSvcController.Run(1)
-	}()
-
-	klog.Infof("Completing all the Watchers took %v", time.Since(start))
-
-	if config.Kubernetes.OVNEmptyLbEvents {
-		klog.Infof("Starting unidling controller")
-		unidlingController, err := unidling.NewController(
-			oc.recorder,
-			oc.watchFactory.ServiceInformer(),
-			oc.sbClient,
-		)
-		if err != nil {
-			return err
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			unidlingController.Run(oc.stopChan)
-		}()
-	}
-
-	// Final step to cleanup after resource handlers have synced
-	err := oc.ovnTopologyCleanup()
-	if err != nil {
-		klog.Errorf("Failed to cleanup OVN topology to version %d: %v", ovntypes.OvnCurrentTopologyVersion, err)
-		return err
-	}
-
-	// Master is fully running and resource handlers have synced, update Topology version in OVN and the ConfigMap
-	if err := oc.reportTopologyVersion(ctx); err != nil {
-		klog.Errorf("Failed to report topology version: %v", err)
-		return err
-	}
-
-	return nil
 }
 
 // syncPeriodic adds a goroutine that periodically does some work

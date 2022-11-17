@@ -22,7 +22,6 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/sbdb"
 
@@ -113,88 +112,6 @@ func (oc *DefaultNetworkController) upgradeOVNTopology(existingNodes *kapi.NodeL
 		err = oc.cleanupDGP(existingNodes)
 	}
 	return err
-}
-
-// StartClusterMaster runs a subnet IPAM and a controller that watches arrival/departure
-// of nodes in the cluster
-// On an addition to the cluster (node create), a new subnet is created for it that will translate
-// to creation of a logical switch (done by the node, but could be created here at the master process too)
-// Upon deletion of a node, the switch will be deleted
-//
-// TODO: Verify that the cluster was not already called with a different global subnet
-//
-//	If true, then either quit or perform a complete reconfiguration of the cluster (recreate switches/routers with new subnet values)
-func (oc *DefaultNetworkController) StartClusterMaster() error {
-	klog.Infof("Starting cluster master")
-
-	metrics.RegisterMasterPerformance(oc.nbClient)
-	metrics.RegisterMasterFunctional()
-
-	existingNodes, err := oc.kube.GetNodes()
-	if err != nil {
-		klog.Errorf("Error in fetching nodes: %v", err)
-		return err
-	}
-	klog.V(5).Infof("Existing number of nodes: %d", len(existingNodes.Items))
-	err = oc.upgradeOVNTopology(existingNodes)
-	if err != nil {
-		klog.Errorf("Failed to upgrade OVN topology to version %d: %v", types.OvnCurrentTopologyVersion, err)
-		return err
-	}
-
-	klog.Infof("Allocating subnets")
-	if err := oc.masterSubnetAllocator.InitRanges(config.Default.ClusterSubnets); err != nil {
-		klog.Errorf("Failed to initialize host subnet allocator ranges: %v", err)
-		return err
-	}
-	if config.HybridOverlay.Enabled {
-		if err := oc.hybridOverlaySubnetAllocator.InitRanges(config.HybridOverlay.ClusterSubnets); err != nil {
-			klog.Errorf("Failed to initialize hybrid overlay subnet allocator ranges: %v", err)
-			return err
-		}
-	}
-
-	if oc.multicastSupport {
-		if _, _, err := util.RunOVNSbctl("--columns=_uuid", "list", "IGMP_Group"); err != nil {
-			klog.Warningf("Multicast support enabled, however version of OVN in use does not support IGMP Group. " +
-				"Disabling Multicast Support")
-			oc.multicastSupport = false
-		}
-	}
-
-	err = oc.createACLLoggingMeter()
-	if err != nil {
-		klog.Warningf("ACL logging support enabled, however acl-logging meter could not be created: %v. "+
-			"Disabling ACL logging support", err)
-		oc.aclLoggingEnabled = false
-	}
-
-	// FIXME: When https://github.com/ovn-org/libovsdb/issues/235 is fixed,
-	// use IsTableSupported(nbdb.LoadBalancerGroup).
-	if _, _, err := util.RunOVNNbctl("--columns=_uuid", "list", "Load_Balancer_Group"); err != nil {
-		klog.Warningf("Load Balancer Group support enabled, however version of OVN in use does not support Load Balancer Groups.")
-	} else {
-		loadBalancerGroup := nbdb.LoadBalancerGroup{
-			Name: types.ClusterLBGroupName,
-		}
-		err := libovsdbops.CreateOrUpdateLoadBalancerGroup(oc.nbClient, &loadBalancerGroup)
-		if err != nil {
-			klog.Errorf("Error creating cluster-wide load balancer group %s: %v", types.ClusterLBGroupName, err)
-			return err
-		}
-		oc.loadBalancerGroupUUID = loadBalancerGroup.UUID
-	}
-
-	nodeNames := []string{}
-	for _, node := range existingNodes.Items {
-		nodeNames = append(nodeNames, node.Name)
-	}
-	if err := oc.SetupMaster(nodeNames); err != nil {
-		klog.Errorf("Failed to setup master (%v)", err)
-		return err
-	}
-
-	return nil
 }
 
 // SetupMaster creates the central router and load-balancers for the network
