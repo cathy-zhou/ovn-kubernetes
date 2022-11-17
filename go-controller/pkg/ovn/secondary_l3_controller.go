@@ -126,15 +126,6 @@ func (oc *SecondaryL3Controller) newRetryFrameworkMasterWithParameters(
 	return r
 }
 
-func (oc *SecondaryL3Controller) CompareNetConf(netConfInfo util.NetConfInfo) bool {
-	return oc.Compare(netConfInfo)
-}
-
-//// GetNetInfo returns netInfo of this controller
-//func (oc *SecondaryL3Controller) GetNetInfo() *util.NetInfo {
-//	return &oc.NetInfo
-//}
-//
 func (oc *SecondaryL3Controller) Start(ctx context.Context) error {
 	if oc.isStarted {
 		return nil

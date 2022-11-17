@@ -178,7 +178,7 @@ func (nadController *nadController) repairNads() (err error) {
 	staleNetworks := map[string]bool{}
 	for _, ls := range switches {
 		netName := ls.ExternalIDs["network_name"]
-		if _, ok := nadController.cNameManager.networkControllers[netName]; ok {
+		if _, ok := nadController.cNameManager.secondaryNetworkControllers[netName]; ok {
 			// network still exists, no cleanup to do
 			continue
 		}
@@ -190,7 +190,7 @@ func (nadController *nadController) repairNads() (err error) {
 	}
 	for _, lr := range routers {
 		netName := lr.ExternalIDs["network_name"]
-		if _, ok := nadController.cNameManager.networkControllers[netName]; ok {
+		if _, ok := nadController.cNameManager.secondaryNetworkControllers[netName]; ok {
 			// network still exists, no cleanup to do
 			continue
 		}

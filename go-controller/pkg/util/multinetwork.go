@@ -93,7 +93,7 @@ func (nInfo *NetNameInfo) CheckNadExist(nadName string) bool {
 // NetConfInfo is structure which holds specific per-network information
 type NetConfInfo interface {
 	Verify() error
-	Compare(NetConfInfo) bool
+	CompareNetConf(NetConfInfo) bool
 	GetTopologyType() string
 }
 
@@ -104,7 +104,7 @@ type L3NetConfInfo struct {
 	ClusterSubnets []config.CIDRNetworkEntry
 }
 
-func (l3NetConfInfo *L3NetConfInfo) Compare(newNetConfInfo NetConfInfo) bool {
+func (l3NetConfInfo *L3NetConfInfo) CompareNetConf(newNetConfInfo NetConfInfo) bool {
 	newL3NetConfInfo, ok := newNetConfInfo.(*L3NetConfInfo)
 	if !ok || l3NetConfInfo.NetCidr != newL3NetConfInfo.NetCidr || l3NetConfInfo.MTU != newL3NetConfInfo.MTU {
 		return false

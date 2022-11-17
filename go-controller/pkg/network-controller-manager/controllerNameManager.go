@@ -17,10 +17,10 @@ type controllerNameManager struct {
 	defaultNetworkController NetworkController
 	// key is nadName, value is netName for secondary network controller
 	controllersByNadName map[string]string
-	// controller for all secondasry networks, key is netName of net-attach-def, value is *Controller
+	// controller for all secondary networks, key is netName of net-attach-def, value is *Controller
 	// this map is updated either at the very beginning of ovnkube-master when initializing the default controller
 	// or when net-attach-def is added/deleted. All these are serialized and no lock protection is needed
-	networkControllers map[string]SecondaryNetworkController
+	secondaryNetworkControllers map[string]SecondaryNetworkController
 }
 
 // SyncSecondaryNetworkNad update controller with the given nad. It creates the controller if this is the first nad
@@ -66,7 +66,7 @@ func (cnm *controllerNameManager) SyncSecondaryNetworkNad(cc *ovn.BaseNetworkCon
 		return nil
 	}
 
-	oc, ok := cnm.networkControllers[nInfo.GetNetworkName()]
+	oc, ok := cnm.secondaryNetworkControllers[nInfo.GetNetworkName()]
 	if ok {
 		klog.V(5).Infof("Found controller %s for nad %s", nInfo.GetNetworkName(), nadName)
 		if !oc.CompareNetConf(netConfInfo) {
@@ -92,7 +92,7 @@ func (cnm *controllerNameManager) SyncSecondaryNetworkNad(cc *ovn.BaseNetworkCon
 			klog.Errorf("Create controller for network %s failed %v", nInfo.GetNetworkName(), err)
 			return nil
 		}
-		cnm.networkControllers[nInfo.GetNetworkName()] = oc
+		cnm.secondaryNetworkControllers[nInfo.GetNetworkName()] = oc
 	}
 	oc.AddNad(nadName)
 	cnm.controllersByNadName[nadName] = nInfo.GetNetworkName()
@@ -109,7 +109,7 @@ func (cnm *controllerNameManager) DeleteSecondaryNetworkNad(nadName string) erro
 	if !ok {
 		return nil
 	}
-	oc, ok := cnm.networkControllers[netName]
+	oc, ok := cnm.secondaryNetworkControllers[netName]
 	if !ok {
 		return fmt.Errorf("failed to find controller of the given nad %s", nadName)
 	}
@@ -120,7 +120,7 @@ func (cnm *controllerNameManager) DeleteSecondaryNetworkNad(nadName string) erro
 		if err != nil {
 			return err
 		}
-		delete(cnm.networkControllers, netName)
+		delete(cnm.secondaryNetworkControllers, netName)
 	}
 	delete(cnm.controllersByNadName, nadName)
 	return nil

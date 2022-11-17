@@ -14,7 +14,6 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn"
-	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	clientset "k8s.io/client-go/kubernetes"
@@ -187,8 +186,9 @@ func NewNetworkControllerManager(ovnClient *util.OVNClientset, identity string, 
 		identity:     identity,
 
 		controllerNameManager: controllerNameManager{
-			controllersByNadName: map[string]string{},
-			networkControllers:   map[string]SecondaryNetworkController{},
+			defaultNetworkController:    nil,
+			controllersByNadName:        map[string]string{},
+			secondaryNetworkControllers: map[string]SecondaryNetworkController{},
 		},
 	}
 }
@@ -268,9 +268,8 @@ func (cm *NetworkControllerManager) Run(ctx context.Context, stopChan <-chan str
 		return err
 	}
 
-	defaultController, ok := cm.networkControllers[ovntypes.DefaultNetworkName]
-	if ok {
-		err = defaultController.Start(ctx)
+	if cm.defaultNetworkController != nil {
+		err = cm.defaultNetworkController.Start(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to start default network controller: %v", err)
 		}
@@ -288,8 +287,12 @@ func (cm *NetworkControllerManager) Run(ctx context.Context, stopChan <-chan str
 func (cm *NetworkControllerManager) Stop() {
 	// stop the net-attach-def controller
 	// and for each Controller of secondary network, call oc.Stop()
-	for _, oc := range cm.networkControllers {
-		err := oc.Stop(false)
+	err := cm.defaultNetworkController.Stop(false)
+	if err != nil {
+		klog.Errorf("Failed to stop default network controller")
+	}
+	for _, oc := range cm.secondaryNetworkControllers {
+		err = oc.Stop(false)
 		if err != nil {
 			klog.Errorf("Failed to stop controller of network %s", oc.GetNetworkName())
 		}
