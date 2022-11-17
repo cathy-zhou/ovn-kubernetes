@@ -9,16 +9,24 @@ import (
 type NetConf struct {
 	types.NetConf
 
-	// Network Cidr
-	NetCidr string `json:"netCIDR,omitempty"`
-	// Network MTU
-	MTU int `json:"mtu,omitempty"`
-	// captures net-attach-def name in the form of namespace/name
-	NadName string `json:"netAttachDefName,omitempty"`
 	// set to true if it is a secondary networkattachmentdefintion
 	IsSecondary bool `json:"isSecondary,omitempty"`
 	// specifies the OVN topology for this network configuration
+	// when not specified, by default it is Layer3AttachDefTopoType
 	Topology string `json:"topology,omitempty"`
+	// captures net-attach-def name in the form of namespace/name
+	NadName string `json:"netAttachDefName,omitempty"`
+	// Network MTU
+	MTU int `json:"mtu,omitempty"`
+	// Network Cidr
+	// for secondary layer3 network, eg. 10.128.0.0/14/23
+	// for localnet or layer2 network, eg. 10.1.130.0/24
+	NetCidr string `json:"netCIDR,omitempty"`
+	// VlanID, valid in localnet topology network only
+	VlanId int `json:"vlanId,omitempty"`
+	// list of IPs, expressed with prefix length, to be excluded from being allocated for Pod
+	// valid for localnet or layer 2 network topology
+	ExcludeCIDRs []string `json:"excludeCidrs,omitempty"`
 
 	// PciAddrs in case of using sriov
 	DeviceID string `json:"deviceID,omitempty"`

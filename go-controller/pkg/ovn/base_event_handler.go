@@ -188,8 +188,7 @@ func needsUpdateDuringRetry(objType reflect.Type) bool {
 	return false
 }
 
-// Given an object and its type, IsObjectInTerminalState returns true if the object is a in terminal state.
-// This is used now for pods that are either in a PodSucceeded or in a PodFailed state.
+// IsObjectInTerminalState returns true if the object is in a terminal state.
 func (h *baseNetworkControllerEventHandler) isObjectInTerminalState(objType reflect.Type, obj interface{}) bool {
 	switch objType {
 	case factory.PodType,

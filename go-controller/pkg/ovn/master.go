@@ -1148,7 +1148,11 @@ func (bnc *BaseNetworkController) requestAddPodOnNode(nodeName string, retryPods
 	return errs
 }
 
-func (oc *DefaultNetworkController) recordNodeErrorEvent(node *kapi.Node, nodeErr error) {
+func (nci *NetworkControllerInfo) recordNodeErrorEvent(node *kapi.Node, nodeErr error) {
+	if nci.IsSecondary() {
+		// TBD, no op for secondary network for now
+		return
+	}
 	nodeRef, err := ref.GetReference(scheme.Scheme, node)
 	if err != nil {
 		klog.Errorf("Couldn't get a reference to node %s to post an event: %v", node.Name, err)
@@ -1156,7 +1160,7 @@ func (oc *DefaultNetworkController) recordNodeErrorEvent(node *kapi.Node, nodeEr
 	}
 
 	klog.V(5).Infof("Posting %s event for Node %s: %v", kapi.EventTypeWarning, node.Name, nodeErr)
-	oc.recorder.Eventf(nodeRef, kapi.EventTypeWarning, "ErrorReconcilingNode", nodeErr.Error())
+	nci.recorder.Eventf(nodeRef, kapi.EventTypeWarning, "ErrorReconcilingNode", nodeErr.Error())
 }
 
 func (oc *DefaultNetworkController) deleteNodeEvent(node *kapi.Node) error {

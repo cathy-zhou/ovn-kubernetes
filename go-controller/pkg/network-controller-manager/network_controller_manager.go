@@ -120,6 +120,7 @@ func (cm *NetworkControllerManager) Start(ctx context.Context, cancel context.Ca
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: func(ctx context.Context) {
 				klog.Infof("Won leader election; in active mode")
+				klog.Infof("Starting cluster master")
 				start := time.Now()
 				defer func() {
 					end := time.Since(start)
@@ -191,6 +192,7 @@ func NewNetworkControllerManager(ovnClient *util.OVNClientset, identity string, 
 		nbClient:          libovsdbOvnNBClient,
 		sbClient:          libovsdbOvnSBClient,
 		podRecorder:       &podRecorder,
+		SCTPSupport:       false,
 		aclLoggingEnabled: true,
 		wg:                wg,
 		identity:          identity,

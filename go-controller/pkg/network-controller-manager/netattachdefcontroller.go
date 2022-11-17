@@ -26,6 +26,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
 	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	"golang.org/x/time/rate"
 )
 
@@ -147,6 +148,16 @@ func findAllSecondaryNetworkLogicalEntities(nbClient libovsdbclient.Client) ([]*
 	return nodeSwitches, clusterRouters, nil
 }
 
+func createSecondaryNetworkController(topoType string, bnc *ovn.BaseNetworkController,
+	nInfo util.NetInfo, netConfInfo util.NetConfInfo) (SecondaryNetworkController, error) {
+	if topoType == ovntypes.Layer3AttachDefTopoType {
+		return ovn.NewSecondaryLayer3NetworkController(bnc, nInfo, netConfInfo), nil
+	} else if topoType == ovntypes.Layer2AttachDefTopoType {
+		return ovn.NewSecondaryLayer2NetworkController(bnc, nInfo, netConfInfo), nil
+	}
+	return nil, fmt.Errorf("topotype %s not supported", topoType)
+}
+
 func (nadController *netAttachDefinitionController) repairNads() (err error) {
 	startTime := time.Now()
 	klog.V(4).Infof("Starting repairing loop for %s", controllerName)
@@ -188,8 +199,8 @@ func (nadController *netAttachDefinitionController) repairNads() (err error) {
 		if topoType, ok := ls.ExternalIDs[ovntypes.TopoTypeExternalID]; ok {
 			// Create dummy network controllers to cleanup logical entities
 			klog.V(5).Infof("Found stale %s network %s", topoType, netName)
-			if topoType == ovntypes.Layer3AttachDefTopoType {
-				staleNetworks[netName] = ovn.NewSecondaryLayer3NetworkController(nadController.bnc, nil, nil)
+			if oc, err := createSecondaryNetworkController(topoType, nadController.bnc, nil, nil); err == nil {
+				staleNetworks[netName] = oc
 				continue
 			}
 		}
@@ -208,8 +219,8 @@ func (nadController *netAttachDefinitionController) repairNads() (err error) {
 		if topoType, ok := lr.ExternalIDs[ovntypes.TopoTypeExternalID]; ok {
 			// Create dummy network controllers to cleanup logical entities
 			klog.V(5).Infof("Found stale %s network %s", topoType, netName)
-			if topoType == ovntypes.Layer3AttachDefTopoType {
-				staleNetworks[netName] = ovn.NewSecondaryLayer3NetworkController(nadController.bnc, nil, nil)
+			if oc, err := createSecondaryNetworkController(topoType, nadController.bnc, nil, nil); err == nil {
+				staleNetworks[netName] = oc
 				continue
 			}
 		}

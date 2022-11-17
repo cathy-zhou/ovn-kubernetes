@@ -48,6 +48,28 @@ func (nci *NetworkControllerInfo) updateL3TopologyVersion() error {
 	return nil
 }
 
+func (nci *NetworkControllerInfo) updateL2TopologyVersion() error {
+	var switchName string
+
+	currentTopologyVersion := strconv.Itoa(ovntypes.OvnCurrentTopologyVersion)
+	topoType := nci.GetTopologyType()
+	if topoType == ovntypes.Layer2AttachDefTopoType {
+		switchName = nci.GetPrefix() + ovntypes.OvnLayer2Switch
+	} else {
+		return fmt.Errorf("topology type %s is not supported", topoType)
+	}
+	logicalSwitch := nbdb.LogicalSwitch{
+		Name:        switchName,
+		ExternalIDs: map[string]string{"k8s-ovn-topo-version": currentTopologyVersion},
+	}
+	err := libovsdbops.UpdateLogicalSwtichSetExternalIDs(nci.nbClient, &logicalSwitch)
+	if err != nil {
+		return fmt.Errorf("failed to generate set topology version, err: %v", err)
+	}
+	klog.Infof("Updated Logical_Switch %s topology version to %s", switchName, currentTopologyVersion)
+	return nil
+}
+
 // reportTopologyVersion saves the topology version to two places:
 // - an ExternalID on the ovn_cluster_router LogicalRouter in nbdb
 // - a ConfigMap. This is used by nodes to determine the cluster's topology

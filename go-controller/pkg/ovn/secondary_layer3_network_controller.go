@@ -12,7 +12,8 @@ import (
 	networkattachmentdefinitionapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	"github.com/ovn-org/libovsdb/ovsdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
-	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/subnetallocator"
@@ -247,7 +248,7 @@ type SecondaryLayer3NetworkController struct {
 
 // NewSecondaryLayer3NetworkController create a new OVN controller for the given secondary l3 nad
 func NewSecondaryLayer3NetworkController(bnc *BaseNetworkController, nInfo util.NetInfo,
-	netconfInfo *util.Layer3NetConfInfo) *SecondaryLayer3NetworkController {
+	netconfInfo util.NetConfInfo) *SecondaryLayer3NetworkController {
 	stopChan := make(chan struct{})
 	oc := &SecondaryLayer3NetworkController{
 		NetworkControllerInfo: NetworkControllerInfo{
@@ -267,7 +268,7 @@ func NewSecondaryLayer3NetworkController(bnc *BaseNetworkController, nInfo util.
 }
 
 func (oc *SecondaryLayer3NetworkController) initRetryFramework() {
-	// Init the retry framework for pods, nodes,
+	// Init the retry framework for pods, nodes
 	oc.retryPods = oc.newRetryFrameworkWithParameters(factory.PodType, nil, nil)
 	oc.retryNodes = oc.newRetryFrameworkWithParameters(factory.NodeType, nil, nil)
 }
@@ -301,16 +302,11 @@ func (oc *SecondaryLayer3NetworkController) newRetryFrameworkWithParameters(
 
 // Start starts the secondary layer3 controller, handles all events and creates all needed logical entities
 func (oc *SecondaryLayer3NetworkController) Start(ctx context.Context) error {
-	err := oc.Init()
-	if err != nil {
+	if err := oc.Init(); err != nil {
 		return err
 	}
 
-	err = oc.Run()
-	if err != nil {
-		return err
-	}
-	return nil
+	return oc.Run()
 }
 
 // Stop gracefully stops the controller, and delete all logical entities for this network if requested
@@ -363,13 +359,12 @@ func (oc *SecondaryLayer3NetworkController) DeleteLogicalEntities(netName string
 		return fmt.Errorf("failed to deleting routers/switches of network %s", netName)
 	}
 
-	// cleanup related OVN logical entities
+	// remove hostsubnet annotation for this network
 	existingNodes, err := oc.watchFactory.GetNodes()
 	if err != nil {
 		klog.Errorf("Error in initializing/fetching subnets: %v", err)
 		return nil
 	}
-	// remove hostsubnet annoation for this network
 	for _, node := range existingNodes {
 		if noHostSubnet(node) {
 			continue
@@ -385,7 +380,7 @@ func (oc *SecondaryLayer3NetworkController) DeleteLogicalEntities(netName string
 }
 
 func (oc *SecondaryLayer3NetworkController) Run() error {
-	klog.Infof("Starting all the Watchers...")
+	klog.Infof("Starting all the Watchers for network %s ...", oc.GetNetworkName())
 	start := time.Now()
 
 	if err := oc.WatchNodes(); err != nil {
@@ -396,12 +391,11 @@ func (oc *SecondaryLayer3NetworkController) Run() error {
 		return err
 	}
 
-	klog.Infof("Completing all the Watchers took %v", time.Since(start))
+	klog.Infof("Completing all the Watchers for network %s took %v", oc.GetNetworkName(), time.Since(start))
 
 	// controller is fully running and resource handlers have synced, update Topology version in OVN
 	if err := oc.updateL3TopologyVersion(); err != nil {
-		klog.Errorf("Failed to update topology version: %v", err)
-		return err
+		return fmt.Errorf("failed to update topology version for network %s: %v", oc.GetNetworkName(), err)
 	}
 
 	return nil
@@ -433,14 +427,18 @@ func (oc *SecondaryLayer3NetworkController) WatchPods() error {
 }
 
 func (oc *SecondaryLayer3NetworkController) getPortInfo(pod *kapi.Pod) *lpInfo {
+	return oc.NetworkControllerInfo.getPortInfo(pod, oc.logicalPortCache)
+}
+
+func (nci *NetworkControllerInfo) getPortInfo(pod *kapi.Pod, logicalPortCache *portCache) *lpInfo {
 	if !util.PodWantsNetwork(pod) {
 		return nil
 	} else {
-		on, network, err := util.IsNetworkOnPod(pod, oc.NetInfo)
+		on, network, err := util.IsNetworkOnPod(pod, nci.NetInfo)
 		if err == nil && on {
 			nadName := util.GetNadName(network.Namespace, network.Name)
 			key := util.GetSecondaryNetworkLogicalPortName(pod.Namespace, pod.Name, nadName)
-			portInfo, _ := oc.logicalPortCache.get(key)
+			portInfo, _ := logicalPortCache.get(key)
 			return portInfo
 		}
 	}
@@ -497,10 +495,6 @@ func (oc *SecondaryLayer3NetworkController) ensurePod(oldPod, pod *kapi.Pod, add
 func (oc *SecondaryLayer3NetworkController) addLogicalPort(pod *kapi.Pod, nadName string,
 	network *networkattachmentdefinitionapi.NetworkSelectionElement) error {
 	var libovsdbExecuteTime time.Duration
-	var lsp *nbdb.LogicalSwitchPort
-	var ops []ovsdb.Operation
-	var podAnnotation *util.PodAnnotation
-	var err error
 
 	switchName := oc.GetPrefix() + pod.Spec.NodeName
 	// Keep track of how long syncs take.
@@ -510,20 +504,17 @@ func (oc *SecondaryLayer3NetworkController) addLogicalPort(pod *kapi.Pod, nadNam
 			pod.Namespace, pod.Name, nadName, time.Since(start), libovsdbExecuteTime)
 	}()
 
-	ops, lsp, podAnnotation, _, err = oc.addPodLogicalPort(pod, oc.lsManager, nadName, network)
+	ops, lsp, podAnnotation, newlyCreated, err := oc.addPodLogicalPort(pod, oc.lsManager, nadName, network)
 	if err != nil {
 		return err
 	}
 
-	// TBD, need to add PodIP to namespace when multi-network policy support is added
-
-	// TBD what to do with secondary network?
-	//recordOps, txOkCallBack, _, err := metrics.GetConfigDurationRecorder().AddOVN(oc.nbClient, "pod", pod.Namespace,
-	//	pod.Name)
-	//if err != nil {
-	//	klog.Errorf("Config duration recorder: %v", err)
-	//}
-	//ops = append(ops, recordOps...)
+	recordOps, txOkCallBack, _, err := metrics.GetConfigDurationRecorder().AddOVN(oc.nbClient, "pod", pod.Namespace,
+		pod.Name, oc.NetInfo)
+	if err != nil {
+		klog.Errorf("Config duration recorder: %v", err)
+	}
+	ops = append(ops, recordOps...)
 
 	transactStart := time.Now()
 	_, err = libovsdbops.TransactAndCheckAndSetUUIDs(oc.nbClient, lsp, ops)
@@ -531,8 +522,8 @@ func (oc *SecondaryLayer3NetworkController) addLogicalPort(pod *kapi.Pod, nadNam
 	if err != nil {
 		return fmt.Errorf("error transacting operations %+v: %v", ops, err)
 	}
-	//txOkCallBack()
-	//oc.podRecorder.AddLSP(pod.UID)
+	txOkCallBack()
+	oc.podRecorder.AddLSP(pod.UID, oc.NetInfo)
 
 	// if somehow lspUUID is empty, there is a bug here with interpreting OVSDB results
 	if len(lsp.UUID) == 0 {
@@ -542,10 +533,9 @@ func (oc *SecondaryLayer3NetworkController) addLogicalPort(pod *kapi.Pod, nadNam
 	// Add the pod's logical switch port to the port cache
 	_ = oc.logicalPortCache.add(switchName, lsp.Name, lsp.UUID, podAnnotation.MAC, podAnnotation.IPs)
 
-	// TBD, observe the pod creation latency metric.
-	//if newlyCreated {
-	//	metrics.RecordPodCreated(pod)
-	//}
+	if newlyCreated {
+		metrics.RecordPodCreated(pod, oc.NetInfo)
+	}
 	return nil
 }
 
@@ -635,10 +625,9 @@ func (oc *SecondaryLayer3NetworkController) addUpdateNodeEvent(node *kapi.Node, 
 	}
 
 	err = kerrors.NewAggregate(errs)
-	// TBD
-	//if err != nil {
-	//	oc.recordNodeErrorEvent(node, err)
-	//}
+	if err != nil {
+		oc.recordNodeErrorEvent(node, err)
+	}
 	return err
 }
 
@@ -713,7 +702,7 @@ func (oc *SecondaryLayer3NetworkController) syncPods(pods []interface{}) error {
 			return err
 		}
 	}
-	return oc.deleteStaleLogicalSwitchPorts(oc.lsManager, expectedLogicalPorts)
+	return oc.deleteAllNodesStaleLogicalSwitchPorts(oc.lsManager, expectedLogicalPorts)
 }
 
 // We only deal with cleaning up nodes that shouldn't exist here, since

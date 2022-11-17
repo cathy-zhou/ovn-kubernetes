@@ -3,7 +3,6 @@ package networkControllerManager
 import (
 	"context"
 	"fmt"
-
 	nettypes "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
@@ -68,30 +67,34 @@ func (cnm *secondaryNetworkControllerNameManager) AddSecondaryNetworkNad(cc *ovn
 			// first time to process this nad
 			if err != nil {
 				// invalid nad, nothing to do
-				klog.Errorf("net-attach-def %s is invalid: %v", nadName, err)
-				cnm.perNetworkNadNameInfo.Delete(nadName)
+				klog.Warningf("net-attach-def %s is invalid: %v", nadName, err)
+				cnm.perNadNetConfInfo.Delete(nadName)
 				return nil
 			}
 			nadNetConfInfo.netName = nInfo.GetNetworkName()
 			err = cnm.addNadToController(nadName, cc, nInfo, netConfInfo, doStart)
 			if err != nil {
 				klog.Errorf("Failed to add net-attach-def %s to network %s: %v", nadName, nInfo.GetNetworkName(), err)
-				cnm.perNetworkNadNameInfo.Delete(nadName)
+				cnm.perNadNetConfInfo.Delete(nadName)
 				return err
 			}
 
 		} else {
 			// this nad is already associated with a network controller
 			if err != nil {
-				klog.Errorf("net-attach-def %s is invalid: %v", err)
+				klog.Warningf("net-attach-def %s is invalid: %v", nadName, err)
 				return nil
 			}
+			klog.V(5).Infof("net-attach-def of the same name %s already processed: %v", nadName, nadNetConfInfo)
 			// TBD, is it possible a delete event is missing? if so, we'd need to delete
 			// the old nad from the associated network then add the new one
-			if nadNetConfInfo.netName != nInfo.GetNetworkName() ||
-				!nadNetConfInfo.CompareNetConf(netConfInfo) {
+			if nadNetConfInfo.netName != nInfo.GetNetworkName() {
 				// netconf network name changed or netconf spec changed
-				klog.Errorf("net-attach-def %s spec has changed, not supported")
+				klog.Warningf("net-attach-def %s network name %s has changed, expect %s, not supported",
+					nInfo.GetNetworkName(), nadNetConfInfo.netName)
+			} else if !nadNetConfInfo.CompareNetConf(netConfInfo) {
+				// netconf network name changed or netconf spec changed
+				klog.Warningf("net-attach-def %s spec has changed, not supported", nadName)
 			}
 			return nil
 		}
@@ -106,7 +109,7 @@ func (cnm *secondaryNetworkControllerNameManager) DeleteSecondaryNetworkNad(netA
 	return cnm.perNadNetConfInfo.DoWithLock(netAttachDefName, func(nadName string) error {
 		existingNadNetConfInfo, found := cnm.perNadNetConfInfo.Load(nadName)
 		if !found {
-			klog.Infof("Nad %s not found", nadName)
+			klog.Warningf("Nad %s not found", nadName)
 			return nil
 		}
 		err := cnm.deleteNadFromController(existingNadNetConfInfo.netName, nadName)
@@ -114,7 +117,7 @@ func (cnm *secondaryNetworkControllerNameManager) DeleteSecondaryNetworkNad(netA
 			klog.Errorf("Failed to delete net-attach-def %s from network %s: %v", nadName, existingNadNetConfInfo.netName, err)
 			return err
 		}
-		cnm.perNetworkNadNameInfo.Delete(nadName)
+		cnm.perNadNetConfInfo.Delete(nadName)
 		return nil
 	})
 }
@@ -143,7 +146,7 @@ func (cnm *secondaryNetworkControllerNameManager) addNadToController(nadName str
 	var nadExists, isStarted bool
 
 	netName := nInfo.GetNetworkName()
-	klog.V(5).Infof("Add net-attach-def to network %s", nadName, netName)
+	klog.V(5).Infof("Add net-attach-def %s to network %s", nadName, netName)
 	return cnm.perNetworkNadNameInfo.DoWithLock(netName, func(networkName string) error {
 		nni, loaded := cnm.perNetworkNadNameInfo.LoadOrStore(networkName, &nadNameInfo{
 			nadNames:  map[string]bool{},
@@ -153,8 +156,12 @@ func (cnm *secondaryNetworkControllerNameManager) addNadToController(nadName str
 		if !loaded {
 			// first nad for this network, create controller
 			klog.V(5).Infof("First net-attach-def %s of network %s added, create network controller", nadName, networkName)
-			layer3NetConfInfo := netConfInfo.(*util.Layer3NetConfInfo)
-			oc = ovn.NewSecondaryLayer3NetworkController(cc, nInfo, layer3NetConfInfo)
+			topoType := netConfInfo.GetTopologyType()
+			oc, err = createSecondaryNetworkController(topoType, cc, nInfo, netConfInfo)
+			if err != nil {
+				cnm.perNetworkNadNameInfo.Delete(networkName)
+				return fmt.Errorf("failed to create secondary network controller for network %s: %v", networkName, err)
+			}
 			nni.oc = oc
 		} else {
 			klog.V(5).Infof("net-attach-def %s added to existing network %s", nadName, networkName)
@@ -193,8 +200,8 @@ func (cnm *secondaryNetworkControllerNameManager) addNadToController(nadName str
 		}
 
 		// if controller failed to start, undo start which deletes all the logical entities of this network
-		if err1 := oc.Stop(true); err1 != nil {
-			klog.Errorf("Failed to delete logical entities for network %s: %v", networkName, err1)
+		if err := oc.Stop(true); err != nil {
+			klog.Warningf("Failed to delete logical entities for network %s: %v", networkName, err)
 		}
 
 		if !nadExists {
@@ -227,7 +234,7 @@ func (cnm *secondaryNetworkControllerNameManager) deleteNadFromController(netNam
 		klog.V(5).Infof("Delete nad %s from controller of network %s", nadName, networkName)
 		delete(nni.nadNames, nadName)
 		if len(nni.nadNames) == 0 {
-			klog.V(5).Infof("The last nad of controller of network %s is deleted, stop controller", nadName, networkName)
+			klog.V(5).Infof("The last nad %s of controller of network %s is deleted, stop controller", nadName, networkName)
 			err := oc.Stop(true)
 			// set isStarted to false even stop failed, if a new Nad race with this, it can restart the controller
 			// TBD: what if they have different nadconf?

@@ -574,7 +574,8 @@ func (wf *WatchFactory) addHandler(objType reflect.Type, namespace string, sel l
 		// Being so, processExisting is expected to be idem-potent!
 		err := utilwait.PollImmediate(500*time.Millisecond, 60*time.Second, func() (bool, error) {
 			if err := processExisting(items); err != nil {
-				klog.Errorf("Failed (will retry) in processExisting %v: %v", items, err)
+				klog.Errorf("Failed (will retry) in processExisting: %v", err)
+				klog.Errorf("Existing items %v", items)
 				return false, nil
 			}
 			return true, nil
