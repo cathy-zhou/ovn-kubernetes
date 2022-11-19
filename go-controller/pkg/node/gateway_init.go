@@ -255,7 +255,7 @@ func configureSvcRouteViaInterface(iface string, gwIPs []net.IP) error {
 	return nil
 }
 
-func (n *OvnNode) initGateway(subnets []*net.IPNet, nodeAnnotator kube.Annotator,
+func (n *DefaultNodeNetworkController) initGateway(subnets []*net.IPNet, nodeAnnotator kube.Annotator,
 	waiter *startupWaiter, managementPortConfig *managementPortConfig, kubeNodeIP net.IP) error {
 	klog.Info("Initializing Gateway Functionality")
 	var err error
@@ -382,7 +382,7 @@ func interfaceForEXGW(intfName string) string {
 	return intfName
 }
 
-func (n *OvnNode) initGatewayDPUHost(kubeNodeIP net.IP) error {
+func (n *DefaultNodeNetworkController) initGatewayDPUHost(kubeNodeIP net.IP) error {
 	// A DPU host gateway is complementary to the shared gateway running
 	// on the DPU embedded CPU. it performs some initializations and
 	// watch on services for iptable rule updates and run a loadBalancerHealth checker

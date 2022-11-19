@@ -294,8 +294,8 @@ func (oc *DefaultNetworkController) Start(ctx context.Context) error {
 // Stop gracefully stops the controller
 // deleteLogicalEntities will never be true for default network
 func (oc *DefaultNetworkController) Stop(deleteLogicalEntities bool) error {
-	oc.wg.Wait()
 	close(oc.stopChan)
+	oc.wg.Wait()
 	return nil
 }
 

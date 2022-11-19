@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	nettypes "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
@@ -12,7 +11,7 @@ import (
 )
 
 type SecondaryNetworkControllerManager interface {
-	AddSecondaryNetworkNad(cc *ovn.BaseNetworkController, netattachdef *nettypes.NetworkAttachmentDefinition, doStart bool) error
+	AddSecondaryNetworkNad(ncm NetworkControllerManager, netattachdef *nettypes.NetworkAttachmentDefinition, doStart bool) error
 	DeleteSecondaryNetworkNad(nadName string) error
 	GetAllControllers() []SecondaryNetworkController
 }
@@ -45,7 +44,7 @@ type nadNetConfInfo struct {
 // AddSecondaryNetworkNad adds the given nad to the associated controller. It creates the controller if this
 // is the first nad of the network
 // note that for errors that are not retriable (configuration error etc.), just log the error and return nil
-func (cnm *secondaryNetworkControllerNameManager) AddSecondaryNetworkNad(cc *ovn.BaseNetworkController,
+func (cnm *secondaryNetworkControllerNameManager) AddSecondaryNetworkNad(ncm NetworkControllerManager,
 	netattachdef *nettypes.NetworkAttachmentDefinition, doStart bool) error {
 	var netConfInfo util.NetConfInfo
 	var nInfo util.NetInfo
@@ -72,7 +71,7 @@ func (cnm *secondaryNetworkControllerNameManager) AddSecondaryNetworkNad(cc *ovn
 				return nil
 			}
 			nadNetConfInfo.netName = nInfo.GetNetworkName()
-			err = cnm.addNadToController(nadName, cc, nInfo, netConfInfo, doStart)
+			err = cnm.addNadToController(ncm, nadName, nInfo, netConfInfo, doStart)
 			if err != nil {
 				klog.Errorf("Failed to add net-attach-def %s to network %s: %v", nadName, nInfo.GetNetworkName(), err)
 				cnm.perNadNetConfInfo.Delete(nadName)
@@ -139,7 +138,7 @@ func (cnm *secondaryNetworkControllerNameManager) GetAllControllers() []Secondar
 	return allNetworkControllers
 }
 
-func (cnm *secondaryNetworkControllerNameManager) addNadToController(nadName string, cc *ovn.BaseNetworkController,
+func (cnm *secondaryNetworkControllerNameManager) addNadToController(ncm NetworkControllerManager, nadName string,
 	nInfo util.NetInfo, netConfInfo util.NetConfInfo, doStart bool) error {
 	var oc SecondaryNetworkController
 	var err error
@@ -157,7 +156,7 @@ func (cnm *secondaryNetworkControllerNameManager) addNadToController(nadName str
 			// first nad for this network, create controller
 			klog.V(5).Infof("First net-attach-def %s of network %s added, create network controller", nadName, networkName)
 			topoType := netConfInfo.GetTopologyType()
-			oc, err = createSecondaryNetworkController(topoType, cc, nInfo, netConfInfo)
+			oc, err = ncm.NewSecondaryNetworkController(topoType, nInfo, netConfInfo)
 			if err != nil {
 				cnm.perNetworkNadNameInfo.Delete(networkName)
 				return fmt.Errorf("failed to create secondary network controller for network %s: %v", networkName, err)

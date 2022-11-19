@@ -18,6 +18,7 @@ import (
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/klog/v2"
 
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	current "github.com/containernetworking/cni/pkg/types/100"
@@ -382,9 +383,9 @@ func ConfigureOVS(ctx context.Context, namespace, podName, hostIfaceName string,
 	}
 
 	if ifInfo.IsSecondary {
-		ovsArgs = append(ovsArgs, fmt.Sprintf("external_ids:network_name=%s", ifInfo.NadName))
+		ovsArgs = append(ovsArgs, fmt.Sprintf("external_ids:%s=%s", types.NetworkNameExternalID, ifInfo.NadName))
 	} else {
-		ovsArgs = append(ovsArgs, []string{"--", "--if-exists", "remove", "interface", hostIfaceName, "external_ids", "network_name"}...)
+		ovsArgs = append(ovsArgs, []string{"--", "--if-exists", "remove", "interface", hostIfaceName, "external_ids", types.NetworkNameExternalID}...)
 	}
 
 	if len(ifInfo.VfNetdevName) != 0 {

@@ -337,7 +337,7 @@ func checkForStaleOVSRepresentorInterfaces(nodeName string, wf factory.ObjectCac
 			continue
 		}
 		prefix := ""
-		nadName, ok := ifaceInfo.Attributes["network_name"]
+		nadName, ok := ifaceInfo.Attributes[types.NetworkNameExternalID]
 		if ok {
 			prefix = util.GetSecondaryNetworkPrefix(nadName)
 			if !strings.HasPrefix(ifaceId, prefix) {

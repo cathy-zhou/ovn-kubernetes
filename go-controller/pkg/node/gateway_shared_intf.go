@@ -110,6 +110,7 @@ type serviceEps struct {
 // `add` parameter indicates if the flows should exist or be removed from the cache
 // `hasLocalHostNetworkEp` indicates if at least one host networked endpoint exists for this service which is local to this node.
 func (npw *nodePortWatcher) updateServiceFlowCache(service *kapi.Service, add, hasLocalHostNetworkEp bool) error {
+	klog.Infof("updateServiceFlowCache")
 	var cookie, key string
 	var err error
 	var errors []error
@@ -239,6 +240,7 @@ func (npw *nodePortWatcher) updateServiceFlowCache(service *kapi.Service, add, h
 // `externalIPOrLBIngressIP` is either externalIP.IP or LB.status.ingress.IP
 // `ipType` is either "External" or "Ingress"
 func (npw *nodePortWatcher) createLbAndExternalSvcFlows(service *kapi.Service, svcPort *kapi.ServicePort, add bool, hasLocalHostNetworkEp bool, protocol string, actions string, externalIPOrLBIngressIP string, ipType string) error {
+	klog.Infof("createLbAndExternalSvcFlows")
 	if net.ParseIP(externalIPOrLBIngressIP) == nil {
 		return fmt.Errorf("failed to parse %s IP: %q", ipType, externalIPOrLBIngressIP)
 	}

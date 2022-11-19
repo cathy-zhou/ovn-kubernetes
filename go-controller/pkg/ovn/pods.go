@@ -189,8 +189,13 @@ func (nci *NetworkControllerInfo) deletePodLogicalPort(pod *kapi.Pod, portInfo *
 	var err error
 
 	expectedSwitchName := nci.GetPrefix() + pod.Spec.NodeName
-	if nci.IsSecondary() && nci.GetTopologyType() == ovntypes.Layer2AttachDefTopoType {
-		expectedSwitchName = nci.GetPrefix() + ovntypes.OvnLayer2Switch
+	if nci.IsSecondary() {
+		topoType := nci.GetTopologyType()
+		if topoType == ovntypes.Layer2AttachDefTopoType {
+			expectedSwitchName = nci.GetPrefix() + ovntypes.OvnLayer2Switch
+		} else if topoType == ovntypes.LocalnetAttachDefTopoType {
+			expectedSwitchName = nci.GetPrefix() + ovntypes.OVNLocalnetSwitch
+		}
 	}
 	podDesc := fmt.Sprintf("pod %s/%s/%s", nadName, pod.Namespace, pod.Name)
 	logicalPort := util.GetLogicalPortName(pod.Namespace, pod.Name)
@@ -404,7 +409,7 @@ func (nci *NetworkControllerInfo) addRoutesGatewayIP(pod *kapi.Pod, network *net
 
 	if nci.IsSecondary() {
 		topoType := nci.GetTopologyType()
-		if topoType == ovntypes.Layer2AttachDefTopoType {
+		if topoType == ovntypes.Layer2AttachDefTopoType || topoType == ovntypes.LocalnetAttachDefTopoType {
 			// no route needed for directly connected subnets
 			return nil
 		}
@@ -507,8 +512,13 @@ func (nci *NetworkControllerInfo) addPodLogicalPort(pod *kapi.Pod, lsManager *ls
 	var ls *nbdb.LogicalSwitch
 	podDesc := fmt.Sprintf("%s/%s/%s", nadName, pod.Namespace, pod.Name)
 	switchName := nci.GetPrefix() + pod.Spec.NodeName
-	if nci.IsSecondary() && nci.GetTopologyType() == ovntypes.Layer2AttachDefTopoType {
-		switchName = nci.GetPrefix() + ovntypes.OvnLayer2Switch
+	if nci.IsSecondary() {
+		topoType := nci.GetTopologyType()
+		if topoType == ovntypes.Layer2AttachDefTopoType {
+			switchName = nci.GetPrefix() + ovntypes.OvnLayer2Switch
+		} else if topoType == ovntypes.LocalnetAttachDefTopoType {
+			switchName = nci.GetPrefix() + ovntypes.OVNLocalnetSwitch
+		}
 	}
 	ls, err = waitForNodeLogicalSwitch(lsManager, switchName)
 	if err != nil {

@@ -55,6 +55,8 @@ func (nci *NetworkControllerInfo) updateL2TopologyVersion() error {
 	topoType := nci.GetTopologyType()
 	if topoType == ovntypes.Layer2AttachDefTopoType {
 		switchName = nci.GetPrefix() + ovntypes.OvnLayer2Switch
+	} else if topoType == ovntypes.LocalnetAttachDefTopoType {
+		switchName = nci.GetPrefix() + ovntypes.OVNLocalnetSwitch
 	} else {
 		return fmt.Errorf("topology type %s is not supported", topoType)
 	}
@@ -132,13 +134,9 @@ func (oc *DefaultNetworkController) cleanTopologyAnnotation() error {
 	return nil
 }
 
-// determineOVNTopoVersionFromOVN determines what OVN Topology version is being used
-// If "k8s-ovn-topo-version" key in external_ids column does not exist, it is prior to OVN topology versioning
-// and therefore set version number to OvnCurrentTopologyVersion
-func (nci *NetworkControllerInfo) determineOVNTopoVersionFromOVN() (int, error) {
-	clusterRouterName := nci.GetPrefix() + ovntypes.OVNClusterRouter
+func (bnc *BaseNetworkController) getOVNTopoVersionFromLogicalRouter(clusterRouterName string) (int, error) {
 	logicalRouter := &nbdb.LogicalRouter{Name: clusterRouterName}
-	logicalRouter, err := libovsdbops.GetLogicalRouter(nci.nbClient, logicalRouter)
+	logicalRouter, err := libovsdbops.GetLogicalRouter(bnc.nbClient, logicalRouter)
 	if err != nil && err != libovsdbclient.ErrNotFound {
 		return 0, fmt.Errorf("error getting router %s: %v", clusterRouterName, err)
 	}
@@ -156,4 +154,46 @@ func (nci *NetworkControllerInfo) determineOVNTopoVersionFromOVN() (int, error) 
 		return 0, fmt.Errorf("invalid OVN topology version string for the cluster, err: %v", err)
 	}
 	return ver, nil
+}
+
+func (bnc *BaseNetworkController) getOVNTopoVersionFromLogicalSwitch(switchName string) (int, error) {
+	logicalSwitch := &nbdb.LogicalSwitch{Name: switchName}
+	logicalSwitch, err := libovsdbops.GetLogicalSwitch(bnc.nbClient, logicalSwitch)
+	if err != nil && err != libovsdbclient.ErrNotFound {
+		return 0, fmt.Errorf("error getting switch %s: %v", switchName, err)
+	}
+	if err == libovsdbclient.ErrNotFound {
+		// no OVNClusterRouter exists, DB is empty, nothing to upgrade
+		return math.MaxInt32, nil
+	}
+	v, exists := logicalSwitch.ExternalIDs["k8s-ovn-topo-version"]
+	if !exists {
+		klog.Infof("No version string found. The OVN topology is before versioning is introduced. Upgrade needed")
+		return 0, nil
+	}
+	ver, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid OVN topology version string for the cluster, err: %v", err)
+	}
+	return ver, nil
+}
+
+// determineOVNTopoVersionFromOVN determines what OVN Topology version is being used
+// If "k8s-ovn-topo-version" key in external_ids column does not exist, it is prior to OVN topology versioning
+// and therefore set version number to OvnCurrentTopologyVersion
+func (nci *NetworkControllerInfo) determineOVNTopoVersionFromOVN() (int, error) {
+	if nci.IsSecondary() {
+		topoType := nci.GetTopologyType()
+		var switchName string
+		if topoType == ovntypes.Layer2AttachDefTopoType {
+			switchName = nci.GetPrefix() + ovntypes.OvnLayer2Switch
+		} else if topoType == ovntypes.LocalnetAttachDefTopoType {
+			switchName = nci.GetPrefix() + ovntypes.OVNLocalnetSwitch
+		}
+		if switchName != "" {
+			return nci.getOVNTopoVersionFromLogicalSwitch(switchName)
+		}
+	}
+	clusterRouterName := nci.GetPrefix() + ovntypes.OVNClusterRouter
+	return nci.getOVNTopoVersionFromLogicalRouter(clusterRouterName)
 }

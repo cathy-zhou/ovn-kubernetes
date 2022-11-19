@@ -16,7 +16,7 @@ type nodeEventHandler struct {
 	retry.EventHandler
 
 	objType  reflect.Type
-	ovnNode  *OvnNode
+	ovnNode  *DefaultNodeNetworkController
 	syncFunc func([]interface{}) error
 }
 
@@ -29,7 +29,7 @@ type nodeEventHandler struct {
 // shared informer and a sync function to process all objects of this type at startup.
 // In order to create a retry framework for most resource types, newRetryFrameworkNode is
 // to be preferred, as it calls newRetryFrameworkNodeWithParameters with all optional parameters unset.
-func (n *OvnNode) newRetryFrameworkNodeWithParameters(
+func (n *DefaultNodeNetworkController) newRetryFrameworkNodeWithParameters(
 	objectType reflect.Type,
 	syncFunc func([]interface{}) error) *retry.RetryFramework {
 
@@ -53,7 +53,7 @@ func (n *OvnNode) newRetryFrameworkNodeWithParameters(
 // as defined for that type. This constructor is used for resources (1) that do not need
 // any namespace or label filtering in their shared informer, (2) whose sync function
 // is assigned statically based on the resource type.
-func (n *OvnNode) newRetryFrameworkNode(objectType reflect.Type) *retry.RetryFramework {
+func (n *DefaultNodeNetworkController) newRetryFrameworkNode(objectType reflect.Type) *retry.RetryFramework {
 	return n.newRetryFrameworkNodeWithParameters(objectType, nil)
 }
 

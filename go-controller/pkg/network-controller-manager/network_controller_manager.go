@@ -7,6 +7,7 @@ import (
 	"time"
 
 	libovsdbclient "github.com/ovn-org/libovsdb/client"
+	"github.com/ovn-org/libovsdb/ovsdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
@@ -55,8 +56,8 @@ type SecondaryNetworkController interface {
 	DeleteLogicalEntities(netName string) error
 }
 
-// NetworkControllerManager structure is the object manages all controllers for all networks
-type NetworkControllerManager struct {
+// networkControllerManager structure is the object manages all controllers for all networks
+type networkControllerManager struct {
 	ovnClientset *util.OVNClientset
 	client       clientset.Interface
 	kube         kube.Interface
@@ -86,8 +87,114 @@ type NetworkControllerManager struct {
 	nadController *netAttachDefinitionController
 }
 
+func (cm *networkControllerManager) NewSecondaryNetworkController(topoType string,
+	nInfo util.NetInfo, netConfInfo util.NetConfInfo) (SecondaryNetworkController, error) {
+	bnc := cm.newBaseNetworkController()
+	if topoType == ovntypes.Layer3AttachDefTopoType {
+		return ovn.NewSecondaryLayer3NetworkController(bnc, nInfo, netConfInfo), nil
+	} else if topoType == ovntypes.Layer2AttachDefTopoType {
+		return ovn.NewSecondaryLayer2NetworkController(bnc, nInfo, netConfInfo), nil
+	} else if topoType == ovntypes.LocalnetAttachDefTopoType {
+		return ovn.NewSecondaryLocalnetNetworkController(bnc, nInfo, netConfInfo), nil
+	}
+	return nil, fmt.Errorf("topotype %s not supported", topoType)
+}
+
+// Find all the OVN logical switches/routers for the secondary networks
+func findAllSecondaryNetworkLogicalEntities(nbClient libovsdbclient.Client) ([]*nbdb.LogicalSwitch,
+	[]*nbdb.LogicalRouter, error) {
+	p1 := func(item *nbdb.LogicalSwitch) bool {
+		_, ok := item.ExternalIDs[ovntypes.NetworkNameExternalID]
+		return ok
+	}
+	nodeSwitches, err := libovsdbops.FindLogicalSwitchesWithPredicate(nbClient, p1)
+	if err != nil {
+		klog.Errorf("Failed to get all logical switches of secondary network error: %v", err)
+		return nil, nil, err
+	}
+	p2 := func(item *nbdb.LogicalRouter) bool {
+		_, ok := item.ExternalIDs[ovntypes.NetworkNameExternalID]
+		return ok
+	}
+	clusterRouters, err := libovsdbops.FindLogicalRoutersWithPredicate(nbClient, p2)
+	if err != nil {
+		klog.Errorf("Failed to get all distributed logical routers: %v", err)
+		return nil, nil, err
+	}
+	return nodeSwitches, clusterRouters, nil
+}
+
+func (cm *networkControllerManager) SyncAllSecondaryNetworkControllers(allControllers []SecondaryNetworkController) error {
+	existingNetworksMap := map[string]bool{}
+	for _, oc := range allControllers {
+		existingNetworksMap[oc.GetNetworkName()] = true
+	}
+
+	// Get all the existing secondary networks and its logical entities
+	switches, routers, err := findAllSecondaryNetworkLogicalEntities(cm.nbClient)
+	if err != nil {
+		return err
+	}
+
+	var ops []ovsdb.Operation
+	staleNetworks := map[string]SecondaryNetworkController{}
+	for _, ls := range switches {
+		netName := ls.ExternalIDs[ovntypes.NetworkNameExternalID]
+		if _, ok := existingNetworksMap[netName]; ok {
+			// network still exists, no cleanup to do
+			continue
+		}
+		if topoType, ok := ls.ExternalIDs[ovntypes.TopoTypeExternalID]; ok {
+			// Create dummy network controllers to cleanup logical entities
+			klog.V(5).Infof("Found stale %s network %s", topoType, netName)
+			if oc, err := cm.NewSecondaryNetworkController(topoType, nil, nil); err == nil {
+				staleNetworks[netName] = oc
+				continue
+			}
+		}
+		klog.Infof("Missing %s external-id on switch %s, simply deleted it", ovntypes.TopoTypeExternalID, ls.Name)
+		ops, err = libovsdbops.DeleteLogicalSwitchOps(cm.nbClient, ops, ls.Name)
+		if err != nil {
+			klog.Errorf("Failed to get ops to delete stale logical switch %s for network %s: %v", ls.Name, netName, err)
+		}
+	}
+	for _, lr := range routers {
+		netName := lr.ExternalIDs[ovntypes.NetworkNameExternalID]
+		if _, ok := existingNetworksMap[netName]; ok {
+			// network still exists, no cleanup to do
+			continue
+		}
+		if topoType, ok := lr.ExternalIDs[ovntypes.TopoTypeExternalID]; ok {
+			// Create dummy network controllers to cleanup logical entities
+			klog.V(5).Infof("Found stale %s network %s", topoType, netName)
+			if oc, err := cm.NewSecondaryNetworkController(topoType, nil, nil); err == nil {
+				staleNetworks[netName] = oc
+				continue
+			}
+		}
+		klog.Infof("Missing %s external-id on router %s, simply deleted it", ovntypes.TopoTypeExternalID, lr.Name)
+		ops, err = libovsdbops.DeleteLogicalRouterOps(cm.nbClient, ops, lr)
+		if err != nil {
+			klog.Errorf("Failed to get ops to delete logical router %s for network %s: %v", lr.Name, netName, err)
+		}
+	}
+	_, err = libovsdbops.TransactAndCheck(cm.nbClient, ops)
+	if err != nil {
+		klog.Errorf("Failed to delete stale OVN logical entities", err)
+	}
+
+	for netName, oc := range staleNetworks {
+		klog.Infof("Delete logical entities for stale network %s", netName)
+		err = oc.DeleteLogicalEntities(netName)
+		if err != nil {
+			klog.Errorf("Failed to delete stale OVN logical entities for network %s: %v", netName, err)
+		}
+	}
+	return nil
+}
+
 // Start waits until this process is the leader before starting master functions
-func (cm *NetworkControllerManager) Start(ctx context.Context, cancel context.CancelFunc) error {
+func (cm *networkControllerManager) Start(ctx context.Context, cancel context.CancelFunc) error {
 	// Set up leader election process first
 	rl, err := resourcelock.New(
 		// TODO (rravaiol) (bpickard)
@@ -174,10 +281,10 @@ func (cm *NetworkControllerManager) Start(ctx context.Context, cancel context.Ca
 // NewNetworkControllerManager creates a new OVN controller manager to manage all the controller for all networks
 func NewNetworkControllerManager(ovnClient *util.OVNClientset, identity string, wf *factory.WatchFactory,
 	libovsdbOvnNBClient libovsdbclient.Client, libovsdbOvnSBClient libovsdbclient.Client,
-	recorder record.EventRecorder, wg *sync.WaitGroup) *NetworkControllerManager {
+	recorder record.EventRecorder, wg *sync.WaitGroup) *networkControllerManager {
 	podRecorder := metrics.NewPodRecorder()
 
-	cm := &NetworkControllerManager{
+	cm := &networkControllerManager{
 		ovnClientset: ovnClient,
 		client:       ovnClient.KubeClient,
 		kube: &kube.Kube{
@@ -199,14 +306,14 @@ func NewNetworkControllerManager(ovnClient *util.OVNClientset, identity string, 
 	}
 
 	if config.OVNKubernetesFeature.EnableMultiNetwork {
-		klog.Infof("Multiple network supported, creating net-attach-def controller")
-		cm.nadController = cm.NewNadController()
+		klog.Infof("Multiple network supported, creating %s", controllerName)
+		cm.nadController = NewNadController(cm, cm.ovnClientset)
 	}
 	return cm
 }
 
 // Init initializes the controller manager and create/start default controller
-func (cm *NetworkControllerManager) Init() error {
+func (cm *networkControllerManager) Init() error {
 	cm.configureMetrics(cm.stopChan)
 
 	err := cm.configureSCTPSupport()
@@ -230,7 +337,7 @@ func (cm *NetworkControllerManager) Init() error {
 	return nil
 }
 
-func (cm *NetworkControllerManager) configureSCTPSupport() error {
+func (cm *networkControllerManager) configureSCTPSupport() error {
 	hasSCTPSupport, err := util.DetectSCTPSupport()
 	if err != nil {
 		return err
@@ -250,7 +357,7 @@ func (cm *NetworkControllerManager) configureSCTPSupport() error {
 // understand it. Logical datapath groups reduce the size of the southbound
 // database in large clusters. ovn-controllers should be upgraded to a version
 // that supports them before the option is turned on by the master.
-func (cm *NetworkControllerManager) enableOVNLogicalDataPathGroups() error {
+func (cm *networkControllerManager) enableOVNLogicalDataPathGroups() error {
 	nbGlobal := nbdb.NBGlobal{
 		Options: map[string]string{"use_logical_dp_groups": "true"},
 	}
@@ -260,14 +367,14 @@ func (cm *NetworkControllerManager) enableOVNLogicalDataPathGroups() error {
 	return nil
 }
 
-func (cm *NetworkControllerManager) configureMetrics(stopChan <-chan struct{}) {
+func (cm *networkControllerManager) configureMetrics(stopChan <-chan struct{}) {
 	metrics.RegisterMasterPerformance(cm.nbClient)
 	metrics.RegisterMasterFunctional()
 	metrics.RunTimestamp(stopChan, cm.sbClient, cm.nbClient)
 	metrics.MonitorIPSec(cm.nbClient)
 }
 
-func (cm *NetworkControllerManager) createACLLoggingMeter() error {
+func (cm *networkControllerManager) createACLLoggingMeter() error {
 	band := &nbdb.MeterBand{
 		Action: ovntypes.MeterAction,
 		Rate:   config.Logging.ACLLoggingRateLimit,
@@ -298,19 +405,19 @@ func (cm *NetworkControllerManager) createACLLoggingMeter() error {
 }
 
 // newBaseNetworkController creates and returns the base controller
-func (cm *NetworkControllerManager) newBaseNetworkController() *ovn.BaseNetworkController {
+func (cm *networkControllerManager) newBaseNetworkController() *ovn.BaseNetworkController {
 	return ovn.NewBaseNetworkController(cm.client, cm.kube, cm.watchFactory, cm.recorder, cm.nbClient,
 		cm.sbClient, cm.podRecorder, cm.SCTPSupport, cm.aclLoggingEnabled)
 }
 
 // NewDefaultNetworkController creates and returns the controller for default network
-func (cm *NetworkControllerManager) NewDefaultNetworkController() {
+func (cm *networkControllerManager) NewDefaultNetworkController() {
 	defaultController := ovn.NewDefaultNetworkController(cm.newBaseNetworkController())
 	cm.defaultNetworkController = defaultController
 }
 
 // Run starts to handle all the secondary net-attach-def and creates and manages all the secondary controllers
-func (cm *NetworkControllerManager) Run(ctx context.Context) error {
+func (cm *networkControllerManager) Run(ctx context.Context) error {
 	if config.Metrics.EnableConfigDuration {
 		// with k=10,
 		//  for a cluster with 10 nodes, measurement of 1 in every 100 requests
@@ -339,7 +446,7 @@ func (cm *NetworkControllerManager) Run(ctx context.Context) error {
 }
 
 // Stop gracefully stops all managed controllers
-func (cm *NetworkControllerManager) Stop() {
+func (cm *networkControllerManager) Stop() {
 	var err error
 
 	close(cm.stopChan)

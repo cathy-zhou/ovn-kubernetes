@@ -17,15 +17,8 @@ import (
 	netattachdefinformers "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/informers/externalversions"
 	networkattachmentdefinitioninformerfactory "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/informers/externalversions"
 	networkattachmentdefinitionlisters "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/listers/k8s.cni.cncf.io/v1"
-	libovsdbclient "github.com/ovn-org/libovsdb/client"
-	"github.com/ovn-org/libovsdb/ovsdb"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
-	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	"golang.org/x/time/rate"
 )
@@ -40,16 +33,19 @@ const (
 
 	controllerName  = "net-attach-def-controller"
 	avoidResync     = 0
-	numberOfWorkers = 1 // set it to 1 so event handler is serialized for now.
+	numberOfWorkers = 2
 	qps             = 15
 	maxRetries      = 10
 )
 
+type NetworkControllerManager interface {
+	NewSecondaryNetworkController(topoType string, netInfo util.NetInfo, netConfInfo util.NetConfInfo) (SecondaryNetworkController, error)
+	SyncAllSecondaryNetworkControllers(allControllers []SecondaryNetworkController) error
+}
+
 type netAttachDefinitionController struct {
 	SecondaryNetworkControllerManager
-	bnc                *ovn.BaseNetworkController
-	watchFactory       *factory.WatchFactory
-	nbClient           libovsdbclient.Client
+	ncm                NetworkControllerManager
 	nadFactory         networkattachmentdefinitioninformerfactory.SharedInformerFactory
 	netAttachDefLister networkattachmentdefinitionlisters.NetworkAttachmentDefinitionLister
 	netAttachDefSynced cache.InformerSynced
@@ -57,9 +53,9 @@ type netAttachDefinitionController struct {
 	loopPeriod         time.Duration
 }
 
-func (cm *NetworkControllerManager) NewNadController() *netAttachDefinitionController {
+func NewNadController(ncm NetworkControllerManager, ovnClientset *util.OVNClientset) *netAttachDefinitionController {
 	nadFactory := netattachdefinformers.NewSharedInformerFactoryWithOptions(
-		cm.ovnClientset.NetworkAttchDefClient,
+		ovnClientset.NetworkAttchDefClient,
 		avoidResync,
 	)
 	netAttachDefInformer := nadFactory.K8sCniCncfIo().V1().NetworkAttachmentDefinitions()
@@ -68,10 +64,8 @@ func (cm *NetworkControllerManager) NewNadController() *netAttachDefinitionContr
 		&workqueue.BucketRateLimiter{Limiter: rate.NewLimiter(rate.Limit(qps), qps*5)})
 
 	nadController := &netAttachDefinitionController{
-		bnc:                cm.newBaseNetworkController(),
-		nbClient:           cm.nbClient,
+		ncm:                ncm,
 		nadFactory:         nadFactory,
-		watchFactory:       cm.watchFactory,
 		netAttachDefLister: netAttachDefInformer.Lister(),
 		netAttachDefSynced: netAttachDefInformer.Informer().HasSynced,
 		queue:              workqueue.NewNamedRateLimitingQueue(rateLimter, "net-attach-def"),
@@ -124,40 +118,6 @@ func (nadController *netAttachDefinitionController) Run(stopChan <-chan struct{}
 	return nil
 }
 
-// Find all the OVN logical switches/routers for the secondary networks
-func findAllSecondaryNetworkLogicalEntities(nbClient libovsdbclient.Client) ([]*nbdb.LogicalSwitch,
-	[]*nbdb.LogicalRouter, error) {
-	p1 := func(item *nbdb.LogicalSwitch) bool {
-		_, ok := item.ExternalIDs[ovntypes.NetworkNameExternalID]
-		return ok
-	}
-	nodeSwitches, err := libovsdbops.FindLogicalSwitchesWithPredicate(nbClient, p1)
-	if err != nil {
-		klog.Errorf("Failed to get all logical switches of secondary network error: %v", err)
-		return nil, nil, err
-	}
-	p2 := func(item *nbdb.LogicalRouter) bool {
-		_, ok := item.ExternalIDs[ovntypes.NetworkNameExternalID]
-		return ok
-	}
-	clusterRouters, err := libovsdbops.FindLogicalRoutersWithPredicate(nbClient, p2)
-	if err != nil {
-		klog.Errorf("Failed to get all distributed logical routers: %v", err)
-		return nil, nil, err
-	}
-	return nodeSwitches, clusterRouters, nil
-}
-
-func createSecondaryNetworkController(topoType string, bnc *ovn.BaseNetworkController,
-	nInfo util.NetInfo, netConfInfo util.NetConfInfo) (SecondaryNetworkController, error) {
-	if topoType == ovntypes.Layer3AttachDefTopoType {
-		return ovn.NewSecondaryLayer3NetworkController(bnc, nInfo, netConfInfo), nil
-	} else if topoType == ovntypes.Layer2AttachDefTopoType {
-		return ovn.NewSecondaryLayer2NetworkController(bnc, nInfo, netConfInfo), nil
-	}
-	return nil, fmt.Errorf("topotype %s not supported", topoType)
-}
-
 func (nadController *netAttachDefinitionController) repairNads() (err error) {
 	startTime := time.Now()
 	klog.V(4).Infof("Starting repairing loop for %s", controllerName)
@@ -174,75 +134,11 @@ func (nadController *netAttachDefinitionController) repairNads() (err error) {
 	// need to walk through all the nads and update nadNames of Controller. Controllers will be created as
 	// the result, but they can only be started afterwards when all nads are added to the network controller.
 	for _, nad := range existingNads {
-		_ = nadController.AddSecondaryNetworkNad(nadController.bnc, nad, false)
+		_ = nadController.AddSecondaryNetworkNad(nadController.ncm, nad, false)
 	}
 
-	existingNetworksMap := map[string]bool{}
-	for _, oc := range nadController.GetAllControllers() {
-		existingNetworksMap[oc.GetNetworkName()] = true
-	}
-
-	// Get all the existing secondary networks and its logical entities
-	switches, routers, err := findAllSecondaryNetworkLogicalEntities(nadController.nbClient)
-	if err != nil {
-		return err
-	}
-
-	var ops []ovsdb.Operation
-	staleNetworks := map[string]SecondaryNetworkController{}
-	for _, ls := range switches {
-		netName := ls.ExternalIDs[ovntypes.NetworkNameExternalID]
-		if _, ok := existingNetworksMap[netName]; ok {
-			// network still exists, no cleanup to do
-			continue
-		}
-		if topoType, ok := ls.ExternalIDs[ovntypes.TopoTypeExternalID]; ok {
-			// Create dummy network controllers to cleanup logical entities
-			klog.V(5).Infof("Found stale %s network %s", topoType, netName)
-			if oc, err := createSecondaryNetworkController(topoType, nadController.bnc, nil, nil); err == nil {
-				staleNetworks[netName] = oc
-				continue
-			}
-		}
-		klog.Infof("Missing %s external-id on switch %s, simply deleted it", ovntypes.TopoTypeExternalID, ls.Name)
-		ops, err = libovsdbops.DeleteLogicalSwitchOps(nadController.nbClient, ops, ls.Name)
-		if err != nil {
-			klog.Errorf("Failed to get ops to delete stale logical switch %s for network %s: %v", ls.Name, netName, err)
-		}
-	}
-	for _, lr := range routers {
-		netName := lr.ExternalIDs[ovntypes.NetworkNameExternalID]
-		if _, ok := existingNetworksMap[netName]; ok {
-			// network still exists, no cleanup to do
-			continue
-		}
-		if topoType, ok := lr.ExternalIDs[ovntypes.TopoTypeExternalID]; ok {
-			// Create dummy network controllers to cleanup logical entities
-			klog.V(5).Infof("Found stale %s network %s", topoType, netName)
-			if oc, err := createSecondaryNetworkController(topoType, nadController.bnc, nil, nil); err == nil {
-				staleNetworks[netName] = oc
-				continue
-			}
-		}
-		klog.Infof("Missing %s external-id on router %s, simply deleted it", ovntypes.TopoTypeExternalID, lr.Name)
-		ops, err = libovsdbops.DeleteLogicalRouterOps(nadController.nbClient, ops, lr)
-		if err != nil {
-			klog.Errorf("Failed to get ops to delete logical router %s for network %s: %v", lr.Name, netName, err)
-		}
-	}
-	_, err = libovsdbops.TransactAndCheck(nadController.nbClient, ops)
-	if err != nil {
-		klog.Errorf("Failed to delete stale OVN logical entities", err)
-	}
-
-	for netName, oc := range staleNetworks {
-		klog.Infof("Delete logical entities for stale network %s", netName)
-		err = oc.DeleteLogicalEntities(netName)
-		if err != nil {
-			klog.Errorf("Failed to delete stale OVN logical entities for network %s: %v", netName, err)
-		}
-	}
-	return nil
+	allControllers := nadController.GetAllControllers()
+	return nadController.ncm.SyncAllSecondaryNetworkControllers(allControllers)
 }
 
 func (nadController *netAttachDefinitionController) worker() {
@@ -285,7 +181,7 @@ func (nadController *netAttachDefinitionController) sync(key string) error {
 	if nad == nil {
 		return nadController.DeleteSecondaryNetworkNad(key)
 	} else {
-		return nadController.AddSecondaryNetworkNad(nadController.bnc, nad, true)
+		return nadController.AddSecondaryNetworkNad(nadController.ncm, nad, true)
 	}
 }
 

@@ -35,15 +35,45 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/util/errors"
 )
 
-// OvnNode is the object holder for utilities meant for node management
-type OvnNode struct {
-	name         string
-	client       clientset.Interface
-	Kube         kube.Interface
-	watchFactory factory.NodeWatchFactory
-	stopChan     chan struct{}
-	recorder     record.EventRecorder
-	gateway      Gateway
+type BaseNodeNetworkController struct {
+	client         clientset.Interface
+	Kube           kube.Interface
+	watchFactory   factory.NodeWatchFactory
+	recorder       record.EventRecorder
+	isOvnUpEnabled bool
+	name           string
+}
+
+// NetworkControllerInfo structure holds network specific configuration
+type NodeNetworkControllerInfo struct {
+	BaseNodeNetworkController
+	// per controller nad/netconf name information
+	util.NetInfo
+	util.NetConfInfo
+}
+
+func newBaseNodeNetworkControllerCommon(kubeClient clientset.Interface, kube kube.Interface, wf factory.NodeWatchFactory, eventRecorder record.EventRecorder, name string, isOvnUpEnabled bool) *BaseNodeNetworkController {
+	return &BaseNodeNetworkController{
+		client:         kubeClient,
+		Kube:           kube,
+		watchFactory:   wf,
+		name:           name,
+		recorder:       eventRecorder,
+		isOvnUpEnabled: isOvnUpEnabled,
+	}
+}
+
+func NewBaseNodeNetworkController(kubeClient clientset.Interface, wf factory.NodeWatchFactory, eventRecorder record.EventRecorder, name string, isOvnUpEnabled bool) *BaseNodeNetworkController {
+	return newBaseNodeNetworkControllerCommon(kubeClient, &kube.Kube{KClient: kubeClient}, wf, eventRecorder, name, isOvnUpEnabled)
+}
+
+// DefaultNodeNetworkController is the object holder for utilities meant for node management of default network
+type DefaultNodeNetworkController struct {
+	NodeNetworkControllerInfo
+	stopChan chan struct{}
+	wg       *sync.WaitGroup
+
+	gateway Gateway
 
 	// retry framework for namespaces, used for the removal of stale conntrack entries for external gateways
 	retryNamespaces *retry.RetryFramework
@@ -51,25 +81,31 @@ type OvnNode struct {
 	retryEndpointSlices *retry.RetryFramework
 }
 
-// NewNode creates a new controller for node management
-func NewNode(kubeClient clientset.Interface, wf factory.NodeWatchFactory, name string, stopChan chan struct{}, eventRecorder record.EventRecorder) *OvnNode {
-	n := &OvnNode{
-		name:         name,
-		client:       kubeClient,
-		Kube:         &kube.Kube{KClient: kubeClient},
-		watchFactory: wf,
-		stopChan:     stopChan,
-		recorder:     eventRecorder,
+func newDefaultNodeNetworkControllerCommon(bnnc *BaseNodeNetworkController, stopChan chan struct{}, wg *sync.WaitGroup) *DefaultNodeNetworkController {
+	return &DefaultNodeNetworkController{
+		NodeNetworkControllerInfo: NodeNetworkControllerInfo{
+			BaseNodeNetworkController: *bnnc,
+			NetConfInfo:               nil,
+			NetInfo:                   (*util.NetNameInfo)(nil),
+		},
+		stopChan: stopChan,
+		wg:       wg,
 	}
-	n.initRetryFrameworkForNode()
+}
 
+// NewDefaultNodeNetworkController creates a new network controller for node management of the default network
+func NewDefaultNodeNetworkController(bnnc *BaseNodeNetworkController) *DefaultNodeNetworkController {
+	stopChan := make(chan struct{})
+	wg := &sync.WaitGroup{}
+	n := newDefaultNodeNetworkControllerCommon(bnnc, stopChan, wg)
+
+	n.initRetryFrameworkForNode()
 	return n
 }
 
-func (n *OvnNode) initRetryFrameworkForNode() {
+func (n *DefaultNodeNetworkController) initRetryFrameworkForNode() {
 	n.retryNamespaces = n.newRetryFrameworkNode(factory.NamespaceExGwType)
 	n.retryEndpointSlices = n.newRetryFrameworkNode(factory.EndpointSliceForStaleConntrackRemovalType)
-
 }
 
 func clearOVSFlowTargets() error {
@@ -317,7 +353,7 @@ func isOVNControllerReady() (bool, error) {
 // logical port have been successfully programmed.
 // OVS.Interface.external-id:ovn-installed can only be used correctly
 // in a combination with OVS.Interface.external-id:iface-id-ver
-func getOVNIfUpCheckMode() (bool, error) {
+func GetOVNIfUpCheckMode() (bool, error) {
 	if config.OvnKubeNode.DisableOVNIfaceIdVer {
 		klog.Infof("'iface-id-ver' is manually disabled, ovn-installed feature can't be used")
 		return false, nil
@@ -382,12 +418,11 @@ func createNodeManagementPorts(name string, nodeAnnotator kube.Annotator, waiter
 
 // Start learns the subnets assigned to it by the master controller
 // and calls the SetupNode script which establishes the logical switch
-func (n *OvnNode) Start(ctx context.Context, wg *sync.WaitGroup) error {
+func (n *DefaultNodeNetworkController) Start(ctx context.Context) error {
 	var err error
 	var node *kapi.Node
 	var subnets []*net.IPNet
 	var cniServer *cni.Server
-	var isOvnUpEnabled bool
 
 	klog.Infof("OVN Kube Node initialization, Mode: %s", config.OvnKubeNode.Mode)
 
@@ -396,11 +431,6 @@ func (n *OvnNode) Start(ctx context.Context, wg *sync.WaitGroup) error {
 	var level klog.Level
 	if err := level.Set("5"); err != nil {
 		klog.Errorf("Setting klog \"loglevel\" to 5 failed, err: %v", err)
-	}
-
-	// Start and sync the watch factory to begin listening for events
-	if err := n.watchFactory.Start(); err != nil {
-		return err
 	}
 
 	if node, err = n.Kube.GetNode(n.name); err != nil {
@@ -447,20 +477,13 @@ func (n *OvnNode) Start(ctx context.Context, wg *sync.WaitGroup) error {
 	}
 	klog.Infof("Node %s ready for ovn initialization with subnet %s", n.name, util.JoinIPNets(subnets, ","))
 
-	if config.OvnKubeNode.Mode != types.NodeModeDPUHost {
-		isOvnUpEnabled, err = getOVNIfUpCheckMode()
-		if err != nil {
-			return err
-		}
-	}
-
 	// Create CNI Server
 	if config.OvnKubeNode.Mode != types.NodeModeDPU {
 		kclient, ok := n.Kube.(*kube.Kube)
 		if !ok {
 			return fmt.Errorf("cannot get kubeclient for starting CNI server")
 		}
-		cniServer, err = cni.NewCNIServer("", isOvnUpEnabled, n.watchFactory, kclient.KClient)
+		cniServer, err = cni.NewCNIServer("", n.isOvnUpEnabled, n.watchFactory, kclient.KClient)
 		if err != nil {
 			return err
 		}
@@ -498,7 +521,7 @@ func (n *OvnNode) Start(ctx context.Context, wg *sync.WaitGroup) error {
 	if err := waiter.Wait(); err != nil {
 		return err
 	}
-	n.gateway.Start(n.stopChan, wg)
+	n.gateway.Start(n.stopChan, n.wg)
 	klog.Infof("Gateway and management port readiness took %v", time.Since(start))
 
 	// Note(adrianc): DPU deployments are expected to support the new shared gateway changes, upgrade flow
@@ -561,12 +584,12 @@ func (n *OvnNode) Start(ctx context.Context, wg *sync.WaitGroup) error {
 					}
 				}
 				// ensure CNI support for port binding built into OVN, as masters have been upgraded
-				if initialTopoVersion < types.OvnPortBindingTopoVersion && cniServer != nil && !isOvnUpEnabled {
-					isOvnUpEnabled, err = getOVNIfUpCheckMode()
+				if initialTopoVersion < types.OvnPortBindingTopoVersion && cniServer != nil && !n.isOvnUpEnabled {
+					n.isOvnUpEnabled, err = GetOVNIfUpCheckMode()
 					if err != nil {
 						klog.Errorf("%v", err)
 					}
-					if isOvnUpEnabled {
+					if n.isOvnUpEnabled {
 						cniServer.EnableOVNPortUpSupport()
 					}
 				}
@@ -587,9 +610,9 @@ func (n *OvnNode) Start(ctx context.Context, wg *sync.WaitGroup) error {
 		if err != nil {
 			return err
 		}
-		wg.Add(1)
+		n.wg.Add(1)
 		go func() {
-			defer wg.Done()
+			defer n.wg.Done()
 			nodeController.Run(n.stopChan)
 		}()
 	} else {
@@ -634,7 +657,7 @@ func (n *OvnNode) Start(ctx context.Context, wg *sync.WaitGroup) error {
 	}
 
 	if config.OvnKubeNode.Mode == types.NodeModeDPU {
-		if err := n.watchPodsDPU(isOvnUpEnabled); err != nil {
+		if _, err := n.watchPodsDPU(n.isOvnUpEnabled); err != nil {
 			return err
 		}
 	} else {
@@ -650,7 +673,7 @@ func (n *OvnNode) Start(ctx context.Context, wg *sync.WaitGroup) error {
 	}
 
 	// Start the health checking server used by egressip, if EgressIPNodeHealthCheckPort is specified
-	if err := n.startEgressIPHealthCheckingServer(wg, mgmtPortConfig); err != nil {
+	if err := n.startEgressIPHealthCheckingServer(n.wg, mgmtPortConfig); err != nil {
 		return err
 	}
 
@@ -658,7 +681,15 @@ func (n *OvnNode) Start(ctx context.Context, wg *sync.WaitGroup) error {
 	return nil
 }
 
-func (n *OvnNode) startEgressIPHealthCheckingServer(wg *sync.WaitGroup, mgmtPortConfig *managementPortConfig) error {
+// Stop gracefully stops the controller
+// deleteLogicalEntities will never be true for default network
+func (n *DefaultNodeNetworkController) Stop(deleteLogicalEntities bool) error {
+	close(n.stopChan)
+	n.wg.Wait()
+	return nil
+}
+
+func (n *DefaultNodeNetworkController) startEgressIPHealthCheckingServer(wg *sync.WaitGroup, mgmtPortConfig *managementPortConfig) error {
 	healthCheckPort := config.OVNKubernetesFeature.EgressIPNodeHealthCheckPort
 	if healthCheckPort == 0 {
 		klog.Infof("Egress IP health check server skipped: no port specified")
@@ -691,7 +722,7 @@ func (n *OvnNode) startEgressIPHealthCheckingServer(wg *sync.WaitGroup, mgmtPort
 	return nil
 }
 
-func (n *OvnNode) reconcileConntrackUponEndpointSliceEvents(oldEndpointSlice, newEndpointSlice *discovery.EndpointSlice) error {
+func (n *DefaultNodeNetworkController) reconcileConntrackUponEndpointSliceEvents(oldEndpointSlice, newEndpointSlice *discovery.EndpointSlice) error {
 	var errors []error
 	if oldEndpointSlice == nil {
 		// nothing to do upon an add event
@@ -721,7 +752,7 @@ func (n *OvnNode) reconcileConntrackUponEndpointSliceEvents(oldEndpointSlice, ne
 	return apierrors.NewAggregate(errors)
 
 }
-func (n *OvnNode) WatchEndpointSlices() error {
+func (n *DefaultNodeNetworkController) WatchEndpointSlices() error {
 	_, err := n.retryEndpointSlices.WatchResource()
 	return err
 }
@@ -734,7 +765,7 @@ func exGatewayPodsAnnotationsChanged(oldNs, newNs *kapi.Namespace) bool {
 		(oldNs.Annotations[util.RoutingExternalGWsAnnotation] != newNs.Annotations[util.RoutingExternalGWsAnnotation])
 }
 
-func (n *OvnNode) checkAndDeleteStaleConntrackEntries() {
+func (n *DefaultNodeNetworkController) checkAndDeleteStaleConntrackEntries() {
 	namespaces, err := n.watchFactory.GetNamespaces()
 	if err != nil {
 		klog.Errorf("Unable to get pods from informer: %v", err)
@@ -756,7 +787,7 @@ func (n *OvnNode) checkAndDeleteStaleConntrackEntries() {
 	}
 }
 
-func (n *OvnNode) syncConntrackForExternalGateways(newNs *kapi.Namespace) error {
+func (n *DefaultNodeNetworkController) syncConntrackForExternalGateways(newNs *kapi.Namespace) error {
 	// loop through all the IPs on the annotations; ARP for their MACs and form an allowlist
 	gatewayIPs := strings.Split(newNs.Annotations[util.ExternalGatewayPodIPsAnnotation], ",")
 	gatewayIPs = append(gatewayIPs, strings.Split(newNs.Annotations[util.RoutingExternalGWsAnnotation], ",")...)
@@ -823,7 +854,7 @@ func (n *OvnNode) syncConntrackForExternalGateways(newNs *kapi.Namespace) error 
 	return apierrors.NewAggregate(errors)
 }
 
-func (n *OvnNode) WatchNamespaces() error {
+func (n *DefaultNodeNetworkController) WatchNamespaces() error {
 	_, err := n.retryNamespaces.WatchResource()
 	return err
 }
@@ -831,7 +862,7 @@ func (n *OvnNode) WatchNamespaces() error {
 // validateVTEPInterfaceMTU checks if the MTU of the interface that has ovn-encap-ip is big
 // enough to carry the `config.Default.MTU` and the Geneve header. If the MTU is not big
 // enough, it will return an error
-func (n *OvnNode) validateVTEPInterfaceMTU() error {
+func (n *BaseNodeNetworkController) validateVTEPInterfaceMTU() error {
 	ovnEncapIP := net.ParseIP(config.Default.EncapIP)
 	if ovnEncapIP == nil {
 		return fmt.Errorf("the set OVN Encap IP is invalid: (%s)", config.Default.EncapIP)

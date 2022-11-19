@@ -64,7 +64,7 @@ var _ = Describe("Node DPU tests", func() {
 	var kubeMock kubemocks.Interface
 	var factoryMock factorymocks.NodeWatchFactory
 	var pod v1.Pod
-	var node OvnNode
+	var node *DefaultNodeNetworkController
 	var podLister v1mocks.PodLister
 	var podNamespaceLister v1mocks.PodNamespaceLister
 
@@ -85,7 +85,8 @@ var _ = Describe("Node DPU tests", func() {
 
 		kubeMock = kubemocks.Interface{}
 		factoryMock = factorymocks.NodeWatchFactory{}
-		node = OvnNode{Kube: &kubeMock, watchFactory: &factoryMock}
+		bnnc := newBaseNodeNetworkControllerCommon(nil, &kubeMock, &factoryMock, nil, "", false)
+		node = newDefaultNodeNetworkControllerCommon(bnnc, nil, nil)
 
 		podNamespaceLister = v1mocks.PodNamespaceLister{}
 		podLister = v1mocks.PodLister{}
@@ -114,12 +115,12 @@ var _ = Describe("Node DPU tests", func() {
 			}
 			pod.Annotations = podAnnot
 			sriovnetOpsMock.On("GetVfRepresentorDPU", "0", "9").Return("pf0vf9", nil)
-			rep, err := node.getVfRepName(&pod)
+			rep, err := node.getVfRepName(&pod, types.DefaultNetworkName)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(rep).To(Equal("pf0vf9"))
 		})
 		It("Fails if dpu.connection-details annotation is missing from Pod", func() {
-			_, err := node.getVfRepName(&pod)
+			_, err := node.getVfRepName(&pod, types.DefaultNetworkName)
 			Expect(err).To(HaveOccurred())
 		})
 	})
@@ -138,6 +139,7 @@ var _ = Describe("Node DPU tests", func() {
 				Ingress:       -1,
 				Egress:        -1,
 				IsDPUHostMode: true,
+				NadName:       types.DefaultNetworkName,
 				PodUID:        "a-pod",
 			}
 

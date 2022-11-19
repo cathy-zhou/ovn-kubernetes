@@ -23,11 +23,11 @@ import (
 	utilnet "k8s.io/utils/net"
 )
 
-type secondaryLayer2NetworkControllerEventHandler struct {
+type secondaryLocalnetNetworkControllerEventHandler struct {
 	baseHandler     baseNetworkControllerEventHandler
 	watchFactory    *factory.WatchFactory
 	objType         reflect.Type
-	oc              *SecondaryLayer2NetworkController
+	oc              *SecondaryLocalnetNetworkController
 	extraParameters interface{}
 	syncFunc        func([]interface{}) error
 }
@@ -36,13 +36,13 @@ type secondaryLayer2NetworkControllerEventHandler struct {
 // type considers them equal and therefore no update is needed. It returns false when the two objects are not considered
 // equal and an update needs be executed. This is regardless of how the update is carried out (whether with a dedicated update
 // function or with a delete on the old obj followed by an add on the new obj).
-func (h *secondaryLayer2NetworkControllerEventHandler) AreResourcesEqual(obj1, obj2 interface{}) (bool, error) {
+func (h *secondaryLocalnetNetworkControllerEventHandler) AreResourcesEqual(obj1, obj2 interface{}) (bool, error) {
 	return h.baseHandler.areResourcesEqual(h.objType, obj1, obj2)
 }
 
 // GetInternalCacheEntry returns the internal cache entry for this object, given an object and its type.
 // This is now used only for pods, which will get their the logical port cache entry.
-func (h *secondaryLayer2NetworkControllerEventHandler) GetInternalCacheEntry(obj interface{}) interface{} {
+func (h *secondaryLocalnetNetworkControllerEventHandler) GetInternalCacheEntry(obj interface{}) interface{} {
 	switch h.objType {
 	case factory.PodType:
 		pod := obj.(*kapi.Pod)
@@ -54,40 +54,40 @@ func (h *secondaryLayer2NetworkControllerEventHandler) GetInternalCacheEntry(obj
 
 // GetResourceFromInformerCache returns the latest state of the object, given an object key and its type.
 // from the informers cache.
-func (h *secondaryLayer2NetworkControllerEventHandler) GetResourceFromInformerCache(key string) (interface{}, error) {
+func (h *secondaryLocalnetNetworkControllerEventHandler) GetResourceFromInformerCache(key string) (interface{}, error) {
 	return h.baseHandler.getResourceFromInformerCache(h.objType, h.watchFactory, key)
 }
 
 // RecordAddEvent records the add event on this given object.
-func (h *secondaryLayer2NetworkControllerEventHandler) RecordAddEvent(obj interface{}) {
+func (h *secondaryLocalnetNetworkControllerEventHandler) RecordAddEvent(obj interface{}) {
 }
 
 // RecordUpdateEvent records the udpate event on this given object.
-func (h *secondaryLayer2NetworkControllerEventHandler) RecordUpdateEvent(obj interface{}) {
+func (h *secondaryLocalnetNetworkControllerEventHandler) RecordUpdateEvent(obj interface{}) {
 }
 
 // RecordDeleteEvent records the delete event on this given object.
-func (h *secondaryLayer2NetworkControllerEventHandler) RecordDeleteEvent(obj interface{}) {
+func (h *secondaryLocalnetNetworkControllerEventHandler) RecordDeleteEvent(obj interface{}) {
 }
 
 // RecordSuccessEvent records the success event on this given object.
-func (h *secondaryLayer2NetworkControllerEventHandler) RecordSuccessEvent(obj interface{}) {
+func (h *secondaryLocalnetNetworkControllerEventHandler) RecordSuccessEvent(obj interface{}) {
 }
 
 // RecordErrorEvent records the error event on this given object.
-func (h *secondaryLayer2NetworkControllerEventHandler) RecordErrorEvent(obj interface{}, reason string, err error) {
+func (h *secondaryLocalnetNetworkControllerEventHandler) RecordErrorEvent(obj interface{}, reason string, err error) {
 }
 
 // IsResourceScheduled returns true if the given object has been scheduled.
 // Only applied to pods for now. Returns true for all other types.
-func (h *secondaryLayer2NetworkControllerEventHandler) IsResourceScheduled(obj interface{}) bool {
+func (h *secondaryLocalnetNetworkControllerEventHandler) IsResourceScheduled(obj interface{}) bool {
 	return h.baseHandler.isResourceScheduled(h.objType, obj)
 }
 
 // AddResource adds the specified object to the cluster according to its type and returns the error,
 // if any, yielded during object creation.
 // Given an object to add and a boolean specifying if the function was executed from iterateRetryResources
-func (h *secondaryLayer2NetworkControllerEventHandler) AddResource(obj interface{}, fromRetryLoop bool) error {
+func (h *secondaryLocalnetNetworkControllerEventHandler) AddResource(obj interface{}, fromRetryLoop bool) error {
 	switch h.objType {
 	case factory.PodType:
 		pod, ok := obj.(*kapi.Pod)
@@ -105,7 +105,7 @@ func (h *secondaryLayer2NetworkControllerEventHandler) AddResource(obj interface
 // type and returns the error, if any, yielded during the object update.
 // Given an old and a new object; The inRetryCache boolean argument is to indicate if the given resource
 // is in the retryCache or not.
-func (h *secondaryLayer2NetworkControllerEventHandler) UpdateResource(oldObj, newObj interface{}, inRetryCache bool) error {
+func (h *secondaryLocalnetNetworkControllerEventHandler) UpdateResource(oldObj, newObj interface{}, inRetryCache bool) error {
 	switch h.objType {
 	case factory.PodType:
 		oldPod := oldObj.(*kapi.Pod)
@@ -119,7 +119,7 @@ func (h *secondaryLayer2NetworkControllerEventHandler) UpdateResource(oldObj, ne
 // DeleteResource deletes the object from the cluster according to the delete logic of its resource type.
 // Given an object and optionally a cachedObj; cachedObj is the internal cache entry for this object,
 // used for now for pods and network policies.
-func (h *secondaryLayer2NetworkControllerEventHandler) DeleteResource(obj, cachedObj interface{}) error {
+func (h *secondaryLocalnetNetworkControllerEventHandler) DeleteResource(obj, cachedObj interface{}) error {
 	switch h.objType {
 	case factory.PodType:
 		var portInfo *lpInfo
@@ -136,7 +136,7 @@ func (h *secondaryLayer2NetworkControllerEventHandler) DeleteResource(obj, cache
 	}
 }
 
-func (h *secondaryLayer2NetworkControllerEventHandler) SyncFunc(objs []interface{}) error {
+func (h *secondaryLocalnetNetworkControllerEventHandler) SyncFunc(objs []interface{}) error {
 	var syncFunc func([]interface{}) error
 
 	if h.syncFunc != nil {
@@ -159,13 +159,13 @@ func (h *secondaryLayer2NetworkControllerEventHandler) SyncFunc(objs []interface
 
 // IsObjectInTerminalState returns true if the given object is a in terminal state.
 // This is used now for pods that are either in a PodSucceeded or in a PodFailed state.
-func (h *secondaryLayer2NetworkControllerEventHandler) IsObjectInTerminalState(obj interface{}) bool {
+func (h *secondaryLocalnetNetworkControllerEventHandler) IsObjectInTerminalState(obj interface{}) bool {
 	return h.baseHandler.isObjectInTerminalState(h.objType, obj)
 }
 
-// SecondaryLayer2NetworkController is created for logical network infrastructure and policy
+// SecondaryLocalnetNetworkController is created for logical network infrastructure and policy
 // for a secondary layer2 network
-type SecondaryLayer2NetworkController struct {
+type SecondaryLocalnetNetworkController struct {
 	NetworkControllerInfo
 
 	wg       *sync.WaitGroup
@@ -183,12 +183,12 @@ type SecondaryLayer2NetworkController struct {
 	retryPods *retry.RetryFramework
 }
 
-// NewSecondaryLayer2NetworkController create a new OVN controller for the given secondary layer2 nad
-func NewSecondaryLayer2NetworkController(bnc *BaseNetworkController, nInfo util.NetInfo,
-	netconfInfo util.NetConfInfo) *SecondaryLayer2NetworkController {
+// NewSecondaryLocalnetNetworkController create a new OVN controller for the given secondary layer2 nad
+func NewSecondaryLocalnetNetworkController(bnc *BaseNetworkController, nInfo util.NetInfo,
+	netconfInfo util.NetConfInfo) *SecondaryLocalnetNetworkController {
 	stopChan := make(chan struct{})
 
-	oc := &SecondaryLayer2NetworkController{
+	oc := &SecondaryLocalnetNetworkController{
 		NetworkControllerInfo: NetworkControllerInfo{
 			BaseNetworkController: *bnc,
 			NetInfo:               nInfo,
@@ -204,18 +204,18 @@ func NewSecondaryLayer2NetworkController(bnc *BaseNetworkController, nInfo util.
 	return oc
 }
 
-func (oc *SecondaryLayer2NetworkController) initRetryFramework() {
+func (oc *SecondaryLocalnetNetworkController) initRetryFramework() {
 	// Init the retry framework for pods
 	oc.retryPods = oc.newRetryFrameworkWithParameters(factory.PodType, nil, nil)
 }
 
 // newRetryFrameworkMasterWithParameters builds and returns a retry framework for the input resource
 // type and assigns all ovnk-master-specific function attributes in the returned struct;
-func (oc *SecondaryLayer2NetworkController) newRetryFrameworkWithParameters(
+func (oc *SecondaryLocalnetNetworkController) newRetryFrameworkWithParameters(
 	objectType reflect.Type,
 	syncFunc func([]interface{}) error,
 	extraParameters interface{}) *retry.RetryFramework {
-	eventHandler := &secondaryLayer2NetworkControllerEventHandler{
+	eventHandler := &secondaryLocalnetNetworkControllerEventHandler{
 		baseHandler:     baseNetworkControllerEventHandler{},
 		objType:         objectType,
 		watchFactory:    oc.watchFactory,
@@ -237,7 +237,7 @@ func (oc *SecondaryLayer2NetworkController) newRetryFrameworkWithParameters(
 }
 
 // Start starts the secondary layer2 controller, handles all events and creates all needed logical entities
-func (oc *SecondaryLayer2NetworkController) Start(ctx context.Context) error {
+func (oc *SecondaryLocalnetNetworkController) Start(ctx context.Context) error {
 	klog.Infof("Start secondary %s network controller of network %s", oc.GetTopologyType(), oc.GetNetworkName())
 	if err := oc.Init(); err != nil {
 		return err
@@ -247,10 +247,9 @@ func (oc *SecondaryLayer2NetworkController) Start(ctx context.Context) error {
 }
 
 // DeleteLogicalEntities delete logical entities for this network
-func (oc *SecondaryLayer2NetworkController) DeleteLogicalEntities(netName string) error {
+func (oc *SecondaryLocalnetNetworkController) DeleteLogicalEntities(netName string) error {
 	klog.Infof("Delete OVN logical entities for %s network controller of network %s", oc.GetTopologyType(), oc.GetNetworkName())
-
-	// delete layer 2 logical switches
+	// delete localnet logical switches
 	ops, err := libovsdbops.DeleteLogicalSwitchesWithPredicateOps(oc.nbClient, nil,
 		func(item *nbdb.LogicalSwitch) bool {
 			return item.ExternalIDs[types.NetworkNameExternalID] == netName
@@ -268,7 +267,7 @@ func (oc *SecondaryLayer2NetworkController) DeleteLogicalEntities(netName string
 }
 
 // Stop gracefully stops the controller, and delete all logical entities for this network if requested
-func (oc *SecondaryLayer2NetworkController) Stop(deleteLogicalEntities bool) error {
+func (oc *SecondaryLocalnetNetworkController) Stop(deleteLogicalEntities bool) error {
 	klog.Infof("Stop secondary %s network controller of network %s", oc.GetTopologyType(), oc.GetNetworkName())
 	close(oc.stopChan)
 	oc.wg.Wait()
@@ -285,7 +284,7 @@ func (oc *SecondaryLayer2NetworkController) Stop(deleteLogicalEntities bool) err
 	return oc.DeleteLogicalEntities(oc.GetNetworkName())
 }
 
-func (oc *SecondaryLayer2NetworkController) Run() error {
+func (oc *SecondaryLocalnetNetworkController) Run() error {
 	klog.Infof("Starting all the Watchers for network %s ...", oc.GetNetworkName())
 	start := time.Now()
 
@@ -304,7 +303,7 @@ func (oc *SecondaryLayer2NetworkController) Run() error {
 }
 
 // WatchPods starts the watching of the Pod resource and calls back the appropriate handler logic
-func (oc *SecondaryLayer2NetworkController) WatchPods() error {
+func (oc *SecondaryLocalnetNetworkController) WatchPods() error {
 	if oc.podHandler != nil {
 		return nil
 	}
@@ -315,12 +314,30 @@ func (oc *SecondaryLayer2NetworkController) WatchPods() error {
 	return err
 }
 
-func (oc *SecondaryLayer2NetworkController) getPortInfo(pod *kapi.Pod) *lpInfo {
+func (oc *SecondaryLocalnetNetworkController) getPortInfo(pod *kapi.Pod) *lpInfo {
 	return oc.NetworkControllerInfo.getPortInfo(pod, oc.logicalPortCache)
 }
 
-func (oc *SecondaryLayer2NetworkController) Init() error {
-	switchName := oc.GetPrefix() + types.OvnLayer2Switch
+func (oc *SecondaryLocalnetNetworkController) Init() error {
+	switchName := oc.GetPrefix() + types.OVNLocalnetSwitch
+
+	// Add external interface as a logical port to external_switch.
+	// This is a learning switch port with "unknown" address. The external
+	// world is accessed via this port.
+	logicalSwitchPort := nbdb.LogicalSwitchPort{
+		Addresses: []string{"unknown"},
+		Type:      "localnet",
+		Options: map[string]string{
+			"network_name": oc.GetPrefix() + types.LocalNetBridgeName,
+		},
+		Name: oc.GetPrefix() + types.OVNLocalnetPort,
+	}
+	localnetNetConfInfo := oc.NetConfInfo.(*util.LocalnetNetConfInfo)
+	if localnetNetConfInfo.VlanId != 0 {
+		intVlanID := int(localnetNetConfInfo.VlanId)
+		logicalSwitchPort.TagRequest = &intVlanID
+	}
+
 	logicalSwitch := nbdb.LogicalSwitch{
 		Name:        switchName,
 		ExternalIDs: map[string]string{},
@@ -330,10 +347,8 @@ func (oc *SecondaryLayer2NetworkController) Init() error {
 		logicalSwitch.ExternalIDs[types.TopoTypeExternalID] = oc.GetTopologyType()
 	}
 
-	layer2NetConfInfo := oc.NetConfInfo.(*util.Layer2NetConfInfo)
-
-	hostSubnets := make([]*net.IPNet, 0, len(layer2NetConfInfo.ClusterSubnets))
-	for _, subnet := range layer2NetConfInfo.ClusterSubnets {
+	hostSubnets := make([]*net.IPNet, 0, len(localnetNetConfInfo.ClusterSubnets))
+	for _, subnet := range localnetNetConfInfo.ClusterSubnets {
 		hostSubnet := subnet.CIDR
 		hostSubnets = append(hostSubnets, hostSubnet)
 		if utilnet.IsIPv6CIDR(hostSubnet) {
@@ -343,9 +358,9 @@ func (oc *SecondaryLayer2NetworkController) Init() error {
 		}
 	}
 
-	err := libovsdbops.CreateOrUpdateLogicalSwitch(oc.nbClient, &logicalSwitch, &logicalSwitch.OtherConfig)
+	err := libovsdbops.CreateOrUpdateLogicalSwitchPortsAndSwitch(oc.nbClient, &logicalSwitch, &logicalSwitchPort)
 	if err != nil {
-		return fmt.Errorf("failed to create logical switch %+v: %v", logicalSwitch, err)
+		return fmt.Errorf("failed to create logical switch %+v and port %v: %v", logicalSwitch, logicalSwitchPort, err)
 	}
 
 	err = oc.lsManager.AddSwitch(switchName, logicalSwitch.UUID, hostSubnets)
@@ -353,7 +368,7 @@ func (oc *SecondaryLayer2NetworkController) Init() error {
 		return err
 	}
 
-	for _, excludeIP := range layer2NetConfInfo.ExcludeIPs {
+	for _, excludeIP := range localnetNetConfInfo.ExcludeIPs {
 		var ipMask net.IPMask
 		if excludeIP.To4() != nil {
 			ipMask = net.CIDRMask(32, 32)
@@ -363,13 +378,12 @@ func (oc *SecondaryLayer2NetworkController) Init() error {
 
 		_ = oc.lsManager.AllocateIPs(switchName, []*net.IPNet{{IP: excludeIP, Mask: ipMask}})
 	}
-
 	return nil
 }
 
 // ensurePod tries to set up a pod. It returns nil on success and error on failure; failure
 // indicates the pod set up should be retried later.
-func (oc *SecondaryLayer2NetworkController) ensurePod(oldPod, pod *kapi.Pod, addPort bool) error {
+func (oc *SecondaryLocalnetNetworkController) ensurePod(oldPod, pod *kapi.Pod, addPort bool) error {
 	// Try unscheduled pods later
 	if !util.PodScheduled(pod) {
 		return nil
@@ -395,7 +409,7 @@ func (oc *SecondaryLayer2NetworkController) ensurePod(oldPod, pod *kapi.Pod, add
 	return nil
 }
 
-func (oc *SecondaryLayer2NetworkController) addLogicalPort(pod *kapi.Pod, nadName string,
+func (oc *SecondaryLocalnetNetworkController) addLogicalPort(pod *kapi.Pod, nadName string,
 	network *networkattachmentdefinitionapi.NetworkSelectionElement) error {
 	var libovsdbExecuteTime time.Duration
 
@@ -433,7 +447,7 @@ func (oc *SecondaryLayer2NetworkController) addLogicalPort(pod *kapi.Pod, nadNam
 	}
 
 	// Add the pod's logical switch port to the port cache
-	switchName := oc.GetPrefix() + types.OvnLayer2Switch
+	switchName := oc.GetPrefix() + types.OVNLocalnetSwitch
 	_ = oc.logicalPortCache.add(switchName, lsp.Name, lsp.UUID, podAnnotation.MAC, podAnnotation.IPs)
 
 	if newlyCreated {
@@ -444,7 +458,7 @@ func (oc *SecondaryLayer2NetworkController) addLogicalPort(pod *kapi.Pod, nadNam
 
 // removePod tried to tear down a pod. It returns nil on success and error on failure;
 // failure indicates the pod tear down should be retried later.
-func (oc *SecondaryLayer2NetworkController) removePod(pod *kapi.Pod, portInfo *lpInfo) error {
+func (oc *SecondaryLocalnetNetworkController) removePod(pod *kapi.Pod, portInfo *lpInfo) error {
 	if !util.PodWantsNetwork(pod) {
 		return nil
 	}
@@ -486,7 +500,7 @@ func (oc *SecondaryLayer2NetworkController) removePod(pod *kapi.Pod, portInfo *l
 	return nil
 }
 
-func (oc *SecondaryLayer2NetworkController) syncPods(pods []interface{}) error {
+func (oc *SecondaryLocalnetNetworkController) syncPods(pods []interface{}) error {
 	// get the list of logical switch ports (equivalent to pods). Reserve all existing Pod IPs to
 	// avoid subsequent new Pods getting the same duplicate Pod IP.
 	expectedLogicalPorts := make(map[string]bool)
@@ -509,6 +523,6 @@ func (oc *SecondaryLayer2NetworkController) syncPods(pods []interface{}) error {
 			return err
 		}
 	}
-	switchName := oc.GetPrefix() + types.OvnLayer2Switch
+	switchName := oc.GetPrefix() + types.OVNLocalnetSwitch
 	return oc.deleteStaleLogicalSwitchPorts(oc.lsManager, []string{switchName}, expectedLogicalPorts)
 }

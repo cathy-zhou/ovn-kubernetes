@@ -30,7 +30,7 @@ var _ = Describe("Node", func() {
 			netlinkOpsMock  *utilMocks.NetLinkOps
 			netlinkLinkMock *netlink_mocks.Link
 
-			ovnNode *OvnNode
+			ovnNode *BaseNodeNetworkController
 		)
 
 		const (
@@ -55,7 +55,7 @@ var _ = Describe("Node", func() {
 				Return([]netlink.Addr{{LinkIndex: linkIndex, IPNet: ovntest.MustParseIPNet(linkIPNet)}}, nil)
 			netlinkOpsMock.On("LinkByIndex", 4).Return(netlinkLinkMock, nil)
 
-			ovnNode = &OvnNode{
+			ovnNode = &BaseNodeNetworkController{
 				name: nodeName,
 				Kube: kubeMock,
 			}

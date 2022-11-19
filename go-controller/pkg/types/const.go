@@ -31,6 +31,14 @@ const (
 	// types.OvnLayer2Switch is the name of layer2 topology switch
 	OvnLayer2Switch = "ovn_layer2_switch"
 
+	// types.OvnLocalnetSwitch is the name of localnet topology switch
+	// types.OVNLocalnetPort is the name of localnet topology localnet port
+	OVNLocalnetSwitch = "ovn_localnet_switch"
+	OVNLocalnetPort   = "ovn_localnet_port"
+
+	// Local Bridge used for localnet topology network access
+	LocalNetBridgeName = "br-localnet"
+
 	JoinSwitchPrefix             = "join_"
 	ExternalSwitchPrefix         = "ext_"
 	GWRouterPrefix               = "GR_"
@@ -168,6 +176,7 @@ const (
 	TopoTypeExternalID = "topology_type"
 
 	// topology type defineds in CNI netconf
-	Layer3AttachDefTopoType = "layer3" // layer 3 network
-	Layer2AttachDefTopoType = "layer2" // layer 2 network
+	Layer3AttachDefTopoType   = "layer3"   // layer 3 network
+	Layer2AttachDefTopoType   = "layer2"   // layer 2 network
+	LocalnetAttachDefTopoType = "localnet" // layer 2 network
 )

@@ -92,6 +92,7 @@ type NetConfInfo interface {
 	Verify() error
 	CompareNetConf(NetConfInfo) bool
 	GetTopologyType() string
+	GetMtu() int
 }
 
 // Layer3NetConfInfo is structure which holds specific secondary layer3 network information
@@ -134,12 +135,16 @@ func (layer3NetConfInfo *Layer3NetConfInfo) GetTopologyType() string {
 	return types.Layer3AttachDefTopoType
 }
 
+func (layer3NetConfInfo *Layer3NetConfInfo) GetMtu() int {
+	return layer3NetConfInfo.MTU
+}
+
 // Layer2NetConfInfo is structure which holds specific secondary layer2 network information
 type Layer2NetConfInfo struct {
-	NetCidr string
-	MTU     int
+	NetCidr      string
+	MTU          int
+	ExcludeCIDRs []string
 
-	ExcludeCIDRs   []string
 	ClusterSubnets []config.CIDRNetworkEntry
 	ExcludeIPs     []net.IP
 }
@@ -169,19 +174,24 @@ func (layer2NetConfInfo *Layer2NetConfInfo) CompareNetConf(newNetConfInfo NetCon
 	return true
 }
 
-func (layer2NetConfInfo *Layer2NetConfInfo) Verify() error {
-	clusterSubnets, err := config.ParseClusterSubnetEntries(layer2NetConfInfo.NetCidr, false)
-	if err != nil {
-		return fmt.Errorf("cluster subnet %s is invalid: %v", layer2NetConfInfo.NetCidr, err)
-	}
-	layer2NetConfInfo.ClusterSubnets = clusterSubnets
+func (layer2NetConfInfo *Layer2NetConfInfo) Verify() (err error) {
+	layer2NetConfInfo.ClusterSubnets, layer2NetConfInfo.ExcludeIPs, err =
+		verifyExcludeIPs(layer2NetConfInfo.NetCidr, layer2NetConfInfo.ExcludeCIDRs)
+	return err
+}
 
-	layer2NetConfInfo.ExcludeIPs = make([]net.IP, 0)
-	for _, excludeCIDRstr := range layer2NetConfInfo.ExcludeCIDRs {
+func verifyExcludeIPs(netCidr string, excludeCIDRs []string) ([]config.CIDRNetworkEntry, []net.IP, error) {
+	clusterSubnets, err := config.ParseClusterSubnetEntries(netCidr, false)
+	if err != nil {
+		return nil, nil, fmt.Errorf("cluster subnet %s is invalid: %v", netCidr, err)
+	}
+
+	excludeIPs := make([]net.IP, 0)
+	for _, excludeCIDRstr := range excludeCIDRs {
 		_, excludeCIDR, err := net.ParseCIDR(excludeCIDRstr)
 		if err != nil {
-			return fmt.Errorf("invalid subnet %q provided in the exclude_cidrs list %v",
-				excludeCIDRstr, layer2NetConfInfo.ExcludeCIDRs)
+			return nil, nil, fmt.Errorf("invalid subnet %q provided in the exclude_cidrs list %v",
+				excludeCIDRstr, excludeCIDRs)
 		}
 
 		for excludeIP := excludeCIDR.IP; excludeCIDR.Contains(excludeIP); excludeIP = NextIP(excludeIP) {
@@ -193,17 +203,76 @@ func (layer2NetConfInfo *Layer2NetConfInfo) Verify() error {
 				}
 			}
 			if !found {
-				return fmt.Errorf("ip to be excluded %q is not part of any of the provided Network CIDRs (%v)",
+				return nil, nil, fmt.Errorf("ip to be excluded %q is not part of any of the provided Network CIDRs (%v)",
 					excludeIP, clusterSubnets)
 			}
-			layer2NetConfInfo.ExcludeIPs = append(layer2NetConfInfo.ExcludeIPs, excludeIP)
+			excludeIPs = append(excludeIPs, excludeIP)
 		}
 	}
-	return nil
+	return clusterSubnets, excludeIPs, nil
 }
 
 func (layer2NetConfInfo *Layer2NetConfInfo) GetTopologyType() string {
 	return types.Layer2AttachDefTopoType
+}
+
+func (layer2NetConfInfo *Layer2NetConfInfo) GetMtu() int {
+	return layer2NetConfInfo.MTU
+}
+
+// LocalnetNetConfInfo is structure which holds specific secondary localnet network information
+type LocalnetNetConfInfo struct {
+	NetCidr      string
+	MTU          int
+	VlanId       int
+	ExcludeCIDRs []string
+
+	ClusterSubnets []config.CIDRNetworkEntry
+	ExcludeIPs     []net.IP
+}
+
+func (localnetNetConfInfo *LocalnetNetConfInfo) CompareNetConf(newNetConfInfo NetConfInfo) bool {
+	newLocalnetNetConfInfo, ok := newNetConfInfo.(*LocalnetNetConfInfo)
+	if !ok {
+		klog.V(5).Infof("New netconf topology type is different, expect %s",
+			localnetNetConfInfo.GetTopologyType())
+		return false
+	}
+	if localnetNetConfInfo.NetCidr != newLocalnetNetConfInfo.NetCidr {
+		klog.V(5).Infof("New netconf NetCidr %v has changed, expect %v",
+			newLocalnetNetConfInfo.NetCidr, localnetNetConfInfo.NetCidr)
+		return false
+	}
+	if localnetNetConfInfo.MTU != newLocalnetNetConfInfo.MTU {
+		klog.V(5).Infof("New netconf MTU %v has changed, expect %v",
+			newLocalnetNetConfInfo.MTU, localnetNetConfInfo.MTU)
+		return false
+	}
+	if localnetNetConfInfo.VlanId != newLocalnetNetConfInfo.VlanId {
+		klog.V(5).Infof("New netconf VlanId %v has changed, expect %v",
+			newLocalnetNetConfInfo.VlanId, localnetNetConfInfo.VlanId)
+		return false
+	}
+	if !reflect.DeepEqual(localnetNetConfInfo.ExcludeCIDRs, newLocalnetNetConfInfo.ExcludeCIDRs) {
+		klog.V(5).Infof("New netconf ExcludeCIDRs %v has changed, expect %v",
+			newLocalnetNetConfInfo.ExcludeCIDRs, localnetNetConfInfo.ExcludeCIDRs)
+		return false
+	}
+	return true
+}
+
+func (localnetNetConfInfo *LocalnetNetConfInfo) Verify() (err error) {
+	localnetNetConfInfo.ClusterSubnets, localnetNetConfInfo.ExcludeIPs, err =
+		verifyExcludeIPs(localnetNetConfInfo.NetCidr, localnetNetConfInfo.ExcludeCIDRs)
+	return err
+}
+
+func (localnetNetConfInfo *LocalnetNetConfInfo) GetTopologyType() string {
+	return types.LocalnetAttachDefTopoType
+}
+
+func (localnetNetConfInfo *LocalnetNetConfInfo) GetMtu() int {
+	return localnetNetConfInfo.MTU
 }
 
 // GetNadName returns key of NetAttachDefInfo.NetAttachDefs map, also used as Pod annotation key
@@ -230,9 +299,23 @@ func newNetConfInfo(netconf *ovncnitypes.NetConf) (NetConfInfo, error) {
 	}
 
 	if netconf.Topology == types.Layer3AttachDefTopoType {
-		netconfInfo = &Layer3NetConfInfo{NetCidr: netconf.NetCidr, MTU: netconf.MTU}
+		netconfInfo = &Layer3NetConfInfo{
+			NetCidr: netconf.NetCidr,
+			MTU:     netconf.MTU,
+		}
 	} else if netconf.Topology == types.Layer2AttachDefTopoType {
-		netconfInfo = &Layer2NetConfInfo{NetCidr: netconf.NetCidr, MTU: netconf.MTU, ExcludeCIDRs: netconf.ExcludeCIDRs}
+		netconfInfo = &Layer2NetConfInfo{
+			NetCidr:      netconf.NetCidr,
+			MTU:          netconf.MTU,
+			ExcludeCIDRs: netconf.ExcludeCIDRs,
+		}
+	} else if netconf.Topology == types.LocalnetAttachDefTopoType {
+		netconfInfo = &LocalnetNetConfInfo{
+			NetCidr:      netconf.NetCidr,
+			MTU:          netconf.MTU,
+			VlanId:       netconf.VlanId,
+			ExcludeCIDRs: netconf.ExcludeCIDRs,
+		}
 	} else {
 		// other topology nad can be supported later
 		return nil, fmt.Errorf("topology %s not supported", netconf.Topology)

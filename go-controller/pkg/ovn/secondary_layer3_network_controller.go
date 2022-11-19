@@ -302,6 +302,7 @@ func (oc *SecondaryLayer3NetworkController) newRetryFrameworkWithParameters(
 
 // Start starts the secondary layer3 controller, handles all events and creates all needed logical entities
 func (oc *SecondaryLayer3NetworkController) Start(ctx context.Context) error {
+	klog.Infof("Start secondary %s network controller of network %s", oc.GetTopologyType(), oc.GetNetworkName())
 	if err := oc.Init(); err != nil {
 		return err
 	}
@@ -311,8 +312,9 @@ func (oc *SecondaryLayer3NetworkController) Start(ctx context.Context) error {
 
 // Stop gracefully stops the controller, and delete all logical entities for this network if requested
 func (oc *SecondaryLayer3NetworkController) Stop(deleteLogicalEntities bool) error {
-	oc.wg.Wait()
+	klog.Infof("Stop secondary %s network controller of network %s", oc.GetTopologyType(), oc.GetNetworkName())
 	close(oc.stopChan)
+	oc.wg.Wait()
 
 	if oc.podHandler != nil {
 		oc.watchFactory.RemovePodHandler(oc.podHandler)
@@ -336,6 +338,7 @@ func (oc *SecondaryLayer3NetworkController) DeleteLogicalEntities(netName string
 	var ops []ovsdb.Operation
 	var err error
 
+	klog.Infof("Delete OVN logical entities for %s network controller of network %s", oc.GetTopologyType(), oc.GetNetworkName())
 	// first delete node logical switches
 	ops, err = libovsdbops.DeleteLogicalSwitchesWithPredicateOps(oc.nbClient, ops,
 		func(item *nbdb.LogicalSwitch) bool {

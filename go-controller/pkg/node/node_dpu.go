@@ -16,61 +16,75 @@ import (
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 )
 
 // watchPodsDPU watch updates for pod dpu annotations
-func (n *OvnNode) watchPodsDPU(isOvnUpEnabled bool) error {
+func (nnci *NodeNetworkControllerInfo) watchPodsDPU(isOvnUpEnabled bool) (*factory.Handler, error) {
 	var retryPods sync.Map
 	// servedPods tracks the pods that got a VF
 	var servedPods sync.Map
 
-	podLister := corev1listers.NewPodLister(n.watchFactory.LocalPodInformer().GetIndexer())
-	kclient := n.Kube.(*kube.Kube)
+	// when specific nad is in podNadCache but not in servedPod cache, we'd need to retry
 
-	// cathy expected nadName to be nadKeyName
-	// Support default network for now
-	nadName := types.DefaultNetworkName
-	//netInfo := util.NetInfo{NetName: types.DefaultNetworkName, Prefix: "", IsSecondary: false}
-	isSecondary := false
-	_, err := n.watchFactory.AddPodHandler(cache.ResourceEventHandlerFuncs{
+	klog.Infof("Starting Pod watch on network %s", nnci.GetNetworkName())
+
+	podLister := corev1listers.NewPodLister(nnci.watchFactory.LocalPodInformer().GetIndexer())
+	kclient := nnci.Kube.(*kube.Kube)
+
+	podHandler, err := nnci.watchFactory.AddPodHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			pod := obj.(*kapi.Pod)
-			klog.Infof("Add for Pod: %s/%s", pod.ObjectMeta.GetNamespace(), pod.ObjectMeta.GetName())
+			klog.Infof("Add for Pod: %s/%s for network", pod.ObjectMeta.GetNamespace(), pod.ObjectMeta.GetName(), nnci.GetNetworkName())
 			if !util.PodWantsNetwork(pod) || pod.Status.Phase == kapi.PodRunning {
 				return
 			}
+			on, network, err := util.IsNetworkOnPod(pod, nnci)
+			if err != nil || !on {
+				// the Pod is not attached to this specific network
+				klog.V(5).Infof("Skipping add for Pod %s/%s as it is not attached to network: %s",
+					pod.Namespace, pod.Name, nnci.GetNetworkName())
+				return
+			}
+			nadName := types.DefaultNetworkName
+			if nnci.IsSecondary() {
+				nadName = util.GetNadName(network.Namespace, network.Name)
+			}
 			if util.PodScheduled(pod) {
 				// Is this pod created on same node as the DPU
-				if n.name != pod.Spec.NodeName {
+				if nnci.name != pod.Spec.NodeName {
 					return
 				}
 
-				vfRepName, err := n.getVfRepName(pod)
+				vfRepName, err := nnci.getVfRepName(pod, nadName)
 				if err != nil {
 					klog.Infof("Failed to get rep name, %s. retrying", err)
-					retryPods.Store(pod.UID, true)
+					retryPods.Store(pod.UID, nadName)
 					return
+				}
+				mtu := config.Default.MTU
+				if nnci.IsSecondary() {
+					mtu = nnci.GetMtu()
 				}
 				podInterfaceInfo, err := cni.PodAnnotation2PodInfo(pod.Annotations, isOvnUpEnabled, string(pod.UID),
-					//"", nadName, config.Default.MTU, netInfo)
-					"", nadName, config.Default.MTU, isSecondary)
+					"", nadName, mtu, nnci.IsSecondary())
 				if err != nil {
-					retryPods.Store(pod.UID, true)
+					retryPods.Store(pod.UID, nadName)
 					return
 				}
-				err = n.addRepPort(pod, vfRepName, podInterfaceInfo, podLister, kclient.KClient)
+				err = nnci.addRepPort(pod, vfRepName, podInterfaceInfo, podLister, kclient.KClient)
 				if err != nil {
 					klog.Infof("Failed to add rep port, %s. retrying", err)
-					retryPods.Store(pod.UID, true)
+					retryPods.Store(pod.UID, nadName)
 				} else {
-					servedPods.Store(pod.UID, true)
+					servedPods.Store(pod.UID, nadName)
 				}
 			} else {
 				// Handle unscheduled pods later in UpdateFunc
-				retryPods.Store(pod.UID, true)
+				retryPods.Store(pod.UID, nadName)
 				return
 			}
 		},
@@ -81,28 +95,28 @@ func (n *OvnNode) watchPodsDPU(isOvnUpEnabled bool) error {
 				retryPods.Delete(pod.UID)
 				return
 			}
-			_, retry := retryPods.Load(pod.UID)
+			v, retry := retryPods.Load(pod.UID)
 			if util.PodScheduled(pod) && retry {
-				if n.name != pod.Spec.NodeName {
+				if nnci.name != pod.Spec.NodeName {
 					retryPods.Delete(pod.UID)
 					return
 				}
-				vfRepName, err := n.getVfRepName(pod)
+				nadName := v.(string)
+				vfRepName, err := nnci.getVfRepName(pod, nadName)
 				if err != nil {
 					klog.Infof("Failed to get rep name, %s. retrying", err)
 					return
 				}
 				podInterfaceInfo, err := cni.PodAnnotation2PodInfo(pod.Annotations, isOvnUpEnabled, string(pod.UID),
-					//"", nadName, config.Default.MTU, netInfo)
-					"", nadName, config.Default.MTU, isSecondary)
+					"", nadName, nnci.GetMtu(), nnci.IsSecondary())
 				if err != nil {
 					return
 				}
-				err = n.addRepPort(pod, vfRepName, podInterfaceInfo, podLister, kclient.KClient)
+				err = nnci.addRepPort(pod, vfRepName, podInterfaceInfo, podLister, kclient.KClient)
 				if err != nil {
 					klog.Infof("Failed to add rep port, %s. retrying", err)
 				} else {
-					servedPods.Store(pod.UID, true)
+					servedPods.Store(pod.UID, nadName)
 					retryPods.Delete(pod.UID)
 				}
 			}
@@ -110,28 +124,31 @@ func (n *OvnNode) watchPodsDPU(isOvnUpEnabled bool) error {
 		DeleteFunc: func(obj interface{}) {
 			pod := obj.(*kapi.Pod)
 			klog.Infof("Delete for Pod: %s/%s", pod.ObjectMeta.GetNamespace(), pod.ObjectMeta.GetName())
-			if _, ok := servedPods.Load(pod.UID); !ok {
+			v, ok := servedPods.Load(pod.UID)
+			if !ok {
 				return
 			}
+			nadName := v.(string)
 			servedPods.Delete(pod.UID)
 			retryPods.Delete(pod.UID)
-			vfRepName, err := n.getVfRepName(pod)
+			vfRepName, err := nnci.getVfRepName(pod, nadName)
 			if err != nil {
 				klog.Errorf("Failed to get VF Representor Name from Pod: %s. Representor port may have been deleted.", err)
 				return
 			}
-			err = n.delRepPort(vfRepName)
+			err = nnci.delRepPort(vfRepName)
 			if err != nil {
 				klog.Errorf("Failed to delete VF representor %s. %s", vfRepName, err)
 			}
 		},
 	}, nil)
-	return err
+
+	return podHandler, err
 }
 
 // getVfRepName returns the VF's representor of the VF assigned to the pod
-func (n *OvnNode) getVfRepName(pod *kapi.Pod) (string, error) {
-	dpuCD, err := util.UnmarshalPodDPUConnDetails(pod.Annotations, types.DefaultNetworkName)
+func (nnci *NodeNetworkControllerInfo) getVfRepName(pod *kapi.Pod, nadName string) (string, error) {
+	dpuCD, err := util.UnmarshalPodDPUConnDetails(pod.Annotations, nadName)
 	if err != nil {
 		return "", fmt.Errorf("failed to get dpu annotation for pod %s/%s: %v", pod.Namespace, pod.Name, err)
 	}
@@ -139,11 +156,11 @@ func (n *OvnNode) getVfRepName(pod *kapi.Pod) (string, error) {
 }
 
 // updatePodDPUConnStatusWithRetry update the pod annotion with the givin connection details
-func (n *OvnNode) updatePodDPUConnStatusWithRetry(origPod *kapi.Pod,
+func (nnci *NodeNetworkControllerInfo) updatePodDPUConnStatusWithRetry(origPod *kapi.Pod,
 	dpuConnStatus *util.DPUConnectionStatus) error {
 	podDesc := fmt.Sprintf("pod %s/%s", origPod.Namespace, origPod.Name)
 	resultErr := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		pod, err := n.watchFactory.GetPod(origPod.Namespace, origPod.Name)
+		pod, err := nnci.watchFactory.GetPod(origPod.Namespace, origPod.Name)
 		if err != nil {
 			return err
 		}
@@ -153,7 +170,7 @@ func (n *OvnNode) updatePodDPUConnStatusWithRetry(origPod *kapi.Pod,
 		if err != nil {
 			return err
 		}
-		return n.Kube.UpdatePod(cpod)
+		return nnci.Kube.UpdatePod(cpod)
 	})
 	if resultErr != nil {
 		return fmt.Errorf("failed to update %s annotation for %s: %v", util.DPUConnetionStatusAnnot, podDesc, resultErr)
@@ -162,9 +179,10 @@ func (n *OvnNode) updatePodDPUConnStatusWithRetry(origPod *kapi.Pod,
 }
 
 // addRepPort adds the representor of the VF to the ovs bridge
-func (n *OvnNode) addRepPort(pod *kapi.Pod, vfRepName string, ifInfo *cni.PodInterfaceInfo, podLister corev1listers.PodLister, kclient kubernetes.Interface) error {
+func (nnci *NodeNetworkControllerInfo) addRepPort(pod *kapi.Pod, vfRepName string, ifInfo *cni.PodInterfaceInfo, podLister corev1listers.PodLister, kclient kubernetes.Interface) error {
 	klog.Infof("Adding VF representor %s", vfRepName)
-	dpuCD, err := util.UnmarshalPodDPUConnDetails(pod.Annotations, types.DefaultNetworkName)
+	nadName := ifInfo.NadName
+	dpuCD, err := util.UnmarshalPodDPUConnDetails(pod.Annotations, nadName)
 	if err != nil {
 		return fmt.Errorf("failed to get dpu annotation. %v", err)
 	}
@@ -172,41 +190,41 @@ func (n *OvnNode) addRepPort(pod *kapi.Pod, vfRepName string, ifInfo *cni.PodInt
 	err = cni.ConfigureOVS(context.TODO(), pod.Namespace, pod.Name, vfRepName, ifInfo, dpuCD.SandboxId, podLister, kclient)
 	if err != nil {
 		// Note(adrianc): we are lenient with cleanup in this method as pod is going to be retried anyway.
-		_ = n.delRepPort(vfRepName)
+		_ = nnci.delRepPort(vfRepName)
 		return err
 	}
 	klog.Infof("Port %s added to bridge br-int", vfRepName)
 
 	link, err := util.GetNetLinkOps().LinkByName(vfRepName)
 	if err != nil {
-		_ = n.delRepPort(vfRepName)
+		_ = nnci.delRepPort(vfRepName)
 		return fmt.Errorf("failed to get link device for interface %s", vfRepName)
 	}
 
 	if err = util.GetNetLinkOps().LinkSetMTU(link, ifInfo.MTU); err != nil {
-		_ = n.delRepPort(vfRepName)
+		_ = nnci.delRepPort(vfRepName)
 		return fmt.Errorf("failed to setup representor port. failed to set MTU for interface %s", vfRepName)
 	}
 
 	if err = util.GetNetLinkOps().LinkSetUp(link); err != nil {
-		_ = n.delRepPort(vfRepName)
+		_ = nnci.delRepPort(vfRepName)
 		return fmt.Errorf("failed to setup representor port. failed to set link up for interface %s", vfRepName)
 	}
 
 	// Update connection-status annotation
 	// TODO(adrianc): we should update Status in case of error as well
 	connStatus := util.DPUConnectionStatus{Status: util.DPUConnectionStatusReady, Reason: ""}
-	err = n.updatePodDPUConnStatusWithRetry(pod, &connStatus)
+	err = nnci.updatePodDPUConnStatusWithRetry(pod, &connStatus)
 	if err != nil {
 		_ = util.GetNetLinkOps().LinkSetDown(link)
-		_ = n.delRepPort(vfRepName)
+		_ = nnci.delRepPort(vfRepName)
 		return fmt.Errorf("failed to setup representor port. failed to set pod annotations. %v", err)
 	}
 	return nil
 }
 
 // delRepPort delete the representor of the VF from the ovs bridge
-func (n *OvnNode) delRepPort(vfRepName string) error {
+func (nnci *NodeNetworkControllerInfo) delRepPort(vfRepName string) error {
 	//TODO(adrianc): handle: clearPodBandwidth(pr.SandboxID), pr.deletePodConntrack()
 	klog.Infof("Delete VF representor %s port", vfRepName)
 	// Set link down for representor port
