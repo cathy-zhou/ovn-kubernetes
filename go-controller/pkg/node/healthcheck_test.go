@@ -131,7 +131,7 @@ var _ = Describe("Healthcheck tests", func() {
 					Output: "",
 					Err:    nil,
 				})
-				checkForStaleOVSRepresentorInterfaces(nodeName, factoryMock)
+				checkForStaleOVSRepresentorInterfaces((*util.NetNameInfo)(nil), nodeName, factoryMock)
 				Expect(execMock.CalledMatchesExpected()).To(BeTrue(), execMock.ErrorDesc)
 			})
 		})
@@ -145,7 +145,7 @@ var _ = Describe("Healthcheck tests", func() {
 						"pod-b-ifc,sandbox=123abcfaa iface-id=b-ns_b-pod\n",
 					Err: nil,
 				})
-				checkForStaleOVSRepresentorInterfaces(nodeName, factoryMock)
+				checkForStaleOVSRepresentorInterfaces((*util.NetNameInfo)(nil), nodeName, factoryMock)
 				Expect(execMock.CalledMatchesExpected()).To(BeTrue(), execMock.ErrorDesc)
 			})
 		})

@@ -640,7 +640,7 @@ func (n *DefaultNodeNetworkController) Start(ctx context.Context) error {
 		// start health check to ensure there are no stale OVS internal ports
 		go wait.Until(func() {
 			checkForStaleOVSInternalPorts()
-			n.checkForStaleOVSRepresentorInterfaces(n.name, n.watchFactory.(*factory.WatchFactory))
+			checkForStaleOVSRepresentorInterfaces(n.NetInfo, n.name, n.watchFactory.(*factory.WatchFactory))
 		}, time.Minute, n.stopChan)
 		util.SetARPTimeout()
 		err := n.WatchNamespaces()

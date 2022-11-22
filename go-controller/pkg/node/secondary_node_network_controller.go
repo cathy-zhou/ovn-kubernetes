@@ -45,7 +45,7 @@ func (nc *SecondaryNodeNetworkController) Start(ctx context.Context) error {
 		// start health check to ensure there are no stale OVS internal ports
 		go wait.Until(func() {
 			checkForStaleOVSInternalPorts()
-			nc.checkForStaleOVSRepresentorInterfaces(nc.name, nc.watchFactory.(*factory.WatchFactory))
+			checkForStaleOVSRepresentorInterfaces(nc.NetInfo, nc.name, nc.watchFactory.(*factory.WatchFactory))
 		}, time.Minute, nc.stopChan)
 	}
 

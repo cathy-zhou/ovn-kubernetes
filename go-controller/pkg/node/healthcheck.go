@@ -268,12 +268,12 @@ func checkForStaleOVSInternalPorts() {
 // checkForStaleOVSRepresentorInterfaces checks for stale OVS ports backed by Repreresentor interfaces,
 // derive iface-id from pod name and namespace then remove any interfaces assoicated with a sandbox that are
 // not scheduled to the node.
-func (nnci *NodeNetworkControllerInfo) checkForStaleOVSRepresentorInterfaces(nodeName string, wf factory.ObjectCacheInterface) {
+func checkForStaleOVSRepresentorInterfaces(netInfo util.NetInfo, nodeName string, wf factory.ObjectCacheInterface) {
 	// Get all ovn-kuberntes Pod interfaces. these are OVS interfaces that have their external_ids:sandbox set.
 	ovsArgs := []string{"--columns=name,external_ids", "--data=bare", "--no-headings",
 		"--format=csv", "find", "Interface", "external_ids:sandbox!=\"\"", "external_ids:vf-netdev-name!=\"\""}
-	if nnci.IsSecondary() {
-		ovsArgs = append(ovsArgs, fmt.Sprintf("external_ids:%s=%s", types.NetworkNameExternalID, nnci.GetNetworkName()))
+	if netInfo.IsSecondary() {
+		ovsArgs = append(ovsArgs, fmt.Sprintf("external_ids:%s=%s", types.NetworkNameExternalID, netInfo.GetNetworkName()))
 	} else {
 		ovsArgs = append(ovsArgs, fmt.Sprintf("external_ids:%s{=}[]", types.NetworkNameExternalID))
 	}
@@ -333,12 +333,12 @@ func (nnci *NodeNetworkControllerInfo) checkForStaleOVSRepresentorInterfaces(nod
 		if pod.Spec.NodeName != nodeName || !util.PodWantsNetwork(pod) {
 			continue
 		}
-		on, network, err := util.IsNetworkOnPod(pod, nnci.NetInfo)
+		on, network, err := util.IsNetworkOnPod(pod, netInfo)
 		if err != nil || !on {
 			continue
 		}
 		ifaceID := util.GetIfaceId(pod.Namespace, pod.Name)
-		if nnci.IsSecondary() {
+		if netInfo.IsSecondary() {
 			nadName := util.GetNadName(network.Namespace, network.Name)
 			ifaceID = util.GetSecondaryNetworkIfaceId(pod.Namespace, pod.Name, nadName)
 		}

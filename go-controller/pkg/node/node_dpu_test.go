@@ -32,7 +32,7 @@ func genOVSAddPortCmd(hostIfaceName, ifaceID, mac, ip, sandboxID, podUID string)
 		"external_ids:iface-id=%s external_ids:iface-id-ver=%s external_ids:ip_addresses=%s external_ids:sandbox=%s "+
 		"-- --if-exists remove interface %s external_ids network_name "+
 		"-- --if-exists remove interface %s external_ids nad_name",
-		hostIfaceName, hostIfaceName, mac, ifaceID, podUID, ip, sandboxID, hostIfaceName)
+		hostIfaceName, hostIfaceName, mac, ifaceID, podUID, ip, sandboxID, hostIfaceName, hostIfaceName)
 }
 
 func genOVSDelPortCmd(portName string) string {
