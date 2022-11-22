@@ -41,8 +41,6 @@ type PodInterfaceInfo struct {
 	util.PodAnnotation
 	IsSecondary bool
 
-	//util.NetInfo
-
 	MTU                  int    `json:"mtu"`
 	RoutableMTU          int    `json:"routable-mtu"`
 	Ingress              int64  `json:"ingress"`
@@ -50,9 +48,13 @@ type PodInterfaceInfo struct {
 	CheckExtIDs          bool   `json:"check-external-ids"`
 	IsDPUHostMode        bool   `json:"is-dpu-host-mode"`
 	PodUID               string `json:"pod-uid"`
-	NadName              string `json:"nadName"`
 	VfNetdevName         string `json:"vf-netdev-name"`
 	EnableUDPAggregation bool   `json:"enable-udp-aggregation"`
+
+	// network name, for default network, it is "default", otherwise it is net-attach-def's netconf spec name
+	NetName string `json:"netName"`
+	// nadName, for default network, it is "default", otherwise, in the form of net-attach-def's <Namespace>/<Name>
+	NadName string `json:"nadName"`
 }
 
 // Explicit type for CNI commands the server handles
@@ -146,12 +148,14 @@ type PodRequest struct {
 	ctx context.Context
 	// cancel should be called to cancel this request
 	cancel context.CancelFunc
-	// Since the default network to the Pod is always named `default`, we will need
-	// effective names for both the NetConf and Name. Following two fields
-	// captures the same.
-	//effectiveNetName string
+
+	// network information associated with the given netconf
+	netInfo util.NetInfo
+
+	// for ovs interfaces plumbed for secondary networks, their iface-id's prefix is derived from the specific nadName;
+	// also, need to find the pod annotation, dpu pod connection/status annotations of the given nad ("default"
+	// for default network).
 	effectiveNADName string
-	isSecondary      bool
 }
 
 type cniRequestFunc func(request *PodRequest, podLister corev1listers.PodLister, useOVSExternalIDs bool, kclient kubernetes.Interface, kubeAuth *KubeAPIAuth) ([]byte, error)

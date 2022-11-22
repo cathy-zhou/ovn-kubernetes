@@ -3,6 +3,7 @@ package networkControllerManager
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
@@ -66,6 +67,52 @@ func (ncm *nodeNetworkControllerManager) NewSecondaryNetworkController(topoType 
 }
 
 func (cm *nodeNetworkControllerManager) SyncAllSecondaryNetworkControllers(allControllers []SecondaryNetworkController) error {
+	if config.OvnKubeNode.Mode == ovntypes.NodeModeDPUHost {
+		return nil
+	}
+	existingNetworksMap := map[string]bool{}
+	for _, nc := range allControllers {
+		existingNetworksMap[nc.GetNetworkName()] = true
+	}
+
+	// find all non-secondary network OVN-k8s ovs interfaces
+	ovsArgs := []string{"--columns=name,external_ids", "--data=bare", "--no-headings", "--format=csv",
+		"find", "Interface", "external_ids:sandbox!=\"\"",
+		fmt.Sprintf("external_ids:%s!=\"\"", ovntypes.NetworkNameExternalID)}
+
+	// delete all ovs interface of the stale networks
+	out, stderr, err := util.RunOVSVsctl(ovsArgs...)
+	if err != nil {
+		return fmt.Errorf("failed to list ovn-k8s OVS interfaces:, stderr: %q, error: %v", stderr, err)
+	}
+	lines := strings.Split(out, "\n")
+	for _, line := range lines {
+		cols := strings.Split(line, ",")
+		// Note: There are exactly 2 column entries as requested in the ovs query
+		// Col 0: interface name
+		// Col 1: space separated key=val pairs of external_ids attributes
+		if len(cols) < 2 {
+			// unlikely to happen
+			continue
+		}
+		name := strings.TrimSpace(cols[0])
+		for _, attr := range strings.Split(cols[1], " ") {
+			keyVal := strings.SplitN(attr, "=", 2)
+			if len(keyVal) != 2 || keyVal[0] != ovntypes.NetworkNameExternalID {
+				continue
+			}
+			netName := keyVal[1]
+			if _, ok := existingNetworksMap[netName]; !ok {
+				_, stderr, err := util.RunOVSVsctl("--if-exists", "--with-iface", "del-port", name)
+				if err != nil {
+					klog.Errorf("Failed to delete stale ovs interface %q of network %s. stderr: %q, error: %v",
+						name, netName, stderr, err)
+				}
+			}
+			break
+		}
+	}
+
 	return nil
 }
 

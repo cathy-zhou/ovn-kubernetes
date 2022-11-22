@@ -278,8 +278,6 @@ func waitForPodInterface(ctx context.Context, ifInfo *PodInterfaceInfo,
 	mac := ifInfo.MAC.String()
 	ifAddrs := ifInfo.IPs
 	checkExternalIDs := ifInfo.CheckExtIDs
-	//nadName := ifInfo.NadName
-	//annoNadKeyName := util.GetAnnotationKeyFromNadName(nadName, !ifInfo.IsSecondary)
 	if checkExternalIDs {
 		detail = " (ovn-installed)"
 	} else {
@@ -322,7 +320,6 @@ func waitForPodInterface(ctx context.Context, ifInfo *PodInterfaceInfo,
 				}
 			}
 
-			// cathy expect ifInfo.NadName to be nadKeyName
 			if err := checkCancelSandbox(mac, podLister, kclient, namespace, name, ifInfo.NadName, initialPodUID); err != nil {
 				return fmt.Errorf("%v waiting for OVS port binding for %s %v", err, mac, ifAddrs)
 			}

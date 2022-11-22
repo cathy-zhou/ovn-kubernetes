@@ -12,7 +12,6 @@ import (
 
 // updatePodDPUConnDetailsWithRetry update the pod annotion with the givin connection details
 func (pr *PodRequest) updatePodDPUConnDetailsWithRetry(kube kube.Interface, podLister corev1listers.PodLister, dpuConnDetails *util.DPUConnectionDetails) error {
-	// annoNadKeyName := util.GetAnnotationKeyFromNadName(pr.effectiveNADName, !pr.isSecondary)
 	resultErr := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		// Informer cache should not be mutated, so get a copy of the object
 		pod, err := podLister.Pods(pr.PodNamespace).Get(pr.PodName)
@@ -21,7 +20,6 @@ func (pr *PodRequest) updatePodDPUConnDetailsWithRetry(kube kube.Interface, podL
 		}
 
 		cpod := pod.DeepCopy()
-		// Cathy expected pr.effectiveNADName to be nadKeyName
 		cpod.Annotations, err = util.MarshalPodDPUConnDetails(cpod.Annotations, dpuConnDetails, pr.effectiveNADName)
 		if err != nil {
 			return err

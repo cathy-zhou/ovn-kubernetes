@@ -30,7 +30,8 @@ func genOVSAddPortCmd(hostIfaceName, ifaceID, mac, ip, sandboxID, podUID string)
 	return fmt.Sprintf("ovs-vsctl --timeout=30 add-port br-int %s other_config:transient=true "+
 		"-- set interface %s external_ids:attached_mac=%s "+
 		"external_ids:iface-id=%s external_ids:iface-id-ver=%s external_ids:ip_addresses=%s external_ids:sandbox=%s "+
-		"-- --if-exists remove interface %s external_ids network_name",
+		"-- --if-exists remove interface %s external_ids network_name "+
+		"-- --if-exists remove interface %s external_ids nad_name",
 		hostIfaceName, hostIfaceName, mac, ifaceID, podUID, ip, sandboxID, hostIfaceName)
 }
 

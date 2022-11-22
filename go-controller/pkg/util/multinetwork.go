@@ -1,7 +1,6 @@
 package util
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -327,13 +326,21 @@ func newNetConfInfo(netconf *ovncnitypes.NetConf) (NetConfInfo, error) {
 	return netconfInfo, nil
 }
 
-// ParseNADInfo parses config in NAD spec and return a NetAttachDefInfo object
+// ParseNADInfo parses config in NAD spec and return a NetAttachDefInfo object for secondary networks
 func ParseNADInfo(netattachdef *nettypes.NetworkAttachmentDefinition) (NetInfo, NetConfInfo, error) {
 	netconf, err := ParseNetConf(netattachdef)
 	if err != nil {
 		return nil, nil, err
 	}
 
+	netconfInfo, err := newNetConfInfo(netconf)
+	if err != nil {
+		return nil, nil, err
+	}
+	return NewNetInfo(netconf), netconfInfo, nil
+}
+
+func NewNetInfo(netconf *ovncnitypes.NetConf) NetInfo {
 	// default network netInfo is nil
 	nInfo := (*NetNameInfo)(nil)
 	if netconf.IsSecondary {
@@ -342,18 +349,12 @@ func ParseNADInfo(netattachdef *nettypes.NetworkAttachmentDefinition) (NetInfo, 
 			nadNames: &sync.Map{},
 		}
 	}
-	netconfInfo, err := newNetConfInfo(netconf)
-	if err != nil {
-		return nil, nil, err
-	}
-	return nInfo, netconfInfo, nil
+	return nInfo
 }
 
-// ParseNetConf parses config in NAD spec
+// ParseNetConf parses config in NAD spec for secondary networks
 func ParseNetConf(netattachdef *nettypes.NetworkAttachmentDefinition) (*ovncnitypes.NetConf, error) {
-	netconf := &ovncnitypes.NetConf{MTU: config.Default.MTU, Topology: types.Layer3AttachDefTopoType}
-	// looking for network attachment definition that use OVN K8S CNI only
-	err := json.Unmarshal([]byte(netattachdef.Spec.Config), &netconf)
+	netconf, err := config.ParseNetConf([]byte(netattachdef.Spec.Config))
 	if err != nil {
 		return nil, fmt.Errorf("error parsing Network Attachment Definition %s/%s: %v", netattachdef.Namespace, netattachdef.Name, err)
 	}
@@ -365,19 +366,6 @@ func ParseNetConf(netattachdef *nettypes.NetworkAttachmentDefinition) (*ovncnity
 	nadName := GetNadName(netattachdef.Namespace, netattachdef.Name)
 	if netconf.NadName != nadName {
 		return nil, fmt.Errorf("net-attach-def name (%s) is inconsistent with config (%s)", nadName, netconf.NadName)
-	}
-
-	if netconf.Name == "" {
-		netconf.Name = netattachdef.Name
-	}
-
-	// validation
-	if !netconf.IsSecondary {
-		netconf.Name = types.DefaultNetworkName
-	} else {
-		if netconf.Name == types.DefaultNetworkName {
-			return nil, fmt.Errorf("netconf name cannot be %s for secondary network net-attach-def", types.DefaultNetworkName)
-		}
 	}
 
 	return netconf, nil

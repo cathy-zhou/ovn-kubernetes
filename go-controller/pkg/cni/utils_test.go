@@ -225,40 +225,40 @@ var _ = Describe("CNI Utils tests", func() {
 		podUID := "4d06bae8-9c38-41f6-945c-f92320e782e4"
 		It("Creates PodInterfaceInfo in NodeModeFull mode", func() {
 			config.OvnKubeNode.Mode = ovntypes.NodeModeFull
-			pif, err := PodAnnotation2PodInfo(podAnnot, false, podUID, "", ovntypes.DefaultNetworkName, config.Default.MTU, false)
+			pif, err := PodAnnotation2PodInfo(podAnnot, false, podUID, "", ovntypes.DefaultNetworkName, (*util.NetNameInfo)(nil), config.Default.MTU)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pif.IsDPUHostMode).To(BeFalse())
 		})
 
 		It("Creates PodInterfaceInfo in NodeModeDPUHost mode", func() {
 			config.OvnKubeNode.Mode = ovntypes.NodeModeDPUHost
-			pif, err := PodAnnotation2PodInfo(podAnnot, false, podUID, "", ovntypes.DefaultNetworkName, config.Default.MTU, false)
+			pif, err := PodAnnotation2PodInfo(podAnnot, false, podUID, "", ovntypes.DefaultNetworkName, (*util.NetNameInfo)(nil), config.Default.MTU)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pif.IsDPUHostMode).To(BeTrue())
 		})
 
 		It("Creates PodInterfaceInfo with checkExtIDs false", func() {
-			pif, err := PodAnnotation2PodInfo(podAnnot, false, podUID, "", ovntypes.DefaultNetworkName, config.Default.MTU, false)
+			pif, err := PodAnnotation2PodInfo(podAnnot, false, podUID, "", ovntypes.DefaultNetworkName, (*util.NetNameInfo)(nil), config.Default.MTU)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pif.CheckExtIDs).To(BeFalse())
 		})
 
 		It("Creates PodInterfaceInfo with checkExtIDs true", func() {
-			pif, err := PodAnnotation2PodInfo(podAnnot, true, podUID, "", ovntypes.DefaultNetworkName, config.Default.MTU, false)
+			pif, err := PodAnnotation2PodInfo(podAnnot, true, podUID, "", ovntypes.DefaultNetworkName, (*util.NetNameInfo)(nil), config.Default.MTU)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pif.CheckExtIDs).To(BeTrue())
 		})
 
 		It("Creates PodInterfaceInfo with EnableUDPAggregation", func() {
 			config.Default.EnableUDPAggregation = true
-			pif, err := PodAnnotation2PodInfo(podAnnot, false, podUID, "", ovntypes.DefaultNetworkName, config.Default.MTU, false)
+			pif, err := PodAnnotation2PodInfo(podAnnot, false, podUID, "", ovntypes.DefaultNetworkName, (*util.NetNameInfo)(nil), config.Default.MTU)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pif.EnableUDPAggregation).To(BeTrue())
 		})
 
 		It("Creates PodInterfaceInfo without EnableUDPAggregation", func() {
 			config.Default.EnableUDPAggregation = false
-			pif, err := PodAnnotation2PodInfo(podAnnot, false, podUID, "", ovntypes.DefaultNetworkName, config.Default.MTU, false)
+			pif, err := PodAnnotation2PodInfo(podAnnot, false, podUID, "", ovntypes.DefaultNetworkName, (*util.NetNameInfo)(nil), config.Default.MTU)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pif.EnableUDPAggregation).To(BeFalse())
 		})

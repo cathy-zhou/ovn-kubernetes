@@ -20,6 +20,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 )
 
 // *** The Server is PRIVATE API between OVN components and may be
@@ -180,16 +181,10 @@ func cniRequestToPodRequest(cr *Request, podLister corev1listers.PodLister, kcli
 	// the first network to the Pod is always named as `default`, so we need
 	// to capture the effective NetConf name and NAD Name
 	//req.effectiveNetName = types.DefaultNetworkName
+	req.netInfo = util.NewNetInfo(conf)
 	req.effectiveNADName = types.DefaultNetworkName
-	req.isSecondary = conf.IsSecondary
-	if conf.IsSecondary {
-		//req.effectiveNetName = conf.Name
-		if conf.NadName == "" {
-			return nil, fmt.Errorf("netAttachDefName must be specified in Network Attachment Definition %s", conf.Name)
-		}
+	if req.netInfo.IsSecondary() {
 		req.effectiveNADName = conf.NadName
-		//} else if conf.NadName != "" {
-		//	req.effectiveNADName = conf.NadName
 	}
 	req.CNIConf = conf
 	req.timestamp = time.Now()

@@ -268,10 +268,17 @@ func checkForStaleOVSInternalPorts() {
 // checkForStaleOVSRepresentorInterfaces checks for stale OVS ports backed by Repreresentor interfaces,
 // derive iface-id from pod name and namespace then remove any interfaces assoicated with a sandbox that are
 // not scheduled to the node.
-func checkForStaleOVSRepresentorInterfaces(nodeName string, wf factory.ObjectCacheInterface) {
+func (nnci *NodeNetworkControllerInfo) checkForStaleOVSRepresentorInterfaces(nodeName string, wf factory.ObjectCacheInterface) {
 	// Get all ovn-kuberntes Pod interfaces. these are OVS interfaces that have their external_ids:sandbox set.
-	out, stderr, err := util.RunOVSVsctl("--columns=name,external_ids", "--data=bare", "--no-headings",
-		"--format=csv", "find", "Interface", "external_ids:sandbox!=\"\"", "external_ids:vf-netdev-name!=\"\"")
+	ovsArgs := []string{"--columns=name,external_ids", "--data=bare", "--no-headings",
+		"--format=csv", "find", "Interface", "external_ids:sandbox!=\"\"", "external_ids:vf-netdev-name!=\"\""}
+	if nnci.IsSecondary() {
+		ovsArgs = append(ovsArgs, fmt.Sprintf("external_ids:%s=%s", types.NetworkNameExternalID, nnci.GetNetworkName()))
+	} else {
+		ovsArgs = append(ovsArgs, fmt.Sprintf("external_ids:%s{=}[]", types.NetworkNameExternalID))
+	}
+
+	out, stderr, err := util.RunOVSVsctl(ovsArgs...)
 	if err != nil {
 		klog.Errorf("Failed to list ovn-k8s OVS interfaces:, stderr: %q, error: %v", stderr, err)
 		return
@@ -318,14 +325,24 @@ func checkForStaleOVSRepresentorInterfaces(nodeName string, wf factory.ObjectCac
 		klog.Errorf("Failed to list pods. %v", err)
 		return
 	}
-	expectedIfaceIdsWithoutPrefix := make(map[string]bool)
+	expectedIfaceIds := make(map[string]bool)
 	for _, pod := range pods {
-		if pod.Spec.NodeName == nodeName && util.PodWantsNetwork(pod) {
-			// Note: wf (WatchFactory) *usually* returns pods assigned to this node, however we dont rely on it
-			// and add this check to filter out pods assigned to other nodes. (e.g when ovnkube master and node
-			// share the same process)
-			expectedIfaceIdsWithoutPrefix[util.GetIfaceId(pod.Namespace, pod.Name)] = true
+		// Note: wf (WatchFactory) *usually* returns pods assigned to this node, however we dont rely on it
+		// and add this check to filter out pods assigned to other nodes. (e.g when ovnkube master and node
+		// share the same process)
+		if pod.Spec.NodeName != nodeName || !util.PodWantsNetwork(pod) {
+			continue
 		}
+		on, network, err := util.IsNetworkOnPod(pod, nnci.NetInfo)
+		if err != nil || !on {
+			continue
+		}
+		ifaceID := util.GetIfaceId(pod.Namespace, pod.Name)
+		if nnci.IsSecondary() {
+			nadName := util.GetNadName(network.Namespace, network.Name)
+			ifaceID = util.GetSecondaryNetworkIfaceId(pod.Namespace, pod.Name, nadName)
+		}
+		expectedIfaceIds[ifaceID] = true
 	}
 
 	// Remove any stale representor ports
@@ -336,19 +353,7 @@ func checkForStaleOVSRepresentorInterfaces(nodeName string, wf factory.ObjectCac
 				"skipping cleanup check for interface", ifaceInfo.Name)
 			continue
 		}
-		prefix := ""
-		nadName, ok := ifaceInfo.Attributes[types.NetworkNameExternalID]
-		if ok {
-			prefix = util.GetSecondaryNetworkPrefix(nadName)
-			if !strings.HasPrefix(ifaceId, prefix) {
-				klog.Warningf("iface-id of OVS interface %s for nad %s is invalid: %s", ifaceInfo.Name,
-					nadName, ifaceId)
-				continue
-			}
-			ifaceId = strings.TrimPrefix(ifaceId, prefix)
-		}
-
-		if _, ok := expectedIfaceIdsWithoutPrefix[ifaceId]; !ok {
+		if _, ok := expectedIfaceIds[ifaceId]; !ok {
 			klog.Warningf("Found stale OVS Interface, deleting OVS Port with interface %s", ifaceInfo.Name)
 			_, stderr, err := util.RunOVSVsctl("--if-exists", "--with-iface", "del-port", ifaceInfo.Name)
 			if err != nil {
@@ -358,12 +363,6 @@ func checkForStaleOVSRepresentorInterfaces(nodeName string, wf factory.ObjectCac
 			}
 		}
 	}
-}
-
-// checkForStaleOVSInterfaces periodically checks for stale OVS interfaces
-func checkForStaleOVSInterfaces(nodeName string, wf factory.ObjectCacheInterface) {
-	checkForStaleOVSInternalPorts()
-	checkForStaleOVSRepresentorInterfaces(nodeName, wf)
 }
 
 type openflowManager struct {

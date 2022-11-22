@@ -137,8 +137,6 @@ func (pr *PodRequest) cmdAdd(kubeAuth *KubeAPIAuth, podLister corev1listers.PodL
 	}
 	// Get the IP address and MAC address of the pod
 	// for DPU, ensure connection-details is present
-	// annoNadKeyName := util.GetAnnotationKeyFromNadName(pr.effectiveNADName, !pr.isSecondary)
-	// Cathy expected pr.effectiveNADName to be nadKeyName
 	podUID, annotations, err := GetPodAnnotations(pr.ctx, podLister, kclient, namespace, podName,
 		pr.effectiveNADName, annotCondFn)
 	if err != nil {
@@ -147,19 +145,8 @@ func (pr *PodRequest) cmdAdd(kubeAuth *KubeAPIAuth, podLister corev1listers.PodL
 	if err := pr.checkOrUpdatePodUID(podUID); err != nil {
 		return nil, err
 	}
-	//netPrefix := ""
-	//if pr.CNIConf.IsSecondary {
-	//	netPrefix = util.GetSecondaryNetworkPrefix(pr.effectiveNetName)
-	//}
-	//netInfo := util.NetInfo{NetName: pr.effectiveNetName, Prefix: netPrefix, IsSecondary: pr.CNIConf.IsSecondary}
-	mtu := pr.CNIConf.MTU
-	if mtu == 0 {
-		mtu = config.Default.MTU
-	}
-	// cathy expected pr.effectiveNADName to be nadKeyName
 	podInterfaceInfo, err := PodAnnotation2PodInfo(annotations, useOVSExternalIDs, pr.PodUID, vfNetdevName,
-		//pr.effectiveNADName, mtu, netInfo)
-		pr.effectiveNADName, mtu, pr.CNIConf.IsSecondary)
+		pr.effectiveNADName, pr.netInfo, pr.CNIConf.MTU)
 	if err != nil {
 		return nil, err
 	}
@@ -196,8 +183,6 @@ func (pr *PodRequest) cmdDel(podLister corev1listers.PodLister, kclient kubernet
 				klog.Warningf("Failed to get pod %s/%s: %v", pr.PodNamespace, pr.PodName, err)
 				return response, nil
 			}
-			// Cathy expected pr.effectiveNADName to be nadKeyName
-			// annoNadKeyName := util.GetAnnotationKeyFromNadName(pr.effectiveNADName, !pr.isSecondary)
 			dpuCD, err := util.UnmarshalPodDPUConnDetails(pod.Annotations, pr.effectiveNADName)
 			if err != nil {
 				klog.Warningf("Failed to get DPU connection details annotation for pod %s/%s nad %s: %v", pr.PodNamespace,
@@ -209,9 +194,9 @@ func (pr *PodRequest) cmdDel(podLister corev1listers.PodLister, kclient kubernet
 			// Find the the hostInterface name
 			condString := "external-ids:sandbox=" + pr.SandboxID
 			if pr.CNIConf.IsSecondary {
-				condString += " external_ids:network_name=" + pr.effectiveNADName
+				condString += fmt.Sprintf(" external_ids:%s=%s", types.NadNameExternalID, pr.effectiveNADName)
 			} else {
-				condString += " external_ids:network_name{=}[]"
+				condString += fmt.Sprintf(" external_ids:%s{=}[]", types.NadNameExternalID)
 			}
 			ovsIfNames, err := ovsFind("Interface", "name", condString)
 			if err != nil || len(ovsIfNames) != 1 {

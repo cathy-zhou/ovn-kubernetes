@@ -70,7 +70,7 @@ func (nnci *NodeNetworkControllerInfo) watchPodsDPU(isOvnUpEnabled bool) (*facto
 					mtu = nnci.GetMtu()
 				}
 				podInterfaceInfo, err := cni.PodAnnotation2PodInfo(pod.Annotations, isOvnUpEnabled, string(pod.UID),
-					"", nadName, mtu, nnci.IsSecondary())
+					"", nadName, nnci.NetInfo, mtu)
 				if err != nil {
 					retryPods.Store(pod.UID, nadName)
 					return
@@ -108,7 +108,7 @@ func (nnci *NodeNetworkControllerInfo) watchPodsDPU(isOvnUpEnabled bool) (*facto
 					return
 				}
 				podInterfaceInfo, err := cni.PodAnnotation2PodInfo(pod.Annotations, isOvnUpEnabled, string(pod.UID),
-					"", nadName, nnci.GetMtu(), nnci.IsSecondary())
+					"", nadName, nnci.NetInfo, nnci.GetMtu())
 				if err != nil {
 					return
 				}
@@ -181,8 +181,7 @@ func (nnci *NodeNetworkControllerInfo) updatePodDPUConnStatusWithRetry(origPod *
 // addRepPort adds the representor of the VF to the ovs bridge
 func (nnci *NodeNetworkControllerInfo) addRepPort(pod *kapi.Pod, vfRepName string, ifInfo *cni.PodInterfaceInfo, podLister corev1listers.PodLister, kclient kubernetes.Interface) error {
 	klog.Infof("Adding VF representor %s", vfRepName)
-	nadName := ifInfo.NadName
-	dpuCD, err := util.UnmarshalPodDPUConnDetails(pod.Annotations, nadName)
+	dpuCD, err := util.UnmarshalPodDPUConnDetails(pod.Annotations, ifInfo.NadName)
 	if err != nil {
 		return fmt.Errorf("failed to get dpu annotation. %v", err)
 	}

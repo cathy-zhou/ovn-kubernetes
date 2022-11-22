@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
 )
 
@@ -19,6 +21,7 @@ type SecondaryNodeNetworkController struct {
 	NodeNetworkControllerInfo
 	podHandler *factory.Handler
 	bridgeName string
+	stopChan   chan struct{}
 }
 
 // NewSecondaryNodeNetworkController creates a new OVN controller for creating logical network
@@ -31,28 +34,32 @@ func NewSecondaryNodeNetworkController(bnnc *BaseNodeNetworkController, nInfo ut
 			NetConfInfo:               netconfInfo,
 			NetInfo:                   nInfo,
 		},
+		stopChan: make(chan struct{}),
 	}
 }
 
 // Start starts the default controller; handles all events and creates all needed logical entities
-func (oc *SecondaryNodeNetworkController) Start(ctx context.Context) error {
-	klog.Infof("Start secondary node network controller of network %s", oc.GetNetworkName())
+func (nc *SecondaryNodeNetworkController) Start(ctx context.Context) error {
+	klog.Infof("Start secondary node network controller of network %s", nc.GetNetworkName())
 	if config.OvnKubeNode.Mode != ovntypes.NodeModeDPUHost {
-		if oc.GetTopologyType() == ovntypes.LocalnetAttachDefTopoType {
-			// for dpu mode and full mode
-			err := oc.updateLocalnetOvnBridgeMapping(true)
-			if err != nil {
-				return err
-			}
-		}
+		// start health check to ensure there are no stale OVS internal ports
+		go wait.Until(func() {
+			checkForStaleOVSInternalPorts()
+			nc.checkForStaleOVSRepresentorInterfaces(nc.name, nc.watchFactory.(*factory.WatchFactory))
+		}, time.Minute, nc.stopChan)
+	}
+
+	err := nc.updateLocalnetOvnBridgeMapping(true)
+	if err != nil {
+		return err
 	}
 
 	if config.OvnKubeNode.Mode == ovntypes.NodeModeDPU {
-		handler, err := oc.watchPodsDPU(oc.isOvnUpEnabled)
+		handler, err := nc.watchPodsDPU(nc.isOvnUpEnabled)
 		if err != nil {
 			return err
 		}
-		oc.podHandler = handler
+		nc.podHandler = handler
 		return err
 	}
 	return nil
@@ -60,30 +67,52 @@ func (oc *SecondaryNodeNetworkController) Start(ctx context.Context) error {
 
 // Stop gracefully stops the controller
 // deleteLogicalEntities will never be true for default network
-func (oc *SecondaryNodeNetworkController) Stop(deleteLogicalEntities bool) error {
-	klog.Infof("Stop secondary node network controller of network %s", oc.GetNetworkName())
-	if oc.podHandler != nil {
-		oc.watchFactory.RemovePodHandler(oc.podHandler)
+func (nc *SecondaryNodeNetworkController) Stop(deleteLogicalEntities bool) error {
+	klog.Infof("Stop secondary node network controller of network %s", nc.GetNetworkName())
+	if nc.podHandler != nil {
+		nc.watchFactory.RemovePodHandler(nc.podHandler)
 	}
-	if deleteLogicalEntities && config.OvnKubeNode.Mode != ovntypes.NodeModeDPUHost {
-		if oc.GetTopologyType() == ovntypes.LocalnetAttachDefTopoType {
-			// for dpu mode and full mode
-			err := oc.updateLocalnetOvnBridgeMapping(false)
-			if err != nil {
-				return err
-			}
+	if deleteLogicalEntities {
+		// for dpu mode and full mode
+		err := nc.updateLocalnetOvnBridgeMapping(false)
+		if err != nil {
+			return err
+		}
+		err = nc.DeleteLogicalEntities(nc.GetNetworkName())
+		if err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
 // DeleteLogicalEntities delete logical entities for this network
-func (oc *SecondaryNodeNetworkController) DeleteLogicalEntities(netName string) error {
+func (nc *SecondaryNodeNetworkController) DeleteLogicalEntities(netName string) error {
+	if config.OvnKubeNode.Mode == ovntypes.NodeModeDPUHost {
+		return nil
+	}
+	out, stderr, err := util.RunOVSVsctl("--columns=name", "--data=bare", "--no-headings",
+		"--format=csv", "find", "Interface", "external_ids:sandbox!=\"\"",
+		fmt.Sprintf("external_ids:%s==%s", ovntypes.NetworkNameExternalID, netName))
+	if err != nil {
+		klog.Errorf("Failed to list ovn-k8s OVS interfaces:, stderr: %q, error: %v", stderr, err)
+		return nil
+	}
+
+	names := strings.Split(out, "\n")
+	for _, name := range names {
+		_, stderr, err := util.RunOVSVsctl("--if-exists", "--with-iface", "del-port", name)
+		if err != nil {
+			klog.Errorf("Failed to delete interface %q . stderr: %q, error: %v",
+				name, stderr, err)
+		}
+	}
+
 	return nil
 }
 
-func (oc *SecondaryNodeNetworkController) updateLocalnetOvnBridgeMapping(toAdd bool) error {
-	if oc.GetTopologyType() != ovntypes.LocalnetAttachDefTopoType || config.OvnKubeNode.Mode == ovntypes.NodeModeDPUHost {
+func (nc *SecondaryNodeNetworkController) updateLocalnetOvnBridgeMapping(toAdd bool) error {
+	if nc.GetTopologyType() != ovntypes.LocalnetAttachDefTopoType || config.OvnKubeNode.Mode == ovntypes.NodeModeDPUHost {
 		return nil
 	}
 
@@ -101,26 +130,26 @@ func (oc *SecondaryNodeNetworkController) updateLocalnetOvnBridgeMapping(toAdd b
 		bridgeMapConfs := strings.Split(stdout, ",")
 		for _, bridgeMapConf := range bridgeMapConfs {
 			maps := strings.Split(bridgeMapConf, ":")
-			if len(maps) == 2 && strings.HasPrefix(oc.GetNetworkName(), maps[0]) {
+			if len(maps) == 2 && strings.HasPrefix(nc.GetNetworkName(), maps[0]) {
 				bridgeName = maps[1]
 				break
 			}
 		}
 
 		if bridgeName == "" {
-			klog.V(5).Infof("Localnet network %s is not needed on this node %s", oc.GetNetworkName(), oc.name)
+			klog.V(5).Infof("Localnet network %s is not needed on this node %s", nc.GetNetworkName(), nc.name)
 			return nil
 		}
-		oc.bridgeName = bridgeName
+		nc.bridgeName = bridgeName
 	} else {
-		bridgeName = oc.bridgeName
+		bridgeName = nc.bridgeName
 	}
 
 	// ovn-bridge-mappings maps a physical network name to a local ovs bridge
 	// that provides connectivity to that network. It is in the form of physnet1:br1,physnet2:br2.
 	// Note that there may be multiple ovs bridge mappings, be sure not to override
 	// the mappings for the other physical network
-	networkName := oc.GetPrefix() + ovntypes.LocalNetBridgeName
+	networkName := nc.GetPrefix() + ovntypes.LocalNetBridgeName
 	stdout, stderr, err := util.RunOVSVsctl("--if-exists", "get", "Open_vSwitch", ".",
 		"external_ids:ovn-bridge-mappings")
 	if err != nil {

@@ -639,7 +639,8 @@ func (n *DefaultNodeNetworkController) Start(ctx context.Context) error {
 	if config.OvnKubeNode.Mode != types.NodeModeDPUHost {
 		// start health check to ensure there are no stale OVS internal ports
 		go wait.Until(func() {
-			checkForStaleOVSInterfaces(n.name, n.watchFactory.(*factory.WatchFactory))
+			checkForStaleOVSInternalPorts()
+			n.checkForStaleOVSRepresentorInterfaces(n.name, n.watchFactory.(*factory.WatchFactory))
 		}, time.Minute, n.stopChan)
 		util.SetARPTimeout()
 		err := n.WatchNamespaces()

@@ -343,9 +343,7 @@ func ConfigureOVS(ctx context.Context, namespace, podName, hostIfaceName string,
 	ifInfo *PodInterfaceInfo, sandboxID string, podLister corev1listers.PodLister,
 	kclient kubernetes.Interface) error {
 
-	klog.Infof("ConfigureOVS: namespace: %s, podName: %s, network: %s", namespace, podName, ifInfo.NadName)
-	//annoNadKeyName := util.GetAnnotationKeyFromNadName(ifInfo.NadName, !ifInfo.IsSecondary)
-	// cathy expected ifInfo.NadName to be nadKeyName
+	klog.Infof("ConfigureOVS: namespace: %s, podName: %s, network %s, nad: %s", namespace, podName, ifInfo.NetName, ifInfo.NadName)
 	ifaceID := util.GetIfaceId(namespace, podName)
 	if ifInfo.IsSecondary {
 		ifaceID = util.GetSecondaryNetworkIfaceId(namespace, podName, ifInfo.NadName)
@@ -383,9 +381,11 @@ func ConfigureOVS(ctx context.Context, namespace, podName, hostIfaceName string,
 	}
 
 	if ifInfo.IsSecondary {
-		ovsArgs = append(ovsArgs, fmt.Sprintf("external_ids:%s=%s", types.NetworkNameExternalID, ifInfo.NadName))
+		ovsArgs = append(ovsArgs, fmt.Sprintf("external_ids:%s=%s", types.NetworkNameExternalID, ifInfo.NetName))
+		ovsArgs = append(ovsArgs, fmt.Sprintf("external_ids:%s=%s", types.NadNameExternalID, ifInfo.NadName))
 	} else {
 		ovsArgs = append(ovsArgs, []string{"--", "--if-exists", "remove", "interface", hostIfaceName, "external_ids", types.NetworkNameExternalID}...)
+		ovsArgs = append(ovsArgs, []string{"--", "--if-exists", "remove", "interface", hostIfaceName, "external_ids", types.NadNameExternalID}...)
 	}
 
 	if len(ifInfo.VfNetdevName) != 0 {
