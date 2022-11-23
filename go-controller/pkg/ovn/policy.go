@@ -574,7 +574,7 @@ func (oc *DefaultNetworkController) deleteDefaultDenyPGAndACLs(namespace, policy
 }
 
 // must be called with namespace lock
-func (oc *DefaultNetworkController) updateACLLoggingForPolicy(np *networkPolicy, aclLogging *ACLLoggingLevels) error {
+func (nci *NetworkControllerInfo) updateACLLoggingForPolicy(np *networkPolicy, aclLogging *ACLLoggingLevels) error {
 	np.RLock()
 	defer np.RUnlock()
 	if np.deleted {
@@ -585,12 +585,12 @@ func (oc *DefaultNetworkController) updateACLLoggingForPolicy(np *networkPolicy,
 	p := func(item *nbdb.ACL) bool {
 		return item.ExternalIDs[namespaceACLExtIdKey] == np.namespace && item.ExternalIDs[policyACLExtIdKey] == np.name
 	}
-	return UpdateACLLoggingWithPredicate(oc.nbClient, p, aclLogging)
+	return UpdateACLLoggingWithPredicate(nci.nbClient, p, aclLogging)
 }
 
-func (oc *DefaultNetworkController) updateACLLoggingForDefaultACLs(ns string, nsInfo *namespaceInfo) error {
-	return oc.sharedNetpolPortGroups.DoWithLock(ns, func(pgKey string) error {
-		_, loaded := oc.sharedNetpolPortGroups.Load(pgKey)
+func (nci *NetworkControllerInfo) updateACLLoggingForDefaultACLs(ns string, nsInfo *namespaceInfo) error {
+	return nci.sharedNetpolPortGroups.DoWithLock(ns, func(pgKey string) error {
+		_, loaded := nci.sharedNetpolPortGroups.Load(pgKey)
 		if !loaded {
 			// shared port group doesn't exist, nothing to update
 			return nil
@@ -599,7 +599,7 @@ func (oc *DefaultNetworkController) updateACLLoggingForDefaultACLs(ns string, ns
 			&nsInfo.aclLogging, lportEgressAfterLB)
 		denyIngressACL, _ := buildDenyACLs(ns, defaultDenyPortGroupName(ns, ingressDefaultDenySuffix),
 			&nsInfo.aclLogging, lportIngress)
-		if err := UpdateACLLogging(oc.nbClient, []*nbdb.ACL{denyIngressACL, denyEgressACL}, &nsInfo.aclLogging); err != nil {
+		if err := UpdateACLLogging(nci.nbClient, []*nbdb.ACL{denyIngressACL, denyEgressACL}, &nsInfo.aclLogging); err != nil {
 			return fmt.Errorf("unable to update ACL logging for namespace %s: %w", ns, err)
 		}
 		return nil
@@ -608,21 +608,21 @@ func (oc *DefaultNetworkController) updateACLLoggingForDefaultACLs(ns string, ns
 
 // handleNetPolNamespaceUpdate should update all network policies related to given namespace.
 // Must be called with namespace Lock, should be retriable
-func (oc *DefaultNetworkController) handleNetPolNamespaceUpdate(namespace string, nsInfo *namespaceInfo) error {
+func (nci *NetworkControllerInfo) handleNetPolNamespaceUpdate(namespace string, nsInfo *namespaceInfo) error {
 	// update shared port group ACLs
-	if err := oc.updateACLLoggingForDefaultACLs(namespace, nsInfo); err != nil {
+	if err := nci.updateACLLoggingForDefaultACLs(namespace, nsInfo); err != nil {
 		return fmt.Errorf("failed to update default deny ACLs for namespace %s: %v", namespace, err)
 	}
 	// now update network policy specific ACLs
 	klog.V(5).Infof("Setting network policy ACLs for ns: %s", namespace)
 	for npKey := range nsInfo.relatedNetworkPolicies {
-		err := oc.networkPolicies.DoWithLock(npKey, func(key string) error {
-			np, found := oc.networkPolicies.Load(npKey)
+		err := nci.networkPolicies.DoWithLock(npKey, func(key string) error {
+			np, found := nci.networkPolicies.Load(npKey)
 			if !found {
 				klog.Errorf("Netpol was deleted from cache, but not from namespace related objects")
 				return nil
 			}
-			return oc.updateACLLoggingForPolicy(np, &nsInfo.aclLogging)
+			return nci.updateACLLoggingForPolicy(np, &nsInfo.aclLogging)
 		})
 		if err != nil {
 			return fmt.Errorf("unable to update ACL for network policy %s: %v", npKey, err)

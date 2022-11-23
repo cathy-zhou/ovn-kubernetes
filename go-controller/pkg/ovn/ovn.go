@@ -382,12 +382,12 @@ func (oc *DefaultNetworkController) WatchNodes() error {
 // *) If one of "allow" or "deny" can be parsed and has a valid value, but the other key is not present in the
 //
 //	annotation, then assume that this key should be disabled by setting its nsInfo value to "".
-func (oc *DefaultNetworkController) aclLoggingUpdateNsInfo(annotation string, nsInfo *namespaceInfo) error {
+func (nci *NetworkControllerInfo) aclLoggingUpdateNsInfo(annotation string, nsInfo *namespaceInfo) error {
 	var aclLevels ACLLoggingLevels
 	var errors []error
 
 	// If logging is disabled or if the annotation is "" or "{}", use empty strings. Otherwise, parse the annotation.
-	if oc.aclLoggingEnabled && annotation != "" && annotation != "{}" {
+	if nci.aclLoggingEnabled && annotation != "" && annotation != "{}" {
 		err := json.Unmarshal([]byte(annotation), &aclLevels)
 		if err != nil {
 			// Disable Allow and Deny logging to ensure idempotency.

@@ -412,6 +412,7 @@ func (oc *DefaultNetworkController) deletePodGWRoutesForNamespace(pod *kapi.Pod,
 // If a set of gateways is given, only routes for that gateway are deleted. If no gateways
 // are given, all routes for the namespace are deleted.
 func (oc *DefaultNetworkController) deleteGWRoutesForNamespace(namespace string, matchGWs sets.String) error {
+	// TBD cathy check exGWCacheMutex
 	deleteAll := (matchGWs == nil || matchGWs.Len() == 0)
 	for _, routeInfo := range oc.getRouteInfosForNamespace(namespace) {
 		routeInfo.Lock()

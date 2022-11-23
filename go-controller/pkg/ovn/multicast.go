@@ -87,7 +87,7 @@ func getMcastACLName(nsORpg, mcastSuffix string) string {
 // - one "to-lport" ACL allowing ingress multicast traffic to pods in 'ns'.
 //   This matches only traffic originated by pods in 'ns' (based on the
 //   namespace address set).
-func (oc *DefaultNetworkController) createMulticastAllowPolicy(ns string, nsInfo *namespaceInfo) error {
+func (nci *NetworkControllerInfo) createMulticastAllowPolicy(ns string, nsInfo *namespaceInfo) error {
 	portGroupName := hashedPortGroup(ns)
 
 	aclT := lportEgressAfterLB
@@ -103,14 +103,14 @@ func (oc *DefaultNetworkController) createMulticastAllowPolicy(ns string, nsInfo
 		getDefaultDenyPolicyExternalIDs(aclT))
 
 	acls := []*nbdb.ACL{egressACL, ingressACL}
-	ops, err := libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, nil, acls...)
+	ops, err := libovsdbops.CreateOrUpdateACLsOps(nci.nbClient, nil, acls...)
 	if err != nil {
 		return err
 	}
 
 	// Add all ports from this namespace to the multicast allow group.
 	ports := []*nbdb.LogicalSwitchPort{}
-	pods, err := oc.watchFactory.GetPods(ns)
+	pods, err := nci.watchFactory.GetPods(ns)
 	if err != nil {
 		klog.Warningf("Failed to get pods for namespace %q: %v", ns, err)
 	}
@@ -119,7 +119,7 @@ func (oc *DefaultNetworkController) createMulticastAllowPolicy(ns string, nsInfo
 			continue
 		}
 		portName := util.GetLogicalPortName(pod.Namespace, pod.Name)
-		if portInfo, err := oc.logicalPortCache.get(portName); err != nil {
+		if portInfo, err := nci.logicalPortCache.get(portName); err != nil {
 			klog.Errorf(err.Error())
 		} else {
 			ports = append(ports, &nbdb.LogicalSwitchPort{UUID: portInfo.uuid})
@@ -127,12 +127,12 @@ func (oc *DefaultNetworkController) createMulticastAllowPolicy(ns string, nsInfo
 	}
 
 	pg := libovsdbops.BuildPortGroup(portGroupName, ns, ports, acls)
-	ops, err = libovsdbops.CreateOrUpdatePortGroupsOps(oc.nbClient, ops, pg)
+	ops, err = libovsdbops.CreateOrUpdatePortGroupsOps(nci.nbClient, ops, pg)
 	if err != nil {
 		return err
 	}
 
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
+	_, err = libovsdbops.TransactAndCheck(nci.nbClient, ops)
 	if err != nil {
 		return err
 	}

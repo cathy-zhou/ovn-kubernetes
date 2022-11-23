@@ -591,6 +591,7 @@ func getEgressFirewallNamespacedName(egressFirewall *egressfirewallapi.EgressFir
 // Return values are: bool - if the egressFirewall's ACL was updated or not, error in case of errors. If a namespace
 // does not contain an egress firewall ACL, then this returns false, nil instead of a NotFound error.
 func (oc *DefaultNetworkController) updateACLLoggingForEgressFirewall(egressFirewallNamespace string, nsInfo *namespaceInfo) (bool, error) {
+	// TBD cathy check egressFirewalls
 	// Retrieve the egress firewall object from cache and lock it.
 	obj, loaded := oc.egressFirewalls.Load(egressFirewallNamespace)
 	if !loaded {
