@@ -21,6 +21,7 @@ import (
 )
 
 type gressPolicy struct {
+	NetworkControllerNetInfo
 	policyNamespace string
 	policyName      string
 	policyType      knet.PolicyType
@@ -75,15 +76,16 @@ func (pp *portPolicy) getL4Match() (string, error) {
 	return foundProtocol, nil
 }
 
-func newGressPolicy(policyType knet.PolicyType, idx int, namespace, name string) *gressPolicy {
+func newGressPolicy(policyType knet.PolicyType, idx int, namespace, name string, netInfo util.NetInfo) *gressPolicy {
 	return &gressPolicy{
-		policyNamespace:   namespace,
-		policyName:        name,
-		policyType:        policyType,
-		idx:               idx,
-		peerV4AddressSets: &sync.Map{},
-		peerV6AddressSets: &sync.Map{},
-		portPolicies:      make([]*portPolicy, 0),
+		NetworkControllerNetInfo: NetworkControllerNetInfo{NetInfo: netInfo},
+		policyNamespace:          namespace,
+		policyName:               name,
+		policyType:               policyType,
+		idx:                      idx,
+		peerV4AddressSets:        &sync.Map{},
+		peerV6AddressSets:        &sync.Map{},
+		portPolicies:             make([]*portPolicy, 0),
 	}
 }
 
@@ -151,7 +153,7 @@ func (gp *gressPolicy) addPeerPods(pods ...*v1.Pod) error {
 	}
 	ips := make([]net.IP, 0, len(pods)*podIPFactor)
 	for _, pod := range pods {
-		podIPs, err := util.GetPodIPsOfNetwork(pod, &util.DefaultNetInfo{})
+		podIPs, err := util.GetPodIPsOfNetwork(pod, gp.NetInfo)
 		if err != nil {
 			return err
 		}
@@ -163,7 +165,7 @@ func (gp *gressPolicy) addPeerPods(pods ...*v1.Pod) error {
 
 // must be called with network policy read lock
 func (gp *gressPolicy) deletePeerPod(pod *v1.Pod) error {
-	ips, err := util.GetPodIPsOfNetwork(pod, &util.DefaultNetInfo{})
+	ips, err := util.GetPodIPsOfNetwork(pod, gp.NetInfo)
 	if err != nil {
 		return err
 	}
@@ -268,8 +270,8 @@ func (gp *gressPolicy) getMatchFromIPBlock(lportMatch, l4Match string) []string 
 // This function is safe for concurrent use, doesn't require additional synchronization
 func (gp *gressPolicy) addNamespaceAddressSet(name string) bool {
 	v4HashName, v6HashName := addressset.MakeAddressSetHashNames(name)
-	v4HashName = "$" + v4HashName
-	v6HashName = "$" + v6HashName
+	v4HashName = "$" + gp.GetNetworkScopedName(v4HashName)
+	v6HashName = "$" + gp.GetNetworkScopedName(v6HashName)
 
 	v4NoUpdate := true
 	v6NoUpdate := true
@@ -292,8 +294,8 @@ func (gp *gressPolicy) addNamespaceAddressSet(name string) bool {
 // This function is safe for concurrent use, doesn't require additional synchronization
 func (gp *gressPolicy) delNamespaceAddressSet(name string) bool {
 	v4HashName, v6HashName := addressset.MakeAddressSetHashNames(name)
-	v4HashName = "$" + v4HashName
-	v6HashName = "$" + v6HashName
+	v4HashName = "$" + gp.GetNetworkScopedName(v4HashName)
+	v6HashName = "$" + gp.GetNetworkScopedName(v6HashName)
 
 	v4Update := false
 	v6Update := false
@@ -316,10 +318,12 @@ func (gp *gressPolicy) delNamespaceAddressSet(name string) bool {
 // by the parent NetworkPolicy)
 // buildLocalPodACLs is safe for concurrent use, since it only uses gressPolicy fields that don't change
 // since creation, or are safe for concurrent use like peerVXAddressSets
+// Note that portGroupName is portGroup's name without network scope prefix
 func (gp *gressPolicy) buildLocalPodACLs(portGroupName string, aclLogging *ACLLoggingLevels) []*nbdb.ACL {
 	l3Match := gp.getL3MatchFromAddressSet()
 	var lportMatch string
 	var cidrMatches []string
+	portGroupName = gp.GetNetworkScopedName(portGroupName)
 	if gp.policyType == knet.PolicyTypeIngress {
 		lportMatch = fmt.Sprintf("outport == @%s", portGroupName)
 	} else {
@@ -404,7 +408,7 @@ func (gp *gressPolicy) buildACLAllow(match, l4Match string, ipBlockCIDR int, acl
 		policyTypeACLExtIdKey:  string(gp.policyType),
 		policyTypeNum:          policyTypeIndex,
 	}
-	acl := BuildACL(aclName, priority, match, action, aclLogging, aclT, externalIds)
+	acl := gp.BuildACL(aclName, priority, match, action, aclLogging, aclT, externalIds)
 	return acl
 }
 
