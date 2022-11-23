@@ -28,7 +28,6 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	kapi "k8s.io/api/core/v1"
-	knet "k8s.io/api/networking/v1"
 	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	corev1listers "k8s.io/client-go/listers/core/v1"
@@ -95,9 +94,6 @@ type DefaultNetworkController struct {
 
 	// retry framework for pods
 	retryPods *retry.RetryFramework
-
-	// retry framework for network policies
-	retryNetworkPolicies *retry.RetryFramework
 
 	// retry framework for egress firewall
 	retryEgressFirewalls *retry.RetryFramework
@@ -202,42 +198,31 @@ func newDefaultNetworkControllerCommon(bnc *BaseNetworkController,
 func (oc *DefaultNetworkController) initRetryFramework() {
 	// Init the retry framework for pods, namespaces, nodes, network policies, egress firewalls,
 	// egress IP (and dependent namespaces, pods, nodes), cloud private ip config.
-	oc.retryPods = oc.newRetryFrameworkWithParameters(factory.PodType, nil, nil)
-	oc.retryNetworkPolicies = oc.newRetryFrameworkWithParameters(factory.PolicyType, nil, nil)
-	oc.retryNodes = oc.newRetryFrameworkWithParameters(factory.NodeType, nil, nil)
-	oc.retryEgressFirewalls = oc.newRetryFrameworkWithParameters(factory.EgressFirewallType, nil, nil)
-	oc.retryEgressIPs = oc.newRetryFrameworkWithParameters(factory.EgressIPType, nil, nil)
-	oc.retryEgressIPNamespaces = oc.newRetryFrameworkWithParameters(factory.EgressIPNamespaceType, nil, nil)
-	oc.retryEgressIPPods = oc.newRetryFrameworkWithParameters(factory.EgressIPPodType, nil, nil)
-	oc.retryEgressNodes = oc.newRetryFrameworkWithParameters(factory.EgressNodeType, nil, nil)
-	oc.retryCloudPrivateIPConfig = oc.newRetryFrameworkWithParameters(factory.CloudPrivateIPConfigType, nil, nil)
-	oc.retryNamespaces = oc.newRetryFrameworkWithParameters(factory.NamespaceType, nil, nil)
+	oc.retryPods = oc.newRetryFramework(factory.PodType)
+	oc.retryNodes = oc.newRetryFramework(factory.NodeType)
+	oc.retryEgressFirewalls = oc.newRetryFramework(factory.EgressFirewallType)
+	oc.retryEgressIPs = oc.newRetryFramework(factory.EgressIPType)
+	oc.retryEgressIPNamespaces = oc.newRetryFramework(factory.EgressIPNamespaceType)
+	oc.retryEgressIPPods = oc.newRetryFramework(factory.EgressIPPodType)
+	oc.retryEgressNodes = oc.newRetryFramework(factory.EgressNodeType)
+	oc.retryCloudPrivateIPConfig = oc.newRetryFramework(factory.CloudPrivateIPConfigType)
+	oc.retryNamespaces = oc.newRetryFramework(factory.NamespaceType)
+	oc.NetworkControllerInfo.initRetryFramework()
 }
 
-// newRetryFrameworkWithParameters builds and returns a retry framework for the input resource
+// newRetryFramework builds and returns a retry framework for the input resource
 // type and assigns all ovnk-master-specific function attributes in the returned struct;
 // these functions will then be called by the retry logic in the retry package when
 // WatchResource() is called.
-// newRetryFrameworkWithParameters takes as input a resource type (required)
-// and the following optional parameters: a namespace and a label filter for the
-// shared informer, a sync function to process all objects of this type at startup,
-// and resource-specific extra parameters (used now for network-policy-dependant types).
-// In order to create a retry framework for most resource types, newRetryFrameworkMaster is
-// to be preferred, as it calls newRetryFrameworkWithParameters with all optional parameters unset.
-// newRetryFrameworkWithParameters is instead called directly by the watchers that are
-// dynamically created when a network policy is added: PeerNamespaceAndPodSelectorType,
-// PeerPodForNamespaceAndPodSelectorType, PeerNamespaceSelectorType, PeerPodSelectorType.
-func (oc *DefaultNetworkController) newRetryFrameworkWithParameters(
-	objectType reflect.Type,
-	syncFunc func([]interface{}) error,
-	extraParameters interface{}) *retry.RetryFramework {
+func (oc *DefaultNetworkController) newRetryFramework(
+	objectType reflect.Type) *retry.RetryFramework {
 	eventHandler := &defaultNetworkControllerEventHandler{
 		baseHandler:     baseNetworkControllerEventHandler{},
 		objType:         objectType,
 		watchFactory:    oc.watchFactory,
 		oc:              oc,
-		extraParameters: extraParameters, // in use by network policy dynamic watchers
-		syncFunc:        syncFunc,
+		extraParameters: nil, // in use by network policy dynamic watchers
+		syncFunc:        nil,
 	}
 	resourceHandler := &retry.ResourceHandler{
 		HasUpdateFunc:          hasResourceAnUpdateFunc(objectType),
@@ -516,10 +501,10 @@ func (h *defaultNetworkControllerEventHandler) RecordAddEvent(obj interface{}) {
 		klog.V(5).Infof("Recording add event on pod %s/%s", pod.Namespace, pod.Name)
 		h.oc.podRecorder.AddPod(pod.UID)
 		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name)
-	case factory.PolicyType:
-		np := obj.(*knet.NetworkPolicy)
-		klog.V(5).Infof("Recording add event on network policy %s/%s", np.Namespace, np.Name)
-		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
+		//case factory.PolicyType:
+		//	np := obj.(*knet.NetworkPolicy)
+		//	klog.V(5).Infof("Recording add event on network policy %s/%s", np.Namespace, np.Name)
+		//	metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
 	}
 }
 
@@ -530,10 +515,10 @@ func (h *defaultNetworkControllerEventHandler) RecordUpdateEvent(obj interface{}
 		pod := obj.(*kapi.Pod)
 		klog.V(5).Infof("Recording update event on pod %s/%s", pod.Namespace, pod.Name)
 		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name)
-	case factory.PolicyType:
-		np := obj.(*knet.NetworkPolicy)
-		klog.V(5).Infof("Recording update event on network policy %s/%s", np.Namespace, np.Name)
-		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
+		//case factory.PolicyType:
+		//	np := obj.(*knet.NetworkPolicy)
+		//	klog.V(5).Infof("Recording update event on network policy %s/%s", np.Namespace, np.Name)
+		//	metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
 	}
 }
 
@@ -545,10 +530,10 @@ func (h *defaultNetworkControllerEventHandler) RecordDeleteEvent(obj interface{}
 		klog.V(5).Infof("Recording delete event on pod %s/%s", pod.Namespace, pod.Name)
 		h.oc.podRecorder.CleanPod(pod.UID)
 		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name)
-	case factory.PolicyType:
-		np := obj.(*knet.NetworkPolicy)
-		klog.V(5).Infof("Recording delete event on network policy %s/%s", np.Namespace, np.Name)
-		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
+		//case factory.PolicyType:
+		//	np := obj.(*knet.NetworkPolicy)
+		//	klog.V(5).Infof("Recording delete event on network policy %s/%s", np.Namespace, np.Name)
+		//	metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
 	}
 }
 
@@ -559,10 +544,10 @@ func (h *defaultNetworkControllerEventHandler) RecordSuccessEvent(obj interface{
 		pod := obj.(*kapi.Pod)
 		klog.V(5).Infof("Recording success event on pod %s/%s", pod.Namespace, pod.Name)
 		metrics.GetConfigDurationRecorder().End("pod", pod.Namespace, pod.Name)
-	case factory.PolicyType:
-		np := obj.(*knet.NetworkPolicy)
-		klog.V(5).Infof("Recording success event on network policy %s/%s", np.Namespace, np.Name)
-		metrics.GetConfigDurationRecorder().End("networkpolicy", np.Namespace, np.Name)
+		//case factory.PolicyType:
+		//	np := obj.(*knet.NetworkPolicy)
+		//	klog.V(5).Infof("Recording success event on network policy %s/%s", np.Namespace, np.Name)
+		//	metrics.GetConfigDurationRecorder().End("networkpolicy", np.Namespace, np.Name)
 	}
 }
 
@@ -597,18 +582,18 @@ func (h *defaultNetworkControllerEventHandler) AddResource(obj interface{}, from
 		}
 		return h.oc.ensurePod(nil, pod, true)
 
-	case factory.PolicyType:
-		np, ok := obj.(*knet.NetworkPolicy)
-		if !ok {
-			return fmt.Errorf("could not cast %T object to *knet.NetworkPolicy", obj)
-		}
-
-		if err = h.oc.addNetworkPolicy(np); err != nil {
-			klog.Infof("Network Policy add failed for %s/%s, will try again later: %v",
-				np.Namespace, np.Name, err)
-			return err
-		}
-
+	//case factory.PolicyType:
+	//	np, ok := obj.(*knet.NetworkPolicy)
+	//	if !ok {
+	//		return fmt.Errorf("could not cast %T object to *knet.NetworkPolicy", obj)
+	//	}
+	//
+	//	if err = h.oc.addNetworkPolicy(np); err != nil {
+	//		klog.Infof("Network Policy add failed for %s/%s, will try again later: %v",
+	//			np.Namespace, np.Name, err)
+	//		return err
+	//	}
+	//
 	case factory.NodeType:
 		node, ok := obj.(*kapi.Node)
 		if !ok {
@@ -637,29 +622,29 @@ func (h *defaultNetworkControllerEventHandler) AddResource(obj interface{}, from
 			return err
 		}
 
-	case factory.PeerPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerPodSelectorAddUpdate(extraParameters.np, extraParameters.gp, obj)
-
-	case factory.PeerNamespaceAndPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerNamespaceAndPodAdd(extraParameters.np, extraParameters.gp,
-			extraParameters.podSelector, obj)
-
-	case factory.PeerPodForNamespaceAndPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerPodSelectorAddUpdate(extraParameters.np, extraParameters.gp, obj)
-
-	case factory.PeerNamespaceSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerNamespaceSelectorAdd(extraParameters.np, extraParameters.gp, obj)
-
-	case factory.LocalPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handleLocalPodSelectorAddFunc(
-			extraParameters.np,
-			obj)
-
+	//case factory.PeerPodSelectorType:
+	//	extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
+	//	return h.oc.handlePeerPodSelectorAddUpdate(extraParameters.np, extraParameters.gp, obj)
+	//
+	//case factory.PeerNamespaceAndPodSelectorType:
+	//	extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
+	//	return h.oc.handlePeerNamespaceAndPodAdd(extraParameters.np, extraParameters.gp,
+	//		extraParameters.podSelector, obj)
+	//
+	//case factory.PeerPodForNamespaceAndPodSelectorType:
+	//	extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
+	//	return h.oc.handlePeerPodSelectorAddUpdate(extraParameters.np, extraParameters.gp, obj)
+	//
+	//case factory.PeerNamespaceSelectorType:
+	//	extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
+	//	return h.oc.handlePeerNamespaceSelectorAdd(extraParameters.np, extraParameters.gp, obj)
+	//
+	//case factory.LocalPodSelectorType:
+	//	extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
+	//	return h.oc.handleLocalPodSelectorAddFunc(
+	//		extraParameters.np,
+	//		obj)
+	//
 	case factory.EgressFirewallType:
 		var err error
 		egressFirewall := obj.(*egressfirewall.EgressFirewall).DeepCopy()
@@ -765,20 +750,20 @@ func (h *defaultNetworkControllerEventHandler) UpdateResource(oldObj, newObj int
 
 		return h.oc.addUpdateNodeEvent(newNode, &nodeSyncs{nodeSync, clusterRtrSync, mgmtSync, gwSync, hoSync})
 
-	case factory.PeerPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerPodSelectorAddUpdate(extraParameters.np, extraParameters.gp, newObj)
-
-	case factory.PeerPodForNamespaceAndPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerPodSelectorAddUpdate(extraParameters.np, extraParameters.gp, newObj)
-
-	case factory.LocalPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handleLocalPodSelectorAddFunc(
-			extraParameters.np,
-			newObj)
-
+	//case factory.PeerPodSelectorType:
+	//	extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
+	//	return h.oc.handlePeerPodSelectorAddUpdate(extraParameters.np, extraParameters.gp, newObj)
+	//
+	//case factory.PeerPodForNamespaceAndPodSelectorType:
+	//	extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
+	//	return h.oc.handlePeerPodSelectorAddUpdate(extraParameters.np, extraParameters.gp, newObj)
+	//
+	//case factory.LocalPodSelectorType:
+	//	extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
+	//	return h.oc.handleLocalPodSelectorAddFunc(
+	//		extraParameters.np,
+	//		newObj)
+	//
 	case factory.EgressIPType:
 		oldEIP := oldObj.(*egressipv1.EgressIP)
 		newEIP := newObj.(*egressipv1.EgressIP)
@@ -882,13 +867,13 @@ func (h *defaultNetworkControllerEventHandler) DeleteResource(obj, cachedObj int
 		h.oc.logicalPortCache.remove(util.GetLogicalPortName(pod.Namespace, pod.Name))
 		return h.oc.removePod(pod, portInfo)
 
-	case factory.PolicyType:
-		knp, ok := obj.(*knet.NetworkPolicy)
-		if !ok {
-			return fmt.Errorf("could not cast obj of type %T to *knet.NetworkPolicy", obj)
-		}
-		return h.oc.deleteNetworkPolicy(knp)
-
+	//case factory.PolicyType:
+	//	knp, ok := obj.(*knet.NetworkPolicy)
+	//	if !ok {
+	//		return fmt.Errorf("could not cast obj of type %T to *knet.NetworkPolicy", obj)
+	//	}
+	//	return h.oc.deleteNetworkPolicy(knp)
+	//
 	case factory.NodeType:
 		node, ok := obj.(*kapi.Node)
 		if !ok {
@@ -896,28 +881,28 @@ func (h *defaultNetworkControllerEventHandler) DeleteResource(obj, cachedObj int
 		}
 		return h.oc.deleteNodeEvent(node)
 
-	case factory.PeerPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerPodSelectorDelete(extraParameters.np, extraParameters.gp, obj)
-
-	case factory.PeerNamespaceAndPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerNamespaceAndPodDel(extraParameters.np, extraParameters.gp, obj)
-
-	case factory.PeerPodForNamespaceAndPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerPodSelectorDelete(extraParameters.np, extraParameters.gp, obj)
-
-	case factory.PeerNamespaceSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerNamespaceSelectorDel(extraParameters.np, extraParameters.gp, obj)
-
-	case factory.LocalPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handleLocalPodSelectorDelFunc(
-			extraParameters.np,
-			obj)
-
+	//case factory.PeerPodSelectorType:
+	//	extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
+	//	return h.oc.handlePeerPodSelectorDelete(extraParameters.np, extraParameters.gp, obj)
+	//
+	//case factory.PeerNamespaceAndPodSelectorType:
+	//	extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
+	//	return h.oc.handlePeerNamespaceAndPodDel(extraParameters.np, extraParameters.gp, obj)
+	//
+	//case factory.PeerPodForNamespaceAndPodSelectorType:
+	//	extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
+	//	return h.oc.handlePeerPodSelectorDelete(extraParameters.np, extraParameters.gp, obj)
+	//
+	//case factory.PeerNamespaceSelectorType:
+	//	extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
+	//	return h.oc.handlePeerNamespaceSelectorDel(extraParameters.np, extraParameters.gp, obj)
+	//
+	//case factory.LocalPodSelectorType:
+	//	extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
+	//	return h.oc.handleLocalPodSelectorDelFunc(
+	//		extraParameters.np,
+	//		obj)
+	//
 	case factory.EgressFirewallType:
 		egressFirewall := obj.(*egressfirewall.EgressFirewall)
 		if err := h.oc.deleteEgressFirewall(egressFirewall); err != nil {
@@ -977,19 +962,19 @@ func (h *defaultNetworkControllerEventHandler) SyncFunc(objs []interface{}) erro
 		case factory.PodType:
 			syncFunc = h.oc.syncPods
 
-		case factory.PolicyType:
-			syncFunc = h.oc.syncNetworkPolicies
-
+		//case factory.PolicyType:
+		//	syncFunc = h.oc.syncNetworkPolicies
+		//
 		case factory.NodeType:
 			syncFunc = h.oc.syncNodes
 
-		case factory.LocalPodSelectorType,
-			factory.PeerNamespaceAndPodSelectorType,
-			factory.PeerPodSelectorType,
-			factory.PeerPodForNamespaceAndPodSelectorType,
-			factory.PeerNamespaceSelectorType:
-			syncFunc = nil
-
+		//case factory.LocalPodSelectorType,
+		//	factory.PeerNamespaceAndPodSelectorType,
+		//	factory.PeerPodSelectorType,
+		//	factory.PeerPodForNamespaceAndPodSelectorType,
+		//	factory.PeerNamespaceSelectorType:
+		//	syncFunc = nil
+		//
 		case factory.EgressFirewallType:
 			syncFunc = h.oc.syncEgressFirewall
 

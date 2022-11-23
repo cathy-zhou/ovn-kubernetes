@@ -467,13 +467,13 @@ func (nsm *namespaceManager) getNamespaceLocked(ns string, readOnly bool) (*name
 // ns is the name of the namespace, while namespace is the optional k8s namespace object
 // if no k8s namespace object is provided, this function will attempt to find it via informer cache
 func (oc *DefaultNetworkController) ensureNamespaceLocked(ns string, readOnly bool, namespace *kapi.Namespace) (*namespaceInfo, func(), error) {
-	var ips []net.IP
+	//var ips []net.IP
 
-	// special handling of host network namespace
-	if config.Kubernetes.HostNetworkNamespace != "" && ns == config.Kubernetes.HostNetworkNamespace {
-		ips = oc.getAllHostNamespaceAddresses(ns)
-	}
-	ips = oc.getAllNamespacePodAddresses(ns)
+	// special handling of host network namespace, bug? TBD cathy
+	//if config.Kubernetes.HostNetworkNamespace != "" && ns == config.Kubernetes.HostNetworkNamespace {
+	//	ips = oc.getAllHostNamespaceAddresses(ns)
+	//}
+	ips := oc.getAllNamespacePodAddresses(ns)
 
 	oc.namespacesMutex.Lock()
 	nsInfo := oc.namespaces[ns]
@@ -602,38 +602,38 @@ func (nsm *namespaceManager) deleteNamespaceLocked(stopChan chan struct{}, ns st
 	return nsInfo
 }
 
-func (oc *DefaultNetworkController) getAllHostNamespaceAddresses(ns string) []net.IP {
-	var ips []net.IP
-	// add the mp0 interface addresses to this namespace.
-	existingNodes, err := oc.watchFactory.GetNodes()
-	if err != nil {
-		klog.Errorf("Failed to get all nodes (%v)", err)
-	} else {
-		ips = make([]net.IP, 0, len(existingNodes))
-		for _, node := range existingNodes {
-			hostSubnets, err := util.ParseNodeHostSubnetAnnotation(node, types.DefaultNetworkName)
-			if err != nil {
-				klog.Warningf("Error parsing host subnet annotation for node %s (%v)",
-					node.Name, err)
-			}
-			for _, hostSubnet := range hostSubnets {
-				mgmtIfAddr := util.GetNodeManagementIfAddr(hostSubnet)
-				ips = append(ips, mgmtIfAddr.IP)
-			}
-			// for shared gateway mode we will use LRP IPs to SNAT host network traffic
-			// so add these to the address set.
-			lrpIPs, err := oc.joinSwIPManager.EnsureJoinLRPIPs(node.Name)
-			if err != nil {
-				klog.Errorf("Failed to get join switch port IP address for node %s: %v", node.Name, err)
-			}
-
-			for _, lrpIP := range lrpIPs {
-				ips = append(ips, lrpIP.IP)
-			}
-		}
-	}
-	return ips
-}
+//func (oc *DefaultNetworkController) getAllHostNamespaceAddresses(ns string) []net.IP {
+//	var ips []net.IP
+//	// add the mp0 interface addresses to this namespace.
+//	existingNodes, err := oc.watchFactory.GetNodes()
+//	if err != nil {
+//		klog.Errorf("Failed to get all nodes (%v)", err)
+//	} else {
+//		ips = make([]net.IP, 0, len(existingNodes))
+//		for _, node := range existingNodes {
+//			hostSubnets, err := util.ParseNodeHostSubnetAnnotation(node, types.DefaultNetworkName)
+//			if err != nil {
+//				klog.Warningf("Error parsing host subnet annotation for node %s (%v)",
+//					node.Name, err)
+//			}
+//			for _, hostSubnet := range hostSubnets {
+//				mgmtIfAddr := util.GetNodeManagementIfAddr(hostSubnet)
+//				ips = append(ips, mgmtIfAddr.IP)
+//			}
+//			// for shared gateway mode we will use LRP IPs to SNAT host network traffic
+//			// so add these to the address set.
+//			lrpIPs, err := oc.joinSwIPManager.EnsureJoinLRPIPs(node.Name)
+//			if err != nil {
+//				klog.Errorf("Failed to get join switch port IP address for node %s: %v", node.Name, err)
+//			}
+//
+//			for _, lrpIP := range lrpIPs {
+//				ips = append(ips, lrpIP.IP)
+//			}
+//		}
+//	}
+//	return ips
+//}
 
 func (nci *NetworkControllerInfo) getAllNamespacePodAddresses(ns string) []net.IP {
 	var ips []net.IP

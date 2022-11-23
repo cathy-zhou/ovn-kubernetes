@@ -915,7 +915,7 @@ func (nci *NetworkControllerInfo) handleLocalPodSelectorDelFunc(np *networkPolic
 // will be executed sequentially first, and an error will be returned if something fails.
 // LocalPodSelectorType uses handleLocalPodSelectorAddFunc on Add and Update,
 // and handleLocalPodSelectorDelFunc on Delete.
-func (oc *DefaultNetworkController) addLocalPodHandler(policy *knet.NetworkPolicy, np *networkPolicy) error {
+func (nci *NetworkControllerInfo) addLocalPodHandler(policy *knet.NetworkPolicy, np *networkPolicy) error {
 	// NetworkPolicy is validated by the apiserver
 	sel, err := metav1.LabelSelectorAsSelector(&policy.Spec.PodSelector)
 	if err != nil {
@@ -926,10 +926,10 @@ func (oc *DefaultNetworkController) addLocalPodHandler(policy *knet.NetworkPolic
 	// Add all local pods in a syncFunction to minimize db ops.
 	syncFunc := func(objs []interface{}) error {
 		// ignore returned error, since any pod that wasn't properly handled will be retried individually.
-		_ = oc.handleLocalPodSelectorAddFunc(np, objs...)
+		_ = nci.handleLocalPodSelectorAddFunc(np, objs...)
 		return nil
 	}
-	retryLocalPods := oc.newRetryFrameworkWithParameters(
+	retryLocalPods := nci.newRetryFrameworkWithParameters(
 		factory.LocalPodSelectorType,
 		syncFunc,
 		&NetworkPolicyExtraParameters{
@@ -971,7 +971,7 @@ type policyHandler struct {
 // If network policy with given key exists, it will try to clean it up first, and return an error if it fails.
 // No need to log network policy key here, because caller of createNetworkPolicy should prepend error message with
 // that information.
-func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPolicy, aclLogging *ACLLoggingLevels) (*networkPolicy, error) {
+func (nci *NetworkControllerInfo) createNetworkPolicy(policy *knet.NetworkPolicy, aclLogging *ACLLoggingLevels) (*networkPolicy, error) {
 	// To avoid existing connections disruption, make sure to apply allow ACLs before applying deny ACLs.
 	// This requires to start peer handlers before local pod handlers.
 	// 1. Cleanup old policy if it failed to be created
@@ -989,15 +989,15 @@ func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPoli
 	var np *networkPolicy
 	var policyHandlers []policyHandler
 
-	err := oc.networkPolicies.DoWithLock(npKey, func(npKey string) error {
-		oldNP, found := oc.networkPolicies.Load(npKey)
+	err := nci.networkPolicies.DoWithLock(npKey, func(npKey string) error {
+		oldNP, found := nci.networkPolicies.Load(npKey)
 		if found {
 			// 1. Cleanup old policy if it failed to be created
-			if cleanupErr := oc.cleanupNetworkPolicy(oldNP); cleanupErr != nil {
+			if cleanupErr := nci.cleanupNetworkPolicy(oldNP); cleanupErr != nil {
 				return fmt.Errorf("cleanup for retrying network policy create failed: %v", cleanupErr)
 			}
 		}
-		np, found = oc.networkPolicies.LoadOrStore(npKey, NewNetworkPolicy(policy))
+		np, found = nci.networkPolicies.LoadOrStore(npKey, NewNetworkPolicy(policy))
 		if found {
 			// that should never happen, because successful cleanup will delete np from oc.networkPolicies
 			return fmt.Errorf("network policy is found in the system, "+
@@ -1046,7 +1046,7 @@ func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPoli
 			}
 			if hasAnyLabelSelector(ingressJSON.From) {
 				klog.V(5).Infof("Network policy %s with ingress rule %s has a selector", npKey, ingress.policyName)
-				if err = ingress.ensurePeerAddressSet(oc.addressSetFactory); err != nil {
+				if err = ingress.ensurePeerAddressSet(nci.addressSetFactory); err != nil {
 					return err
 				}
 			}
@@ -1081,7 +1081,7 @@ func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPoli
 
 			if hasAnyLabelSelector(egressJSON.To) {
 				klog.V(5).Infof("Network policy %s with egress rule %s has a selector", npKey, egress.policyName)
-				if err = egress.ensurePeerAddressSet(oc.addressSetFactory); err != nil {
+				if err = egress.ensurePeerAddressSet(nci.addressSetFactory); err != nil {
 					return err
 				}
 			}
@@ -1101,7 +1101,7 @@ func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPoli
 
 		// 3. Add policy to default deny port group
 		// Pods are not added to default deny port groups yet, this is just a preparation step
-		err = oc.addPolicyToDefaultPortGroups(np, aclLogging)
+		err = nci.addPolicyToDefaultPortGroups(np, aclLogging)
 		if err != nil {
 			return err
 		}
@@ -1112,28 +1112,28 @@ func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPoli
 		np.portGroupName = portGroupName
 		ops := []ovsdb.Operation{}
 
-		acls := oc.buildNetworkPolicyACLs(np, aclLogging)
-		ops, err = libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, ops, acls...)
+		acls := nci.buildNetworkPolicyACLs(np, aclLogging)
+		ops, err = libovsdbops.CreateOrUpdateACLsOps(nci.nbClient, ops, acls...)
 		if err != nil {
 			return fmt.Errorf("failed to create ACL ops: %v", err)
 		}
 
 		pg := libovsdbops.BuildPortGroup(np.portGroupName, readableGroupName, nil, acls)
-		ops, err = libovsdbops.CreateOrUpdatePortGroupsOps(oc.nbClient, ops, pg)
+		ops, err = libovsdbops.CreateOrUpdatePortGroupsOps(nci.nbClient, ops, pg)
 		if err != nil {
 			return fmt.Errorf("failed to create ops to add port to a port group: %v", err)
 		}
 
 		var recordOps []ovsdb.Operation
 		var txOkCallBack func()
-		recordOps, txOkCallBack, _, err = metrics.GetConfigDurationRecorder().AddOVN(oc.nbClient, "networkpolicy",
-			policy.Namespace, policy.Name, oc.NetInfo)
+		recordOps, txOkCallBack, _, err = metrics.GetConfigDurationRecorder().AddOVN(nci.nbClient, "networkpolicy",
+			policy.Namespace, policy.Name, nci.NetInfo)
 		if err != nil {
 			klog.Errorf("Failed to record config duration: %v", err)
 		}
 		ops = append(ops, recordOps...)
 
-		_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
+		_, err = libovsdbops.TransactAndCheck(nci.nbClient, ops)
 		if err != nil {
 			return fmt.Errorf("failed to run ovsdb txn to add ports to port group: %v", err)
 		}
@@ -1150,15 +1150,15 @@ func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPoli
 				// For each rule that contains both peer namespace selector and
 				// peer pod selector, we create a watcher for each matching namespace
 				// that populates the addressSet
-				err = oc.addPeerNamespaceAndPodHandler(handler.namespaceSelector, handler.podSelector, handler.gress, np)
+				err = nci.addPeerNamespaceAndPodHandler(handler.namespaceSelector, handler.podSelector, handler.gress, np)
 			} else if handler.namespaceSelector != nil {
 				// For each peer namespace selector, we create a watcher that
 				// populates ingress.peerAddressSets
-				err = oc.addPeerNamespaceHandler(handler.namespaceSelector, handler.gress, np)
+				err = nci.addPeerNamespaceHandler(handler.namespaceSelector, handler.gress, np)
 			} else if handler.podSelector != nil {
 				// For each peer pod selector, we create a watcher that
 				// populates the addressSet
-				err = oc.addPeerPodHandler(handler.podSelector, handler.gress, np)
+				err = nci.addPeerPodHandler(handler.podSelector, handler.gress, np)
 			}
 			if err != nil {
 				return fmt.Errorf("failed to start peer handler: %v", err)
@@ -1166,7 +1166,7 @@ func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPoli
 		}
 
 		// 7. Start local pod handlers, that will update networkPolicy and default deny port groups with selected pods.
-		err = oc.addLocalPodHandler(policy, np)
+		err = nci.addLocalPodHandler(policy, np)
 		if err != nil {
 			return fmt.Errorf("failed to start local pod handler: %v", err)
 		}
@@ -1179,7 +1179,7 @@ func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPoli
 // addNetworkPolicy creates and applies OVN ACLs to pod logical switch
 // ports from Kubernetes NetworkPolicy objects using OVN Port Groups
 // if addNetworkPolicy fails, create or delete operation can be retried
-func (oc *DefaultNetworkController) addNetworkPolicy(policy *knet.NetworkPolicy) error {
+func (nci *NetworkControllerInfo) addNetworkPolicy(policy *knet.NetworkPolicy) error {
 	klog.Infof("Adding network policy %s", getPolicyKey(policy))
 
 	// To not hold nsLock for the whole process on network policy creation, we do the following:
@@ -1192,7 +1192,7 @@ func (oc *DefaultNetworkController) addNetworkPolicy(policy *knet.NetworkPolicy)
 
 	// 1. save required namespace information to use for netpol create,
 	npKey := getPolicyKey(policy)
-	nsInfo, nsUnlock := oc.namespaceManager.getNamespaceLocked(policy.Namespace, true)
+	nsInfo, nsUnlock := nci.namespaceManager.getNamespaceLocked(policy.Namespace, true)
 	if nsInfo == nil {
 		return fmt.Errorf("unable to get namespace for network policy %s: namespace doesn't exist", npKey)
 	}
@@ -1203,19 +1203,19 @@ func (oc *DefaultNetworkController) addNetworkPolicy(policy *knet.NetworkPolicy)
 	var np *networkPolicy
 	var err error
 
-	np, err = oc.createNetworkPolicy(policy, &aclLogging)
+	np, err = nci.createNetworkPolicy(policy, &aclLogging)
 	defer func() {
 		if err != nil {
 			klog.Infof("Create network policy %s failed, try to cleanup", npKey)
 			// try to cleanup network policy straight away
 			// it will be retried later with add/delete network policy handlers if it fails
-			cleanupErr := oc.networkPolicies.DoWithLock(npKey, func(npKey string) error {
-				np, ok := oc.networkPolicies.Load(npKey)
+			cleanupErr := nci.networkPolicies.DoWithLock(npKey, func(npKey string) error {
+				np, ok := nci.networkPolicies.Load(npKey)
 				if !ok {
 					klog.Infof("Deleting policy %s that is already deleted", npKey)
 					return nil
 				}
-				return oc.cleanupNetworkPolicy(np)
+				return nci.cleanupNetworkPolicy(np)
 			})
 			if cleanupErr != nil {
 				klog.Infof("Cleanup for failed create network policy %s returned an error: %v",
@@ -1229,7 +1229,7 @@ func (oc *DefaultNetworkController) addNetworkPolicy(policy *knet.NetworkPolicy)
 	klog.Infof("Create network policy %s resources completed, update namespace loglevel", npKey)
 
 	// 3. lock namespace
-	nsInfo, nsUnlock = oc.namespaceManager.getNamespaceLocked(policy.Namespace, false)
+	nsInfo, nsUnlock = nci.namespaceManager.getNamespaceLocked(policy.Namespace, false)
 	if nsInfo == nil {
 		// namespace was deleted while we were adding network policy,
 		// try to cleanup network policy
@@ -1244,7 +1244,7 @@ func (oc *DefaultNetworkController) addNetworkPolicy(policy *knet.NetworkPolicy)
 	// network policy only reacts to namespace update ACL log level.
 	// Run handleNetPolNamespaceUpdate sequence, but only for 1 newly added policy.
 	if nsInfo.aclLogging.Deny != aclLogging.Deny {
-		if err := oc.updateACLLoggingForDefaultACLs(policy.Namespace, nsInfo); err != nil {
+		if err := nci.updateACLLoggingForDefaultACLs(policy.Namespace, nsInfo); err != nil {
 			return fmt.Errorf("network policy %s failed to be created: update default deny ACLs failed: %v", npKey, err)
 		} else {
 			klog.Infof("Policy %s: ACL logging setting updated to deny=%s allow=%s",
@@ -1252,7 +1252,7 @@ func (oc *DefaultNetworkController) addNetworkPolicy(policy *knet.NetworkPolicy)
 		}
 	}
 	if nsInfo.aclLogging.Allow != aclLogging.Allow {
-		if err := oc.updateACLLoggingForPolicy(np, &nsInfo.aclLogging); err != nil {
+		if err := nci.updateACLLoggingForPolicy(np, &nsInfo.aclLogging); err != nil {
 			return fmt.Errorf("network policy %s failed to be created: update policy ACLs failed: %v", npKey, err)
 		} else {
 			klog.Infof("Policy %s: ACL logging setting updated to deny=%s allow=%s",
@@ -1432,7 +1432,7 @@ type NetworkPolicyExtraParameters struct {
 // returned if something fails.
 // PeerPodSelectorType uses handlePeerPodSelectorAddUpdate on Add and Update,
 // and handlePeerPodSelectorDelete on Delete.
-func (oc *DefaultNetworkController) addPeerPodHandler(podSelector *metav1.LabelSelector,
+func (nci *NetworkControllerInfo) addPeerPodHandler(podSelector *metav1.LabelSelector,
 	gp *gressPolicy, np *networkPolicy) error {
 
 	// NetworkPolicy is validated by the apiserver; this can't fail.
@@ -1442,11 +1442,11 @@ func (oc *DefaultNetworkController) addPeerPodHandler(podSelector *metav1.LabelS
 	// label selector
 	syncFunc := func(objs []interface{}) error {
 		// ignore returned error, since any pod that wasn't properly handled will be retried individually.
-		_ = oc.handlePeerPodSelectorAddUpdate(np, gp, objs...)
+		_ = nci.handlePeerPodSelectorAddUpdate(np, gp, objs...)
 		return nil
 	}
 	// TBD cathy could to nci's retryFrame
-	retryPeerPods := oc.newRetryFrameworkWithParameters(
+	retryPeerPods := nci.newRetryFrameworkWithParameters(
 		factory.PeerPodSelectorType,
 		syncFunc,
 		&NetworkPolicyExtraParameters{
@@ -1464,7 +1464,7 @@ func (oc *DefaultNetworkController) addPeerPodHandler(podSelector *metav1.LabelS
 	return nil
 }
 
-func (oc *DefaultNetworkController) handlePeerNamespaceAndPodAdd(np *networkPolicy, gp *gressPolicy,
+func (nci *NetworkControllerInfo) handlePeerNamespaceAndPodAdd(np *networkPolicy, gp *gressPolicy,
 	podSelector labels.Selector, obj interface{}) error {
 	namespace := obj.(*kapi.Namespace)
 	np.RLock()
@@ -1481,10 +1481,10 @@ func (oc *DefaultNetworkController) handlePeerNamespaceAndPodAdd(np *networkPoli
 	// start watching pods in this namespace and selected by the label selector in extraParameters.podSelector
 	syncFunc := func(objs []interface{}) error {
 		// ignore returned error, since any pod that wasn't properly handled will be retried individually.
-		_ = oc.handlePeerPodSelectorAddUpdate(np, gp, objs...)
+		_ = nci.handlePeerPodSelectorAddUpdate(np, gp, objs...)
 		return nil
 	}
-	retryPeerPods := oc.newRetryFrameworkWithParameters(
+	retryPeerPods := nci.newRetryFrameworkWithParameters(
 		factory.PeerPodForNamespaceAndPodSelectorType,
 		syncFunc,
 		&NetworkPolicyExtraParameters{
@@ -1506,7 +1506,7 @@ func (oc *DefaultNetworkController) handlePeerNamespaceAndPodAdd(np *networkPoli
 	np.RLock()
 	locked = true
 	if np.deleted {
-		oc.watchFactory.RemovePodHandler(podHandler)
+		nci.watchFactory.RemovePodHandler(podHandler)
 		return nil
 	}
 	np.namespacedPodHandlers.Store(namespace.Name, podHandler)
@@ -1550,7 +1550,7 @@ func (nci *NetworkControllerInfo) handlePeerNamespaceAndPodDel(np *networkPolicy
 // returned if something fails.
 // PeerNamespaceAndPodSelectorType uses handlePeerNamespaceAndPodAdd on Add,
 // and handlePeerNamespaceAndPodDel on Delete.
-func (oc *DefaultNetworkController) addPeerNamespaceAndPodHandler(namespaceSelector *metav1.LabelSelector,
+func (nci *NetworkControllerInfo) addPeerNamespaceAndPodHandler(namespaceSelector *metav1.LabelSelector,
 	podSelector *metav1.LabelSelector, gp *gressPolicy, np *networkPolicy) error {
 	// NetworkPolicy is validated by the apiserver; this can't fail.
 	nsSel, _ := metav1.LabelSelectorAsSelector(namespaceSelector)
@@ -1559,7 +1559,7 @@ func (oc *DefaultNetworkController) addPeerNamespaceAndPodHandler(namespaceSelec
 	// start watching namespaces selected by the namespace selector nsSel;
 	// upon namespace add event, start watching pods in that namespace selected
 	// by the label selector podSel
-	retryPeerNamespaces := oc.newRetryFrameworkWithParameters(
+	retryPeerNamespaces := nci.newRetryFrameworkWithParameters(
 		factory.PeerNamespaceAndPodSelectorType,
 		nil,
 		&NetworkPolicyExtraParameters{
@@ -1663,7 +1663,7 @@ func (nci *NetworkControllerInfo) peerNamespaceUpdate(np *networkPolicy, gp *gre
 // returned if something fails.
 // PeerNamespaceSelectorType uses handlePeerNamespaceSelectorAdd on Add,
 // and handlePeerNamespaceSelectorDel on Delete.
-func (oc *DefaultNetworkController) addPeerNamespaceHandler(
+func (nci *NetworkControllerInfo) addPeerNamespaceHandler(
 	namespaceSelector *metav1.LabelSelector,
 	gress *gressPolicy, np *networkPolicy) error {
 
@@ -1673,10 +1673,10 @@ func (oc *DefaultNetworkController) addPeerNamespaceHandler(
 	// start watching namespaces selected by the namespace selector
 	syncFunc := func(objs []interface{}) error {
 		// ignore returned error, since any namespace that wasn't properly handled will be retried individually.
-		_ = oc.handlePeerNamespaceSelectorAdd(np, gress, objs...)
+		_ = nci.handlePeerNamespaceSelectorAdd(np, gress, objs...)
 		return nil
 	}
-	retryPeerNamespaces := oc.newRetryFrameworkWithParameters(
+	retryPeerNamespaces := nci.newRetryFrameworkWithParameters(
 		factory.PeerNamespaceSelectorType,
 		syncFunc,
 		&NetworkPolicyExtraParameters{gp: gress, np: np},
