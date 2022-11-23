@@ -143,13 +143,13 @@ func NewSecondaryLayer2NetworkController(cnci *CommonNetworkControllerInfo, netI
 		BaseSecondaryNetworkController: BaseSecondaryNetworkController{
 			BaseNetworkController: BaseNetworkController{
 				CommonNetworkControllerInfo: *cnci,
+				NetworkControllerNetInfo:    NetworkControllerNetInfo{NetInfo: netInfo},
 				NetConfInfo:                 netconfInfo,
-				NetInfo:                     netInfo,
 				lsManager:                   lsm.NewL2SwitchManager(),
 				logicalPortCache:            newPortCache(stopChan),
 				namespaces:                  make(map[string]*namespaceInfo),
 				namespacesMutex:             sync.Mutex{},
-				addressSetFactory:           addressset.NewOvnAddressSetFactory(cnci.nbClient),
+				addressSetFactory:           addressset.NewOvnAddressSetFactory(cnci.nbClient, netInfo),
 				stopChan:                    stopChan,
 			},
 		},
@@ -224,6 +224,11 @@ func (oc *SecondaryLayer2NetworkController) Cleanup(netName string) error {
 		})
 	if err != nil {
 		return fmt.Errorf("failed to get ops for deleting switches of network %s: %v", netName, err)
+	}
+
+	ops, err = cleanupPolicyLogicalEntities(oc.nbClient, ops, netName)
+	if err != nil {
+		return err
 	}
 
 	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)

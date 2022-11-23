@@ -72,6 +72,7 @@ var _ = ginkgo.Describe("OVN Namespace Operations", func() {
 	var (
 		fakeOvn *FakeOVN
 		wg      *sync.WaitGroup
+		nnci    NetworkControllerNetInfo
 	)
 
 	ginkgo.BeforeEach(func() {
@@ -81,6 +82,7 @@ var _ = ginkgo.Describe("OVN Namespace Operations", func() {
 
 		fakeOvn = NewFakeOVN()
 		wg = &sync.WaitGroup{}
+		nnci = NetworkControllerNetInfo{NetInfo: &util.DefaultNetInfo{}}
 	})
 
 	ginkgo.AfterEach(func() {
@@ -106,7 +108,7 @@ var _ = ginkgo.Describe("OVN Namespace Operations", func() {
 			dnsAS, err := fakeOvn.asf.NewAddressSet("dnsname", []net.IP{net.ParseIP("1.1.1.6")})
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			dnsHashName, _ := dnsAS.GetASHashNames()
-			egressFirewallACL := BuildACL(
+			egressFirewallACL := nnci.BuildACL(
 				"aclName",
 				1,
 				"ip4.dst == $"+dnsHashName,
