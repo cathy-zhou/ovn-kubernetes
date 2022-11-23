@@ -6,6 +6,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	"sync"
@@ -24,18 +25,22 @@ func NewSecondaryLocalnetNetworkController(cnci *CommonNetworkControllerInfo, ne
 	netconfInfo util.NetConfInfo) *SecondaryLocalnetNetworkController {
 	stopChan := make(chan struct{})
 
+	ipv4Mode, ipv6Mode := netconfInfo.IPMode()
 	oc := &SecondaryLocalnetNetworkController{
 		BaseSecondaryLayer2NetworkController{
 			BaseSecondaryNetworkController: BaseSecondaryNetworkController{
 				BaseNetworkController: BaseNetworkController{
 					CommonNetworkControllerInfo: *cnci,
-					NetConfInfo:                 netconfInfo,
 					NetInfo:                     netInfo,
+					controllerName:              netInfo.GetNetworkName() + "-network-controller",
+					NetConfInfo:                 netconfInfo,
 					lsManager:                   lsm.NewL2SwitchManager(),
 					logicalPortCache:            newPortCache(stopChan),
 					namespaces:                  make(map[string]*namespaceInfo),
 					namespacesMutex:             sync.Mutex{},
-					addressSetFactory:           addressset.NewOvnAddressSetFactory(cnci.nbClient),
+					addressSetFactory:           addressset.NewOvnAddressSetFactory(cnci.nbClient, ipv4Mode, ipv6Mode),
+					networkPolicies:             syncmap.NewSyncMap[*networkPolicy](),
+					sharedNetpolPortGroups:      syncmap.NewSyncMap[*defaultDenyPortGroups](),
 					stopChan:                    stopChan,
 					wg:                          &sync.WaitGroup{},
 				},

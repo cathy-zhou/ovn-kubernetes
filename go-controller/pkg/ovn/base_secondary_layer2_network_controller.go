@@ -107,6 +107,9 @@ func (h *secondaryLayer2NetworkControllerEventHandler) SyncFunc(objs []interface
 		case factory.PodType:
 			syncFunc = h.oc.syncPodsForSecondaryNetwork
 
+		case factory.NamespaceType:
+			syncFunc = h.oc.syncNamespaces
+
 		default:
 			return fmt.Errorf("no sync function for object type %s", h.objType)
 		}
@@ -131,6 +134,10 @@ type BaseSecondaryLayer2NetworkController struct {
 
 func (oc *BaseSecondaryLayer2NetworkController) initRetryFramework() {
 	oc.retryPods = oc.newRetryFramework(factory.PodType)
+	if oc.doesNetworkRequireIPAM() {
+		oc.retryNamespaces = oc.newRetryFramework(factory.NamespaceType)
+		oc.BaseSecondaryNetworkController.initRetryFramework()
+	}
 }
 
 // newRetryFramework builds and returns a retry framework for the input resource type;
@@ -163,8 +170,14 @@ func (oc *BaseSecondaryLayer2NetworkController) Stop() {
 	close(oc.stopChan)
 	oc.wg.Wait()
 
+	if oc.policyHandler != nil {
+		oc.watchFactory.RemoveMultiNetworkPolicyHandler(oc.policyHandler)
+	}
 	if oc.podHandler != nil {
 		oc.watchFactory.RemovePodHandler(oc.podHandler)
+	}
+	if oc.namespaceHandler != nil {
+		oc.watchFactory.RemoveNamespaceHandler(oc.namespaceHandler)
 	}
 }
 
@@ -182,6 +195,11 @@ func (oc *BaseSecondaryLayer2NetworkController) cleanup(topotype, netName string
 		return fmt.Errorf("failed to get ops for deleting switches of network %s: %v", netName, err)
 	}
 
+	ops, err = cleanupPolicyLogicalEntities(oc.nbClient, ops, netName)
+	if err != nil {
+		return err
+	}
+
 	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
 	if err != nil {
 		return fmt.Errorf("failed to deleting switches of network %s: %v", netName, err)
@@ -194,7 +212,18 @@ func (oc *BaseSecondaryLayer2NetworkController) Run() error {
 	klog.Infof("Starting all the Watchers for network %s ...", oc.GetNetworkName())
 	start := time.Now()
 
+	// WatchNamespaces() should be started first because it has no other
+	// dependencies, and WatchNodes() depends on it
+	if err := oc.WatchNamespaces(); err != nil {
+		return err
+	}
+
 	if err := oc.WatchPods(); err != nil {
+		return err
+	}
+
+	// WatchNetworkPolicy depends on WatchPods and WatchNamespaces
+	if err := oc.WatchNetworkPolicy(); err != nil {
 		return err
 	}
 

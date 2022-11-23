@@ -1,18 +1,22 @@
 package ovn
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"reflect"
 	"time"
 
 	nadapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
+	"github.com/ovn-org/libovsdb/ovsdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	kapi "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/util/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/klog/v2"
 )
 
@@ -47,6 +51,13 @@ func (bsnc *BaseSecondaryNetworkController) AddSecondaryNetworkResourceCommon(ob
 		}
 		return bsnc.ensurePodForSecondaryNetwork(pod, true)
 
+	case factory.NamespaceType:
+		ns, ok := obj.(*kapi.Namespace)
+		if !ok {
+			return fmt.Errorf("could not cast %T object to *kapi.Namespace", obj)
+		}
+		return bsnc.AddNamespaceForSecondaryNetwork(ns)
+
 	default:
 		return fmt.Errorf("object type %s not supported", objType)
 	}
@@ -64,6 +75,10 @@ func (bsnc *BaseSecondaryNetworkController) UpdateSecondaryNetworkResourceCommon
 		newPod := newObj.(*kapi.Pod)
 
 		return bsnc.ensurePodForSecondaryNetwork(newPod, inRetryCache || util.PodScheduled(oldPod) != util.PodScheduled(newPod))
+
+	case factory.NamespaceType:
+		oldNs, newNs := oldObj.(*kapi.Namespace), newObj.(*kapi.Namespace)
+		return bsnc.updateNamespaceForSecondaryNetwork(oldNs, newNs)
 
 	default:
 		return fmt.Errorf("object type %s not supported", objType)
@@ -84,6 +99,10 @@ func (bsnc *BaseSecondaryNetworkController) DeleteSecondaryNetworkResourceCommon
 			portInfoMap = cachedObj.(map[string]*lpInfo)
 		}
 		return bsnc.removePodForSecondaryNetwork(pod, portInfoMap)
+
+	case factory.NamespaceType:
+		ns := obj.(*kapi.Namespace)
+		return bsnc.deleteNamespace4SecondaryNetwork(ns)
 
 	default:
 		return fmt.Errorf("object type %s not supported", objType)
@@ -141,7 +160,7 @@ func (bsnc *BaseSecondaryNetworkController) ensurePodForSecondaryNetwork(pod *ka
 		}
 	}
 	if len(errs) != 0 {
-		return errors.NewAggregate(errs)
+		return kerrors.NewAggregate(errs)
 	}
 	return nil
 }
@@ -159,6 +178,15 @@ func (bsnc *BaseSecondaryNetworkController) addLogicalPortToNetworkForNAD(pod *k
 	ops, lsp, podAnnotation, newlyCreated, err := bsnc.addLogicalPortToNetwork(pod, nadName, network)
 	if err != nil {
 		return err
+	}
+
+	if bsnc.doesNetworkRequireIPAM() {
+		// Ensure the namespace/nsInfo exists
+		addOps, err := bsnc.addPodToNamespaceForSecondaryNetwork(pod.Namespace, podAnnotation.IPs)
+		if err != nil {
+			return err
+		}
+		ops = append(ops, addOps...)
 	}
 
 	recordOps, txOkCallBack, _, err := bsnc.AddConfigDurationRecord("pod", pod.Namespace, pod.Name)
@@ -281,4 +309,155 @@ func (bsnc *BaseSecondaryNetworkController) syncPodsForSecondaryNetwork(pods []i
 		}
 	}
 	return bsnc.deleteStaleLogicalSwitchPorts(expectedLogicalPorts)
+}
+
+// addPodToNamespaceForSecondaryNetwork returns the ops needed to add pod's IP to the namespace's address set.
+func (bsnc *BaseSecondaryNetworkController) addPodToNamespaceForSecondaryNetwork(ns string, ips []*net.IPNet) ([]ovsdb.Operation, error) {
+	var ops []ovsdb.Operation
+	var err error
+	nsInfo, nsUnlock, err := bsnc.ensureNamespaceLockedForSecondaryNetwork(ns, true, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to ensure namespace locked: %v", err)
+	}
+
+	defer nsUnlock()
+
+	if ops, err = nsInfo.addressSet.AddIPsReturnOps(createIPAddressSlice(ips)); err != nil {
+		return nil, err
+	}
+
+	return ops, nil
+}
+
+// AddNamespaceForSecondaryNetwork creates corresponding addressset in ovn db for secondary network
+func (bsnc *BaseSecondaryNetworkController) AddNamespaceForSecondaryNetwork(ns *kapi.Namespace) error {
+	klog.Infof("[%s] adding namespace for network %s", ns.Name, bsnc.GetNetworkName())
+	// Keep track of how long syncs take.
+	start := time.Now()
+	defer func() {
+		klog.Infof("[%s] adding namespace took %v for network %s", ns.Name, time.Since(start), bsnc.GetNetworkName())
+	}()
+
+	_, nsUnlock, err := bsnc.ensureNamespaceLockedForSecondaryNetwork(ns.Name, false, ns)
+	if err != nil {
+		return fmt.Errorf("failed to ensure namespace locked: %v", err)
+	}
+	defer nsUnlock()
+	return nil
+}
+
+// ensureNamespaceLockedForSecondaryNetwork locks namespacesMutex, gets/creates an entry for ns, configures OVN nsInfo, and returns it
+// with its mutex locked.
+// ns is the name of the namespace, while namespace is the optional k8s namespace object
+// if no k8s namespace object is provided, this function will attempt to find it via informer cache
+func (bsnc *BaseSecondaryNetworkController) ensureNamespaceLockedForSecondaryNetwork(ns string, readOnly bool, namespace *kapi.Namespace) (*namespaceInfo, func(), error) {
+	ips := bsnc.getAllNamespacePodAddresses(ns)
+
+	bsnc.namespacesMutex.Lock()
+	nsInfo := bsnc.namespaces[ns]
+	nsInfoExisted := false
+	if nsInfo == nil {
+		nsInfo = &namespaceInfo{
+			relatedNetworkPolicies: map[string]bool{},
+			multicastEnabled:       false,
+		}
+		// we are creating nsInfo and going to set it in namespaces map
+		// so safe to hold the lock while we create and add it
+		defer bsnc.namespacesMutex.Unlock()
+		// create the adddress set for the new namespace
+		var err error
+		nsInfo.addressSet, err = bsnc.createNamespaceAddrSetAllPods(ns, ips)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create address set for namespace: %s, error: %v", ns, err)
+		}
+		bsnc.namespaces[ns] = nsInfo
+	} else {
+		nsInfoExisted = true
+		// if we found an existing nsInfo, do not hold the namespaces lock
+		// while waiting for nsInfo to Lock
+		bsnc.namespacesMutex.Unlock()
+	}
+
+	var unlockFunc func()
+	if readOnly {
+		unlockFunc = func() { nsInfo.RUnlock() }
+		nsInfo.RLock()
+	} else {
+		unlockFunc = func() { nsInfo.Unlock() }
+		nsInfo.Lock()
+	}
+
+	if nsInfoExisted {
+		// Check that the namespace wasn't deleted while we were waiting for the lock
+		bsnc.namespacesMutex.Lock()
+		defer bsnc.namespacesMutex.Unlock()
+		if nsInfo != bsnc.namespaces[ns] {
+			unlockFunc()
+			return nil, nil, fmt.Errorf("namespace %s, was removed during ensure", ns)
+		}
+	}
+
+	// nsInfo and namespace didn't exist, get it from lister
+	if namespace == nil {
+		var err error
+		namespace, err = bsnc.watchFactory.GetNamespace(ns)
+		if err != nil {
+			namespace, err = bsnc.client.CoreV1().Namespaces().Get(context.TODO(), ns, metav1.GetOptions{})
+			if err != nil {
+				klog.Warningf("Unable to find namespace during ensure in informer cache or kube api server. " +
+					"Will defer configuring namespace.")
+			}
+		}
+	}
+
+	if namespace != nil {
+		// if we have the namespace, attempt to configure nsInfo with it
+		if err := bsnc.configureNamespaceCommon(nsInfo, namespace); err != nil {
+			unlockFunc()
+			return nil, nil, fmt.Errorf("failed to configure namespace %s: %v", ns, err)
+		}
+	}
+
+	return nsInfo, unlockFunc, nil
+}
+
+func (bsnc *BaseSecondaryNetworkController) updateNamespaceForSecondaryNetwork(old, newer *kapi.Namespace) error {
+	var errors []error
+	klog.Infof("[%s] updating namespace for network %s", old.Name, bsnc.GetNetworkName())
+
+	nsInfo, nsUnlock := bsnc.getNamespaceLocked(old.Name, false)
+	if nsInfo == nil {
+		klog.Warningf("Update event for unknown namespace %q", old.Name)
+		return nil
+	}
+	defer nsUnlock()
+
+	aclAnnotation := newer.Annotations[util.AclLoggingAnnotation]
+	oldACLAnnotation := old.Annotations[util.AclLoggingAnnotation]
+	// support for ACL logging update, if new annotation is empty, make sure we propagate new setting
+	if aclAnnotation != oldACLAnnotation {
+		if err := bsnc.updateNamespaceAclLogging(old.Name, aclAnnotation, nsInfo); err != nil {
+			errors = append(errors, err)
+		}
+	}
+
+	if err := bsnc.multicastUpdateNamespace(newer, nsInfo); err != nil {
+		errors = append(errors, err)
+	}
+	return kerrors.NewAggregate(errors)
+}
+
+func (bsnc *BaseSecondaryNetworkController) deleteNamespace4SecondaryNetwork(ns *kapi.Namespace) error {
+	klog.Infof("[%s] deleting namespace for network %s", ns.Name, bsnc.GetNetworkName())
+
+	nsInfo := bsnc.deleteNamespaceLocked(ns.Name)
+	if nsInfo == nil {
+		return nil
+	}
+	defer nsInfo.Unlock()
+
+	if err := bsnc.multicastDeleteNamespace(ns, nsInfo); err != nil {
+		return fmt.Errorf("failed to delete multicast nameosace error %v", err)
+	}
+	return nil
 }

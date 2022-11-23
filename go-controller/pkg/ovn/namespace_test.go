@@ -293,12 +293,25 @@ var _ = ginkgo.Describe("OVN Namespace Operations", func() {
 			gwLRPIPs, err := fakeOvn.controller.joinSwIPManager.EnsureJoinLRPIPs(node1.Name)
 			gomega.Expect(len(gwLRPIPs) != 0).To(gomega.BeTrue())
 
+			ginkgo.By("Cathy 1 before WatchNamespaces")
 			err = fakeOvn.controller.WatchNamespaces()
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			fakeOvn.asf.EventuallyExpectEmptyAddressSetExist(hostNetworkNamespace)
+
+			// check the namespace and ensure the address set being created with the right set of IPs in it.
+			// Note that NodeMgmtPortIP may or may not in the hostNetworkNamespace's address set, depends on
+			// if node1's subnet annotation already exists in the informer cache or not when hostNetwork
+			// namespace is handled in WatchNamespaces.
+			ginkgo.By("Cathy 2 after watchNamespaces")
+			allowIPs := make([]string, 0, len(gwLRPIPs)+1)
+			for _, lrpIP := range gwLRPIPs {
+				allowIPs = append(allowIPs, lrpIP.IP.String())
+			}
+			fakeOvn.asf.ExpectAddressSetHasIPs(hostNetworkNamespace, allowIPs)
+			ginkgo.By("Cathy 3 before WatchNodes")
 
 			err = fakeOvn.controller.WatchNodes()
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			ginkgo.By("Cathy 4 after WatchNodes")
 
 			err = fakeOvn.controller.StartServiceController(wg, false)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -317,10 +330,7 @@ var _ = ginkgo.Describe("OVN Namespace Operations", func() {
 
 			// check the namespace again and ensure the address set
 			// being created with the right set of IPs in it.
-			allowIPs := []string{node1.NodeMgmtPortIP}
-			for _, lrpIP := range gwLRPIPs {
-				allowIPs = append(allowIPs, lrpIP.IP.String())
-			}
+			allowIPs = append(allowIPs, node1.NodeMgmtPortIP)
 			fakeOvn.asf.EventuallyExpectAddressSetWithIPs(hostNetworkNamespace, allowIPs)
 		})
 	})

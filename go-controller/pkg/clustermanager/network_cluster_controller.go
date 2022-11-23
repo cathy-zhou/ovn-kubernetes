@@ -202,6 +202,7 @@ func (ncc *networkClusterController) syncNodeClusterSubnet(node *corev1.Node) er
 		// Log the error and try to allocate new subnets
 		klog.Warningf("Failed to get node %s host subnets annotations for network %s : %v", node.Name, ncc.networkName, err)
 	}
+	klog.Infof("Cathy syncNodeClusterSubnet existing subnet %v for node %s", existingSubnets, node.Name)
 
 	ipv4Mode, ipv6Mode := ncc.IPMode()
 	hostSubnets, allocatedSubnets, err := ncc.clusterSubnetAllocator.AllocateNodeSubnets(node.Name, existingSubnets, ipv4Mode, ipv6Mode)
@@ -304,6 +305,7 @@ func (ncc *networkClusterController) updateNodeSubnetAnnotationWithRetry(nodeNam
 	if resultErr != nil {
 		return fmt.Errorf("failed to update node %s annotation", nodeName)
 	}
+	klog.Infof("Cathy update node subnet %v for %s", hostSubnetsMap, nodeName)
 	return nil
 }
 

@@ -20,8 +20,6 @@ import (
 	egresssvc "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/egress_services"
 	svccontroller "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/services"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/unidling"
-	aclsyncer "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/external_ids_syncer/acl"
-	addrsetsyncer "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/external_ids_syncer/address_set"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
@@ -29,7 +27,6 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	kapi "k8s.io/api/core/v1"
-	knet "k8s.io/api/networking/v1"
 	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	corev1listers "k8s.io/client-go/listers/core/v1"
@@ -69,22 +66,6 @@ type DefaultNetworkController struct {
 	egressQoSNodeSynced cache.InformerSynced
 	egressQoSNodeQueue  workqueue.RateLimitingInterface
 
-	// network policies map, key should be retrieved with getPolicyKey(policy *knet.NetworkPolicy).
-	// network policies that failed to be created will also be added here, and can be retried or cleaned up later.
-	// network policy is only deleted from this map after successful cleanup.
-	// Allowed order of locking is namespace Lock -> oc.networkPolicies key Lock -> networkPolicy.Lock
-	// Don't take namespace Lock while holding networkPolicy key lock to avoid deadlock.
-	networkPolicies *syncmap.SyncMap[*networkPolicy]
-
-	// map of existing shared port groups for network policies
-	// port group exists in the db if and only if port group key is present in this map
-	// key is namespace
-	// allowed locking order is namespace Lock -> networkPolicy.Lock -> sharedNetpolPortGroups key Lock
-	// make sure to keep this order to avoid deadlocks
-	sharedNetpolPortGroups *syncmap.SyncMap[*defaultDenyPortGroups]
-
-	podSelectorAddressSets *syncmap.SyncMap[*PodSelectorAddressSet]
-
 	// Cluster wide Load_Balancer_Group UUID.
 	// Includes all node switches and node gateway routers.
 	clusterLoadBalancerGroupUUID string
@@ -112,13 +93,7 @@ type DefaultNetworkController struct {
 
 	egressFirewallDNS *EgressDNS
 
-	// Is ACL logging enabled while configuring meters?
-	aclLoggingEnabled bool
-
 	joinSwIPManager *lsm.JoinSwitchIPManager
-
-	// retry framework for network policies
-	retryNetworkPolicies *retry.RetryFramework
 
 	// retry framework for egress firewall
 	retryEgressFirewalls *retry.RetryFramework
@@ -146,9 +121,6 @@ type DefaultNetworkController struct {
 	// retry framework for Cloud private IP config
 	retryCloudPrivateIPConfig *retry.RetryFramework
 
-	// retry framework for namespaces
-	retryNamespaces *retry.RetryFramework
-
 	// variable to determine if all pods present on the node during startup have been processed
 	// updated atomically
 	allInitialPodsProcessed uint32
@@ -166,8 +138,9 @@ func newDefaultNetworkControllerCommon(cnci *CommonNetworkControllerInfo,
 	defaultStopChan chan struct{}, defaultWg *sync.WaitGroup,
 	addressSetFactory addressset.AddressSetFactory) (*DefaultNetworkController, error) {
 
+	netInfo := &util.DefaultNetInfo{}
 	if addressSetFactory == nil {
-		addressSetFactory = addressset.NewOvnAddressSetFactory(cnci.nbClient)
+		addressSetFactory = addressset.NewOvnAddressSetFactory(cnci.nbClient, config.IPv4Mode, config.IPv6Mode)
 	}
 	svcController, svcFactory, err := newServiceController(cnci.client, cnci.nbClient, cnci.recorder)
 	if err != nil {
@@ -182,21 +155,21 @@ func newDefaultNetworkControllerCommon(cnci *CommonNetworkControllerInfo,
 		BaseNetworkController: BaseNetworkController{
 			CommonNetworkControllerInfo: *cnci,
 			controllerName:              DefaultNetworkControllerName,
+			NetInfo:                     netInfo,
 			NetConfInfo:                 &util.DefaultNetConfInfo{},
-			NetInfo:                     &util.DefaultNetInfo{},
 			lsManager:                   lsm.NewLogicalSwitchManager(),
 			logicalPortCache:            newPortCache(defaultStopChan),
 			namespaces:                  make(map[string]*namespaceInfo),
 			namespacesMutex:             sync.Mutex{},
 			addressSetFactory:           addressSetFactory,
+			networkPolicies:             syncmap.NewSyncMap[*networkPolicy](),
+			sharedNetpolPortGroups:      syncmap.NewSyncMap[*defaultDenyPortGroups](),
+			podSelectorAddressSets:      syncmap.NewSyncMap[*PodSelectorAddressSet](),
 			stopChan:                    defaultStopChan,
 			wg:                          defaultWg,
 		},
-		externalGWCache:        make(map[ktypes.NamespacedName]*externalRouteInfo),
-		exGWCacheMutex:         sync.RWMutex{},
-		networkPolicies:        syncmap.NewSyncMap[*networkPolicy](),
-		sharedNetpolPortGroups: syncmap.NewSyncMap[*defaultDenyPortGroups](),
-		podSelectorAddressSets: syncmap.NewSyncMap[*PodSelectorAddressSet](),
+		externalGWCache: make(map[ktypes.NamespacedName]*externalRouteInfo),
+		exGWCacheMutex:  sync.RWMutex{},
 		eIPC: egressIPController{
 			egressIPAssignmentMutex:           &sync.Mutex{},
 			podAssignmentMutex:                &sync.Mutex{},
@@ -214,7 +187,6 @@ func newDefaultNetworkControllerCommon(cnci *CommonNetworkControllerInfo,
 		clusterLoadBalancerGroupUUID: "",
 		switchLoadBalancerGroupUUID:  "",
 		routerLoadBalancerGroupUUID:  "",
-		aclLoggingEnabled:            true,
 		joinSwIPManager:              nil,
 		svcController:                svcController,
 		svcFactory:                   svcFactory,
@@ -228,43 +200,32 @@ func newDefaultNetworkControllerCommon(cnci *CommonNetworkControllerInfo,
 func (oc *DefaultNetworkController) initRetryFramework() {
 	// Init the retry framework for pods, namespaces, nodes, network policies, egress firewalls,
 	// egress IP (and dependent namespaces, pods, nodes), cloud private ip config.
-	oc.retryPods = oc.newRetryFrameworkWithParameters(factory.PodType, nil, nil)
-	oc.retryNetworkPolicies = oc.newRetryFrameworkWithParameters(factory.PolicyType, nil, nil)
-	oc.retryNodes = oc.newRetryFrameworkWithParameters(factory.NodeType, nil, nil)
-	oc.retryEgressFirewalls = oc.newRetryFrameworkWithParameters(factory.EgressFirewallType, nil, nil)
-	oc.retryEgressIPs = oc.newRetryFrameworkWithParameters(factory.EgressIPType, nil, nil)
-	oc.retryEgressIPNamespaces = oc.newRetryFrameworkWithParameters(factory.EgressIPNamespaceType, nil, nil)
-	oc.retryEgressIPPods = oc.newRetryFrameworkWithParameters(factory.EgressIPPodType, nil, nil)
-	oc.retryEgressNodes = oc.newRetryFrameworkWithParameters(factory.EgressNodeType, nil, nil)
-	oc.retryEgressFwNodes = oc.newRetryFrameworkWithParameters(factory.EgressFwNodeType, nil, nil)
-	oc.retryCloudPrivateIPConfig = oc.newRetryFrameworkWithParameters(factory.CloudPrivateIPConfigType, nil, nil)
-	oc.retryNamespaces = oc.newRetryFrameworkWithParameters(factory.NamespaceType, nil, nil)
+	oc.retryPods = oc.newRetryFramework(factory.PodType)
+	oc.retryNodes = oc.newRetryFramework(factory.NodeType)
+	oc.retryEgressFirewalls = oc.newRetryFramework(factory.EgressFirewallType)
+	oc.retryEgressIPs = oc.newRetryFramework(factory.EgressIPType)
+	oc.retryEgressIPNamespaces = oc.newRetryFramework(factory.EgressIPNamespaceType)
+	oc.retryEgressIPPods = oc.newRetryFramework(factory.EgressIPPodType)
+	oc.retryEgressNodes = oc.newRetryFramework(factory.EgressNodeType)
+	oc.retryEgressFwNodes = oc.newRetryFramework(factory.EgressFwNodeType)
+	oc.retryCloudPrivateIPConfig = oc.newRetryFramework(factory.CloudPrivateIPConfigType)
+	oc.retryNamespaces = oc.newRetryFramework(factory.NamespaceType)
+	oc.BaseNetworkController.initRetryFramework()
 }
 
-// newRetryFrameworkWithParameters builds and returns a retry framework for the input resource
+// newRetryFramework builds and returns a retry framework for the input resource
 // type and assigns all ovnk-master-specific function attributes in the returned struct;
 // these functions will then be called by the retry logic in the retry package when
 // WatchResource() is called.
-// newRetryFrameworkWithParameters takes as input a resource type (required)
-// and the following optional parameters: a namespace and a label filter for the
-// shared informer, a sync function to process all objects of this type at startup,
-// and resource-specific extra parameters (used now for network-policy-dependant types).
-// In order to create a retry framework for most resource types, newRetryFrameworkMaster is
-// to be preferred, as it calls newRetryFrameworkWithParameters with all optional parameters unset.
-// newRetryFrameworkWithParameters is instead called directly by the watchers that are
-// dynamically created when a network policy is added: AddressSetNamespaceAndPodSelectorType,
-// PeerNamespaceSelectorType, AddressSetPodSelectorType.
-func (oc *DefaultNetworkController) newRetryFrameworkWithParameters(
-	objectType reflect.Type,
-	syncFunc func([]interface{}) error,
-	extraParameters interface{}) *retry.RetryFramework {
+func (oc *DefaultNetworkController) newRetryFramework(
+	objectType reflect.Type) *retry.RetryFramework {
 	eventHandler := &defaultNetworkControllerEventHandler{
 		baseHandler:     baseNetworkControllerEventHandler{},
 		objType:         objectType,
 		watchFactory:    oc.watchFactory,
 		oc:              oc,
-		extraParameters: extraParameters, // in use by network policy dynamic watchers
-		syncFunc:        syncFunc,
+		extraParameters: nil, // in use by network policy dynamic watchers
+		syncFunc:        nil,
 	}
 	resourceHandler := &retry.ResourceHandler{
 		HasUpdateFunc:          hasResourceAnUpdateFunc(objectType),
@@ -285,31 +246,10 @@ func (oc *DefaultNetworkController) newRetryFrameworkWithParameters(
 func (oc *DefaultNetworkController) Start(ctx context.Context) error {
 	klog.Infof("Starting the default network controller")
 
-	// sync address sets, only required for DefaultNetworkController, since any old objects in the db without
-	// Owner set are owned by the default network controller.
-	addrSetSyncer := addrsetsyncer.NewAddressSetSyncer(oc.nbClient, DefaultNetworkControllerName)
-	err := addrSetSyncer.SyncAddressSets()
+	err := oc.syncAddressSets()
 	if err != nil {
-		return fmt.Errorf("failed to sync address sets on controller init: %v", err)
+		return err
 	}
-
-	existingNodes, err := oc.kube.GetNodes()
-	if err != nil {
-		return fmt.Errorf("failed to get existing nodes: %w", err)
-	}
-	aclSyncer := aclsyncer.NewACLSyncer(oc.nbClient, DefaultNetworkControllerName)
-	err = aclSyncer.SyncACLs(existingNodes)
-	if err != nil {
-		return fmt.Errorf("failed to sync acls on controller init: %v", err)
-	}
-
-	// sync shared resources
-	// pod selector address sets
-	err = oc.cleanupPodSelectorAddressSets()
-	if err != nil {
-		return fmt.Errorf("cleaning up stale pod selector address sets failed: %w", err)
-	}
-
 	if err = oc.Init(); err != nil {
 		return err
 	}
@@ -343,13 +283,6 @@ func (oc *DefaultNetworkController) Init() error {
 	if err != nil {
 		klog.Errorf("Failed to upgrade OVN topology to version %d: %v", ovntypes.OvnCurrentTopologyVersion, err)
 		return err
-	}
-
-	err = oc.createACLLoggingMeter()
-	if err != nil {
-		klog.Warningf("ACL logging support enabled, however acl-logging meter could not be created: %v. "+
-			"Disabling ACL logging support", err)
-		oc.aclLoggingEnabled = false
 	}
 
 	// FIXME: When https://github.com/ovn-org/libovsdb/issues/235 is fixed,
@@ -614,10 +547,6 @@ func (h *defaultNetworkControllerEventHandler) RecordAddEvent(obj interface{}) {
 		klog.V(5).Infof("Recording add event on pod %s/%s", pod.Namespace, pod.Name)
 		h.oc.podRecorder.AddPod(pod.UID)
 		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name)
-	case factory.PolicyType:
-		np := obj.(*knet.NetworkPolicy)
-		klog.V(5).Infof("Recording add event on network policy %s/%s", np.Namespace, np.Name)
-		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
 	}
 }
 
@@ -628,10 +557,6 @@ func (h *defaultNetworkControllerEventHandler) RecordUpdateEvent(obj interface{}
 		pod := obj.(*kapi.Pod)
 		klog.V(5).Infof("Recording update event on pod %s/%s", pod.Namespace, pod.Name)
 		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name)
-	case factory.PolicyType:
-		np := obj.(*knet.NetworkPolicy)
-		klog.V(5).Infof("Recording update event on network policy %s/%s", np.Namespace, np.Name)
-		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
 	}
 }
 
@@ -643,10 +568,6 @@ func (h *defaultNetworkControllerEventHandler) RecordDeleteEvent(obj interface{}
 		klog.V(5).Infof("Recording delete event on pod %s/%s", pod.Namespace, pod.Name)
 		h.oc.podRecorder.CleanPod(pod.UID)
 		metrics.GetConfigDurationRecorder().Start("pod", pod.Namespace, pod.Name)
-	case factory.PolicyType:
-		np := obj.(*knet.NetworkPolicy)
-		klog.V(5).Infof("Recording delete event on network policy %s/%s", np.Namespace, np.Name)
-		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
 	}
 }
 
@@ -657,10 +578,6 @@ func (h *defaultNetworkControllerEventHandler) RecordSuccessEvent(obj interface{
 		pod := obj.(*kapi.Pod)
 		klog.V(5).Infof("Recording success event on pod %s/%s", pod.Namespace, pod.Name)
 		metrics.GetConfigDurationRecorder().End("pod", pod.Namespace, pod.Name)
-	case factory.PolicyType:
-		np := obj.(*knet.NetworkPolicy)
-		klog.V(5).Infof("Recording success event on network policy %s/%s", np.Namespace, np.Name)
-		metrics.GetConfigDurationRecorder().End("networkpolicy", np.Namespace, np.Name)
 	}
 }
 
@@ -695,18 +612,6 @@ func (h *defaultNetworkControllerEventHandler) AddResource(obj interface{}, from
 		}
 		return h.oc.ensurePod(nil, pod, true)
 
-	case factory.PolicyType:
-		np, ok := obj.(*knet.NetworkPolicy)
-		if !ok {
-			return fmt.Errorf("could not cast %T object to *knet.NetworkPolicy", obj)
-		}
-
-		if err = h.oc.addNetworkPolicy(np); err != nil {
-			klog.Infof("Network Policy add failed for %s/%s, will try again later: %v",
-				np.Namespace, np.Name, err)
-			return err
-		}
-
 	case factory.NodeType:
 		node, ok := obj.(*kapi.Node)
 		if !ok {
@@ -734,24 +639,6 @@ func (h *defaultNetworkControllerEventHandler) AddResource(obj interface{}, from
 				node.Name, err)
 			return err
 		}
-
-	case factory.AddressSetPodSelectorType:
-		peerAS := h.extraParameters.(*PodSelectorAddrSetHandlerInfo)
-		return h.oc.handlePodAddUpdate(peerAS, obj)
-
-	case factory.AddressSetNamespaceAndPodSelectorType:
-		peerAS := h.extraParameters.(*PodSelectorAddrSetHandlerInfo)
-		return h.oc.handleNamespaceAddUpdate(peerAS, obj)
-
-	case factory.PeerNamespaceSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerNamespaceSelectorAdd(extraParameters.np, extraParameters.gp, obj)
-
-	case factory.LocalPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handleLocalPodSelectorAddFunc(
-			extraParameters.np,
-			obj)
 
 	case factory.EgressFirewallType:
 		var err error
@@ -864,16 +751,6 @@ func (h *defaultNetworkControllerEventHandler) UpdateResource(oldObj, newObj int
 		_, hoSync := h.oc.hybridOverlayFailed.Load(newNode.Name)
 
 		return h.oc.addUpdateNodeEvent(newNode, &nodeSyncs{nodeSync, clusterRtrSync, mgmtSync, gwSync, hoSync})
-
-	case factory.AddressSetPodSelectorType:
-		peerAS := h.extraParameters.(*PodSelectorAddrSetHandlerInfo)
-		return h.oc.handlePodAddUpdate(peerAS, newObj)
-
-	case factory.LocalPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handleLocalPodSelectorAddFunc(
-			extraParameters.np,
-			newObj)
 
 	case factory.EgressIPType:
 		oldEIP := oldObj.(*egressipv1.EgressIP)
@@ -999,37 +876,12 @@ func (h *defaultNetworkControllerEventHandler) DeleteResource(obj, cachedObj int
 		h.oc.logicalPortCache.remove(pod, ovntypes.DefaultNetworkName)
 		return h.oc.removePod(pod, portInfo)
 
-	case factory.PolicyType:
-		knp, ok := obj.(*knet.NetworkPolicy)
-		if !ok {
-			return fmt.Errorf("could not cast obj of type %T to *knet.NetworkPolicy", obj)
-		}
-		return h.oc.deleteNetworkPolicy(knp)
-
 	case factory.NodeType:
 		node, ok := obj.(*kapi.Node)
 		if !ok {
 			return fmt.Errorf("could not cast obj of type %T to *knet.Node", obj)
 		}
 		return h.oc.deleteNodeEvent(node)
-
-	case factory.AddressSetPodSelectorType:
-		peerAS := h.extraParameters.(*PodSelectorAddrSetHandlerInfo)
-		return h.oc.handlePodDelete(peerAS, obj)
-
-	case factory.AddressSetNamespaceAndPodSelectorType:
-		peerAS := h.extraParameters.(*PodSelectorAddrSetHandlerInfo)
-		return h.oc.handleNamespaceDel(peerAS, obj)
-
-	case factory.PeerNamespaceSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handlePeerNamespaceSelectorDel(extraParameters.np, extraParameters.gp, obj)
-
-	case factory.LocalPodSelectorType:
-		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.oc.handleLocalPodSelectorDelFunc(
-			extraParameters.np,
-			obj)
 
 	case factory.EgressFirewallType:
 		egressFirewall := obj.(*egressfirewall.EgressFirewall)
@@ -1097,17 +949,8 @@ func (h *defaultNetworkControllerEventHandler) SyncFunc(objs []interface{}) erro
 		case factory.PodType:
 			syncFunc = h.oc.syncPods
 
-		case factory.PolicyType:
-			syncFunc = h.oc.syncNetworkPolicies
-
 		case factory.NodeType:
 			syncFunc = h.oc.syncNodes
-
-		case factory.LocalPodSelectorType,
-			factory.AddressSetNamespaceAndPodSelectorType,
-			factory.AddressSetPodSelectorType,
-			factory.PeerNamespaceSelectorType:
-			syncFunc = nil
 
 		case factory.EgressFirewallType:
 			syncFunc = h.oc.syncEgressFirewall

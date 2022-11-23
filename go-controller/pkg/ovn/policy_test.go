@@ -42,7 +42,11 @@ const (
 
 func getFakeController(controllerName string) *DefaultNetworkController {
 	controller := &DefaultNetworkController{
-		BaseNetworkController: BaseNetworkController{controllerName: controllerName},
+		BaseNetworkController: BaseNetworkController{
+			controllerName: controllerName,
+			NetInfo:        &util.DefaultNetInfo{},
+			NetConfInfo:    &util.DefaultNetConfInfo{},
+		},
 	}
 	return controller
 }
@@ -161,7 +165,7 @@ func getDefaultDenyData(networkPolicy *knet.NetworkPolicy, ports []string,
 	if policyTypeEgress {
 		egressDenyPorts = lsps
 	}
-	egressDenyPG := libovsdbops.BuildPortGroup(
+	egressDenyPG := fakeController.buildPortGroup(
 		egressPGName,
 		egressPGName,
 		egressDenyPorts,
@@ -173,7 +177,7 @@ func getDefaultDenyData(networkPolicy *knet.NetworkPolicy, ports []string,
 	if policyTypeIngress {
 		ingressDenyPorts = lsps
 	}
-	ingressDenyPG := libovsdbops.BuildPortGroup(
+	ingressDenyPG := fakeController.buildPortGroup(
 		ingressPGName,
 		ingressPGName,
 		ingressDenyPorts,
@@ -354,8 +358,9 @@ func getPolicyData(networkPolicy *knet.NetworkPolicy, localPortUUIDs []string, p
 		lsps = append(lsps, &nbdb.LogicalSwitchPort{UUID: uuid})
 	}
 
+	fakeController := getFakeController(DefaultNetworkControllerName)
 	pgName, readableName := getNetworkPolicyPGName(networkPolicy.Namespace, networkPolicy.Name)
-	pg := libovsdbops.BuildPortGroup(
+	pg := fakeController.buildPortGroup(
 		pgName,
 		readableName,
 		lsps,
@@ -1997,7 +2002,8 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Low-Level Operations", func() {
 		config.IPv4Mode = true
 		config.IPv6Mode = false
 		asIDs := getPodSelectorAddrSetDbIDs("test_name", DefaultNetworkControllerName)
-		gp := newGressPolicy(knet.PolicyTypeIngress, 0, "testing", "policy", controllerName, false)
+		gp := newGressPolicy(knet.PolicyTypeIngress, 0, "testing", "policy", controllerName,
+			false, &util.DefaultNetInfo{}, &util.DefaultNetConfInfo{})
 		gp.hasPeerSelector = true
 		gp.addPeerAddressSets(addressset.GetHashNamesForAS(asIDs))
 
