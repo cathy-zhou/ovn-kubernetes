@@ -121,7 +121,7 @@ func (bnnc *BaseNodeNetworkController) checkForStaleOVSRepresentorInterfaces() {
 			ifaceID := util.GetIfaceId(pod.Namespace, pod.Name)
 			expectedIfaceIds[ifaceID] = true
 		} else {
-			on, network, err := util.PodWantsMultiNetwork(pod, bnnc.NetInfo)
+			on, networkMap, err := util.PodWantsMultiNetwork(pod, bnnc.NetInfo)
 			if err != nil || !on {
 				if err != nil {
 					klog.Warningf("Error getting network-attachment for pod %s/%s network %s: %v",
@@ -129,9 +129,10 @@ func (bnnc *BaseNodeNetworkController) checkForStaleOVSRepresentorInterfaces() {
 				}
 				continue
 			}
-			nadName := util.GetNADName(network.Namespace, network.Name)
-			ifaceID := util.GetSecondaryNetworkIfaceId(pod.Namespace, pod.Name, nadName)
-			expectedIfaceIds[ifaceID] = true
+			for nadName, _ := range networkMap {
+				ifaceID := util.GetSecondaryNetworkIfaceId(pod.Namespace, pod.Name, nadName)
+				expectedIfaceIds[ifaceID] = true
+			}
 		}
 	}
 

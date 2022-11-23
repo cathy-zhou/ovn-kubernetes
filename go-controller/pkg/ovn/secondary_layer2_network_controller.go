@@ -15,6 +15,7 @@ import (
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
@@ -129,9 +130,6 @@ func (h *secondaryLayer2NetworkControllerEventHandler) IsObjectInTerminalState(o
 // for a secondary layer2 network
 type SecondaryLayer2NetworkController struct {
 	BaseSecondaryNetworkController
-
-	// waitGroup per-Controller
-	wg *sync.WaitGroup
 }
 
 // NewSecondaryLayer2NetworkController create a new OVN controller for the given secondary layer2 nad
@@ -143,17 +141,19 @@ func NewSecondaryLayer2NetworkController(cnci *CommonNetworkControllerInfo, netI
 		BaseSecondaryNetworkController: BaseSecondaryNetworkController{
 			BaseNetworkController: BaseNetworkController{
 				CommonNetworkControllerInfo: *cnci,
+				NetworkControllerNetInfo:    NetworkControllerNetInfo{NetInfo: netInfo},
 				NetConfInfo:                 netconfInfo,
-				NetInfo:                     netInfo,
 				lsManager:                   lsm.NewL2SwitchManager(),
 				logicalPortCache:            newPortCache(stopChan),
 				namespaces:                  make(map[string]*namespaceInfo),
 				namespacesMutex:             sync.Mutex{},
-				addressSetFactory:           addressset.NewOvnAddressSetFactory(cnci.nbClient),
+				addressSetFactory:           addressset.NewOvnAddressSetFactory(cnci.nbClient, netInfo),
+				networkPolicies:             syncmap.NewSyncMap[*networkPolicy](),
+				sharedNetpolPortGroups:      syncmap.NewSyncMap[*defaultDenyPortGroups](),
 				stopChan:                    stopChan,
+				wg:                          &sync.WaitGroup{},
 			},
 		},
-		wg: &sync.WaitGroup{},
 	}
 
 	// disable multicast support for secondary networks
@@ -165,6 +165,8 @@ func NewSecondaryLayer2NetworkController(cnci *CommonNetworkControllerInfo, netI
 
 func (oc *SecondaryLayer2NetworkController) initRetryFramework() {
 	oc.retryPods = oc.newRetryFramework(factory.PodType)
+	oc.retryNamespaces = oc.newRetryFramework(factory.NamespaceType)
+	oc.BaseSecondaryNetworkController.initRetryFramework()
 }
 
 // newRetryFramework builds and returns a retry framework for the input resource type;
@@ -207,8 +209,14 @@ func (oc *SecondaryLayer2NetworkController) Stop() {
 	close(oc.stopChan)
 	oc.wg.Wait()
 
+	if oc.policyHandler != nil {
+		oc.watchFactory.RemoveMultiNetworkPolicyHandler(oc.policyHandler)
+	}
 	if oc.podHandler != nil {
 		oc.watchFactory.RemovePodHandler(oc.podHandler)
+	}
+	if oc.namespaceHandler != nil {
+		oc.watchFactory.RemoveNamespaceHandler(oc.namespaceHandler)
 	}
 }
 
@@ -226,6 +234,11 @@ func (oc *SecondaryLayer2NetworkController) Cleanup(netName string) error {
 		return fmt.Errorf("failed to get ops for deleting switches of network %s: %v", netName, err)
 	}
 
+	ops, err = cleanupPolicyLogicalEntities(oc.nbClient, ops, netName)
+	if err != nil {
+		return err
+	}
+
 	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
 	if err != nil {
 		return fmt.Errorf("failed to deleting switches of network %s: %v", netName, err)
@@ -238,7 +251,18 @@ func (oc *SecondaryLayer2NetworkController) Run() error {
 	klog.Infof("Starting all the Watchers for network %s ...", oc.GetNetworkName())
 	start := time.Now()
 
+	// WatchNamespaces() should be started first because it has no other
+	// dependencies, and WatchNodes() depends on it
+	if err := oc.WatchNamespaces(); err != nil {
+		return err
+	}
+
 	if err := oc.WatchPods(); err != nil {
+		return err
+	}
+
+	// WatchNetworkPolicy depends on WatchPods and WatchNamespaces
+	if err := oc.WatchNetworkPolicy(); err != nil {
 		return err
 	}
 

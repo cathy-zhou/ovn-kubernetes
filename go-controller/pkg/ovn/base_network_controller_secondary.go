@@ -2,6 +2,8 @@ package ovn
 
 import (
 	"fmt"
+	"github.com/ovn-org/libovsdb/ovsdb"
+	"net"
 	"reflect"
 	"time"
 
@@ -47,6 +49,13 @@ func (bsnc *BaseSecondaryNetworkController) AddSecondaryNetworkResourceCommon(ob
 		}
 		return bsnc.ensurePodForSecondaryNetwork(pod, true)
 
+	case factory.NamespaceType:
+		ns, ok := obj.(*kapi.Namespace)
+		if !ok {
+			return fmt.Errorf("could not cast %T object to *kapi.Namespace", obj)
+		}
+		return bsnc.AddNamespaceForSecondaryNetwork(ns)
+
 	default:
 		return fmt.Errorf("object type %s not supported", objType)
 	}
@@ -64,6 +73,10 @@ func (bsnc *BaseSecondaryNetworkController) UpdateSecondaryNetworkResourceCommon
 		newPod := newObj.(*kapi.Pod)
 
 		return bsnc.ensurePodForSecondaryNetwork(newPod, inRetryCache || util.PodScheduled(oldPod) != util.PodScheduled(newPod))
+
+	case factory.NamespaceType:
+		oldNs, newNs := oldObj.(*kapi.Namespace), newObj.(*kapi.Namespace)
+		return bsnc.updateNamespaceForSecondaryNetwork(oldNs, newNs)
 
 	default:
 		return fmt.Errorf("object type %s not supported", objType)
@@ -84,6 +97,10 @@ func (bsnc *BaseSecondaryNetworkController) DeleteSecondaryNetworkResourceCommon
 			portInfoMap = cachedObj.(map[string]*lpInfo)
 		}
 		return bsnc.removePodForSecondaryNetwork(pod, portInfoMap)
+
+	case factory.NamespaceType:
+		ns := obj.(*kapi.Namespace)
+		return bsnc.deleteNamespace4SecondaryNetwork(ns)
 
 	default:
 		return fmt.Errorf("object type %s not supported", objType)
@@ -159,6 +176,13 @@ func (bsnc *BaseSecondaryNetworkController) addLogicalPortToNetworkForNAD(pod *k
 		return err
 	}
 
+	// Ensure the namespace/nsInfo exists
+	addOps, err := bsnc.addPodToNamespaceForSecondaryNetwork(pod.Namespace, podAnnotation.IPs)
+	if err != nil {
+		return err
+	}
+	ops = append(ops, addOps...)
+
 	recordOps, txOkCallBack, _, err := bsnc.AddConfigDurationRecord("pod", pod.Namespace, pod.Name)
 	if err != nil {
 		klog.Errorf("Config duration recorder: %v", err)
@@ -225,7 +249,6 @@ func (bsnc *BaseSecondaryNetworkController) removePodForSecondaryNetwork(pod *ka
 
 	for _, nadName = range allNADNames {
 		bsnc.logicalPortCache.remove(pod, nadName)
-
 		pInfo, err := bsnc.deletePodLogicalPort(pod, portInfo, nadName)
 		if err != nil {
 			return err
@@ -284,4 +307,22 @@ func (bsnc *BaseSecondaryNetworkController) syncPodsForSecondaryNetwork(pods []i
 		}
 	}
 	return bsnc.deleteStaleLogicalSwitchPorts(expectedLogicalPorts)
+}
+
+// addPodToNamespaceForSecondaryNetwork returns the ops needed to add pod's IP to the namespace's address set.
+func (bsnc *BaseSecondaryNetworkController) addPodToNamespaceForSecondaryNetwork(ns string, ips []*net.IPNet) ([]ovsdb.Operation, error) {
+	var ops []ovsdb.Operation
+	var err error
+	nsInfo, nsUnlock, err := bsnc.ensureNamespaceLockedForSecondaryNetwork(ns, true, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to ensure namespace locked: %v", err)
+	}
+
+	defer nsUnlock()
+
+	if ops, err = nsInfo.addressSet.AddIPsReturnOps(createIPAddressSlice(ips)); err != nil {
+		return nil, err
+	}
+
+	return ops, nil
 }

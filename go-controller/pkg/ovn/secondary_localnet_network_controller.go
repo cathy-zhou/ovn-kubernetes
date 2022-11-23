@@ -15,6 +15,7 @@ import (
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
@@ -129,9 +130,6 @@ func (h *secondaryLocalnetNetworkControllerEventHandler) IsObjectInTerminalState
 // for a secondary localnet network
 type SecondaryLocalnetNetworkController struct {
 	BaseSecondaryNetworkController
-
-	// waitGroup per-Controller
-	wg *sync.WaitGroup
 }
 
 // NewSecondaryLocalnetNetworkController create a new OVN controller for the given secondary localnet NAD
@@ -144,16 +142,18 @@ func NewSecondaryLocalnetNetworkController(cnci *CommonNetworkControllerInfo, ne
 			BaseNetworkController: BaseNetworkController{
 				CommonNetworkControllerInfo: *cnci,
 				NetConfInfo:                 netconfInfo,
-				NetInfo:                     netInfo,
+				NetworkControllerNetInfo:    NetworkControllerNetInfo{NetInfo: netInfo},
 				lsManager:                   lsm.NewL2SwitchManager(),
 				logicalPortCache:            newPortCache(stopChan),
 				namespaces:                  make(map[string]*namespaceInfo),
 				namespacesMutex:             sync.Mutex{},
-				addressSetFactory:           addressset.NewOvnAddressSetFactory(cnci.nbClient),
+				addressSetFactory:           addressset.NewOvnAddressSetFactory(cnci.nbClient, netInfo),
+				networkPolicies:             syncmap.NewSyncMap[*networkPolicy](),
+				sharedNetpolPortGroups:      syncmap.NewSyncMap[*defaultDenyPortGroups](),
 				stopChan:                    stopChan,
+				wg:                          &sync.WaitGroup{},
 			},
 		},
-		wg: &sync.WaitGroup{},
 	}
 
 	// disable multicast support for secondary networks
@@ -207,8 +207,14 @@ func (oc *SecondaryLocalnetNetworkController) Stop() {
 	close(oc.stopChan)
 	oc.wg.Wait()
 
+	if oc.policyHandler != nil {
+		oc.watchFactory.RemoveMultiNetworkPolicyHandler(oc.policyHandler)
+	}
 	if oc.podHandler != nil {
 		oc.watchFactory.RemovePodHandler(oc.podHandler)
+	}
+	if oc.namespaceHandler != nil {
+		oc.watchFactory.RemoveNamespaceHandler(oc.namespaceHandler)
 	}
 }
 
@@ -226,6 +232,11 @@ func (oc *SecondaryLocalnetNetworkController) Cleanup(netName string) error {
 		return fmt.Errorf("failed to get ops for deleting switches of network %s: %v", netName, err)
 	}
 
+	ops, err = cleanupPolicyLogicalEntities(oc.nbClient, ops, netName)
+	if err != nil {
+		return err
+	}
+
 	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
 	if err != nil {
 		return fmt.Errorf("failed to deleting switches of network %s: %v", netName, err)
@@ -238,7 +249,18 @@ func (oc *SecondaryLocalnetNetworkController) Run() error {
 	klog.Infof("Starting all the Watchers for network %s ...", oc.GetNetworkName())
 	start := time.Now()
 
+	// WatchNamespaces() should be started first because it has no other
+	// dependencies, and WatchNodes() depends on it
+	if err := oc.WatchNamespaces(); err != nil {
+		return err
+	}
+
 	if err := oc.WatchPods(); err != nil {
+		return err
+	}
+
+	// WatchNetworkPolicy depends on WatchPods and WatchNamespaces
+	if err := oc.WatchNetworkPolicy(); err != nil {
 		return err
 	}
 

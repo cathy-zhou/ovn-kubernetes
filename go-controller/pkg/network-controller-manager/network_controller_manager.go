@@ -59,6 +59,8 @@ type networkControllerManager struct {
 	SCTPSupport bool
 	// Supports multicast?
 	multicastSupport bool
+	// Is ACL logging enabled while configuring meters?
+	aclLoggingEnabled bool
 
 	stopChan chan struct{}
 	wg       *sync.WaitGroup
@@ -309,6 +311,7 @@ func (cm *networkControllerManager) Init() error {
 	}
 
 	cm.configureMulticastSupport()
+	cm.configureAclLoggingSupport()
 
 	err = cm.enableOVNLogicalDataPathGroups()
 	if err != nil {
@@ -367,10 +370,49 @@ func (cm *networkControllerManager) configureMetrics(stopChan <-chan struct{}) {
 	metrics.MonitorIPSec(cm.nbClient)
 }
 
+func (cm *networkControllerManager) createACLLoggingMeter() error {
+	band := &nbdb.MeterBand{
+		Action: ovntypes.MeterAction,
+		Rate:   config.Logging.ACLLoggingRateLimit,
+	}
+	ops, err := libovsdbops.CreateMeterBandOps(cm.nbClient, nil, band)
+	if err != nil {
+		return fmt.Errorf("can't create meter band %v: %v", band, err)
+	}
+
+	meterFairness := true
+	meter := &nbdb.Meter{
+		Name: ovntypes.OvnACLLoggingMeter,
+		Fair: &meterFairness,
+		Unit: ovntypes.PacketsPerSecond,
+	}
+	ops, err = libovsdbops.CreateOrUpdateMeterOps(cm.nbClient, ops, meter, []*nbdb.MeterBand{band},
+		&meter.Bands, &meter.Fair, &meter.Unit)
+	if err != nil {
+		return fmt.Errorf("can't create meter %v: %v", meter, err)
+	}
+
+	_, err = libovsdbops.TransactAndCheck(cm.nbClient, ops)
+	if err != nil {
+		return fmt.Errorf("can't transact ACL logging meter: %v", err)
+	}
+
+	return nil
+}
+
+func (cm *networkControllerManager) configureAclLoggingSupport() {
+	cm.aclLoggingEnabled = true
+	if err := cm.createACLLoggingMeter(); err != nil {
+		klog.Warningf("ACL logging support enabled, however acl-logging meter could not be created: %v. "+
+			"Disabling ACL logging support", err)
+		cm.aclLoggingEnabled = false
+	}
+}
+
 // newCommonNetworkControllerInfo creates and returns the common networkController info
 func (cm *networkControllerManager) newCommonNetworkControllerInfo() *ovn.CommonNetworkControllerInfo {
 	return ovn.NewCommonNetworkControllerInfo(cm.client, cm.kube, cm.watchFactory, cm.recorder, cm.nbClient,
-		cm.sbClient, cm.podRecorder, cm.SCTPSupport, cm.multicastSupport)
+		cm.sbClient, cm.podRecorder, cm.SCTPSupport, cm.multicastSupport, cm.aclLoggingEnabled)
 }
 
 // NewDefaultNetworkController creates the controller for default network
