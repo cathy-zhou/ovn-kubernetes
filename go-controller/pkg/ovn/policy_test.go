@@ -41,6 +41,8 @@ func getFakeController(controllerName string) *DefaultNetworkController {
 	return controller
 }
 
+var defaultNetworkControllerNetInfo NetworkControllerNetInfo = NetworkControllerNetInfo{NetInfo: &util.DefaultNetInfo{}}
+
 func newNetworkPolicy(name, namespace string, podSelector metav1.LabelSelector, ingress []knet.NetworkPolicyIngressRule,
 	egress []knet.NetworkPolicyEgressRule, policyTypes ...knet.PolicyType) *knet.NetworkPolicy {
 	policy := &knet.NetworkPolicy{
@@ -162,7 +164,7 @@ func getDefaultDenyData(networkPolicy *knet.NetworkPolicy, ports []string,
 	if policyTypeEgress {
 		egressDenyPorts = lsps
 	}
-	egressDenyPG := libovsdbops.BuildPortGroup(
+	egressDenyPG := defaultNetworkControllerNetInfo.buildPortGroup(
 		egressPGName,
 		egressPGName,
 		egressDenyPorts,
@@ -174,7 +176,7 @@ func getDefaultDenyData(networkPolicy *knet.NetworkPolicy, ports []string,
 	if policyTypeIngress {
 		ingressDenyPorts = lsps
 	}
-	ingressDenyPG := libovsdbops.BuildPortGroup(
+	ingressDenyPG := defaultNetworkControllerNetInfo.buildPortGroup(
 		ingressPGName,
 		ingressPGName,
 		ingressDenyPorts,
@@ -347,7 +349,7 @@ func getPolicyData(networkPolicy *knet.NetworkPolicy, localPortUUIDs []string, p
 	}
 
 	pgName, readableName := getNetworkPolicyPGName(networkPolicy.Namespace, networkPolicy.Name)
-	pg := libovsdbops.BuildPortGroup(
+	pg := defaultNetworkControllerNetInfo.buildPortGroup(
 		pgName,
 		readableName,
 		lsps,
@@ -753,7 +755,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 					},
 				)
 				staleACL.UUID = "staleACL-UUID"
-				pg := libovsdbops.BuildPortGroup(
+				pg := defaultNetworkControllerNetInfo.buildPortGroup(
 					pgName,
 					readableName,
 					nil,
@@ -1274,7 +1276,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 					egressOptions,
 				)
 				leftOverACL1FromUpgrade.UUID = *leftOverACL1FromUpgrade.Name + "-egressAllowACL-UUID"
-				testOnlyEgressDenyPG := libovsdbops.BuildPortGroup(
+				testOnlyEgressDenyPG := defaultNetworkControllerNetInfo.buildPortGroup(
 					egressPGName,
 					egressPGName,
 					nil,
@@ -1297,7 +1299,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 					nil,
 				)
 				leftOverACL2FromUpgrade.UUID = *leftOverACL2FromUpgrade.Name + "-ingressAllowACL-UUID"
-				testOnlyIngressDenyPG := libovsdbops.BuildPortGroup(
+				testOnlyIngressDenyPG := defaultNetworkControllerNetInfo.buildPortGroup(
 					ingressPGName,
 					ingressPGName,
 					nil,
@@ -1434,7 +1436,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 					nil,
 				)
 				leftOverACL1FromUpgrade.UUID = *leftOverACL1FromUpgrade.Name + "-egressAllowACL-UUID"
-				testOnlyEgressDenyPG := libovsdbops.BuildPortGroup(
+				testOnlyEgressDenyPG := defaultNetworkControllerNetInfo.buildPortGroup(
 					egressPGName,
 					egressPGName,
 					nil,
@@ -1474,7 +1476,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 					nil,
 				)
 				leftOverACL3FromUpgrade.UUID = *leftOverACL3FromUpgrade.Name + "-ingressAllowACL-UUID1"
-				testOnlyIngressDenyPG := libovsdbops.BuildPortGroup(
+				testOnlyIngressDenyPG := defaultNetworkControllerNetInfo.buildPortGroup(
 					ingressPGName,
 					ingressPGName,
 					nil,
@@ -2225,6 +2227,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Low-Level Operations", func() {
 	var (
 		asFactory *addressset.FakeAddressSetFactory
 		nbCleanup *libovsdbtest.Cleanup
+		fakeOvn   *FakeOVN
 	)
 
 	const (
@@ -2235,12 +2238,15 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Low-Level Operations", func() {
 
 	ginkgo.BeforeEach(func() {
 		nbCleanup = nil
+		fakeOvn = NewFakeOVN()
+		fakeOvn.start()
 	})
 
 	ginkgo.AfterEach(func() {
 		if nbCleanup != nil {
 			nbCleanup.Cleanup()
 		}
+		fakeOvn.shutdown()
 	})
 
 	buildExpectedIngressPeerNSv4ACL := func(gp *gressPolicy, pgName string, asDbIDses []*libovsdbops.DbObjectIDs,
@@ -2279,7 +2285,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Low-Level Operations", func() {
 		config.IPv4Mode = true
 		config.IPv6Mode = false
 		asIDs := getPodSelectorAddrSetDbIDs("test_name", DefaultNetworkControllerName)
-		gp := newGressPolicy(knet.PolicyTypeIngress, 0, "testing", "policy", controllerName, false)
+		gp := newGressPolicy(knet.PolicyTypeIngress, 0, "testing", "policy", controllerName, false, &util.DefaultNetInfo{})
 		gp.hasPeerSelector = true
 		gp.addPeerAddressSets(addressset.GetHashNamesForAS(asIDs))
 
@@ -2407,7 +2413,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Low-Level Operations", func() {
 			nbClient, nbCleanup, err = libovsdbtest.NewNBTestHarness(initialNbdb, nil)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-			err = addAllowACLFromNode(nodeName, ovntest.MustParseIP(ipv4MgmtIP), nbClient)
+			err = fakeOvn.controller.addAllowACLFromNode(nodeName, ovntest.MustParseIP(ipv4MgmtIP), nbClient)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			testNode, nodeACL := generateAllowFromNodeData(nodeName, ipv4MgmtIP)
@@ -2432,7 +2438,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Low-Level Operations", func() {
 			nbClient, nbCleanup, err = libovsdbtest.NewNBTestHarness(initialNbdb, nil)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-			err = addAllowACLFromNode(nodeName, ovntest.MustParseIP(ipv4MgmtIP), nbClient)
+			err = fakeOvn.controller.addAllowACLFromNode(nodeName, ovntest.MustParseIP(ipv4MgmtIP), nbClient)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			testNode, nodeACL := generateAllowFromNodeData(nodeName, ipv4MgmtIP)
@@ -2456,7 +2462,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Low-Level Operations", func() {
 			nbClient, nbCleanup, err = libovsdbtest.NewNBTestHarness(initialNbdb, nil)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-			err = addAllowACLFromNode(nodeName, ovntest.MustParseIP(ipv6MgmtIP), nbClient)
+			err = fakeOvn.controller.addAllowACLFromNode(nodeName, ovntest.MustParseIP(ipv6MgmtIP), nbClient)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			testNode, nodeACL := generateAllowFromNodeData(nodeName, ipv6MgmtIP)

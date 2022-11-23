@@ -4,6 +4,7 @@ import (
 	"context"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	"sync"
@@ -27,14 +28,16 @@ func NewSecondaryLayer2NetworkController(cnci *CommonNetworkControllerInfo, netI
 			BaseSecondaryNetworkController: BaseSecondaryNetworkController{
 				BaseNetworkController: BaseNetworkController{
 					CommonNetworkControllerInfo: *cnci,
+					NetworkControllerNetInfo:    NetworkControllerNetInfo{NetInfo: netInfo},
 					controllerName:              netInfo.GetNetworkName() + "-network-controller",
 					NetConfInfo:                 netconfInfo,
-					NetInfo:                     netInfo,
 					lsManager:                   lsm.NewL2SwitchManager(),
 					logicalPortCache:            newPortCache(stopChan),
 					namespaces:                  make(map[string]*namespaceInfo),
 					namespacesMutex:             sync.Mutex{},
 					addressSetFactory:           addressset.NewOvnAddressSetFactory(cnci.nbClient),
+					networkPolicies:             syncmap.NewSyncMap[*networkPolicy](),
+					sharedNetpolPortGroups:      syncmap.NewSyncMap[*defaultDenyPortGroups](),
 					stopChan:                    stopChan,
 					wg:                          &sync.WaitGroup{},
 				},
@@ -52,6 +55,11 @@ func NewSecondaryLayer2NetworkController(cnci *CommonNetworkControllerInfo, netI
 // Start starts the secondary layer2 controller, handles all events and creates all needed logical entities
 func (oc *SecondaryLayer2NetworkController) Start(ctx context.Context) error {
 	klog.Infof("Start secondary %s network controller of network %s", oc.TopologyType(), oc.GetNetworkName())
+	err := oc.initializeAddressSet()
+	if err != nil {
+		return err
+	}
+
 	if err := oc.Init(); err != nil {
 		return err
 	}

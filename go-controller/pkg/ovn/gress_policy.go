@@ -11,13 +11,15 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	knet "k8s.io/api/networking/v1"
 	utilnet "k8s.io/utils/net"
 )
 
 type gressPolicy struct {
-	controllerName  string
+	controllerName string
+	NetworkControllerNetInfo
 	policyNamespace string
 	policyName      string
 	policyType      knet.PolicyType
@@ -71,17 +73,18 @@ func (pp *portPolicy) getL4Match() (string, error) {
 	return foundProtocol, nil
 }
 
-func newGressPolicy(policyType knet.PolicyType, idx int, namespace, name, controllerName string, isNetPolStateless bool) *gressPolicy {
+func newGressPolicy(policyType knet.PolicyType, idx int, namespace, name, controllerName string, isNetPolStateless bool, netInfo util.NetInfo) *gressPolicy {
 	return &gressPolicy{
-		controllerName:    controllerName,
-		policyNamespace:   namespace,
-		policyName:        name,
-		policyType:        policyType,
-		idx:               idx,
-		peerV4AddressSets: &sync.Map{},
-		peerV6AddressSets: &sync.Map{},
-		portPolicies:      make([]*portPolicy, 0),
-		isNetPolStateless: isNetPolStateless,
+		NetworkControllerNetInfo: NetworkControllerNetInfo{NetInfo: netInfo},
+		controllerName:           controllerName,
+		policyNamespace:          namespace,
+		policyName:               name,
+		policyType:               policyType,
+		idx:                      idx,
+		peerV4AddressSets:        &sync.Map{},
+		peerV6AddressSets:        &sync.Map{},
+		portPolicies:             make([]*portPolicy, 0),
+		isNetPolStateless:        isNetPolStateless,
 	}
 }
 
@@ -250,9 +253,11 @@ func (gp *gressPolicy) isEmpty() bool {
 // by the parent NetworkPolicy)
 // buildLocalPodACLs is safe for concurrent use, since it only uses gressPolicy fields that don't change
 // since creation, or are safe for concurrent use like peerVXAddressSets
+// Note that portGroupName is portGroup's name without network scope prefix
 func (gp *gressPolicy) buildLocalPodACLs(portGroupName string, aclLogging *ACLLoggingLevels) (createdACLs []*nbdb.ACL,
 	skippedACLs []*nbdb.ACL) {
 	var lportMatch, match, l3Match string
+	portGroupName = gp.GetNetworkScopedName(portGroupName)
 	if gp.policyType == knet.PolicyTypeIngress {
 		lportMatch = fmt.Sprintf("outport == @%s", portGroupName)
 	} else {
@@ -347,7 +352,7 @@ func (gp *gressPolicy) buildACLAllow(match, l4Match string, ipBlockCIDR int, acl
 		policyTypeACLExtIdKey:  string(gp.policyType),
 		policyTypeNum:          policyTypeIndex,
 	}
-	acl := BuildACL(aclName, priority, match, action, aclLogging, aclT, externalIds)
+	acl := gp.BuildACL(aclName, priority, match, action, aclLogging, aclT, externalIds)
 	return acl
 }
 

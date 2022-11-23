@@ -87,30 +87,30 @@ func getMcastACLName(nsORpg, mcastSuffix string) string {
 //   - one "to-lport" ACL allowing ingress multicast traffic to pods in 'ns'.
 //     This matches only traffic originated by pods in 'ns' (based on the
 //     namespace address set).
-func (oc *DefaultNetworkController) createMulticastAllowPolicy(ns string, nsInfo *namespaceInfo) error {
+func (bnc *BaseNetworkController) createMulticastAllowPolicy(ns string, nsInfo *namespaceInfo) error {
 	portGroupName := hashedPortGroup(ns)
 
 	aclT := lportEgressAfterLB
-	egressMatch := getACLMatch(portGroupName, getMulticastACLEgrMatch(), aclT)
-	egressACL := BuildACL(getMcastACLName(ns, "MulticastAllowEgress"),
+	egressMatch := bnc.getACLMatch(portGroupName, getMulticastACLEgrMatch(), aclT)
+	egressACL := bnc.BuildACL(getMcastACLName(ns, "MulticastAllowEgress"),
 		types.DefaultMcastAllowPriority, egressMatch, nbdb.ACLActionAllow, nil, aclT,
 		getDefaultDenyPolicyExternalIDs(aclT))
 
 	aclT = lportIngress
-	ingressMatch := getACLMatch(portGroupName, getMulticastACLIgrMatch(nsInfo), aclT)
-	ingressACL := BuildACL(getMcastACLName(ns, "MulticastAllowIngress"),
+	ingressMatch := bnc.getACLMatch(portGroupName, getMulticastACLIgrMatch(nsInfo), aclT)
+	ingressACL := bnc.BuildACL(getMcastACLName(ns, "MulticastAllowIngress"),
 		types.DefaultMcastAllowPriority, ingressMatch, nbdb.ACLActionAllow, nil, aclT,
 		getDefaultDenyPolicyExternalIDs(aclT))
 
 	acls := []*nbdb.ACL{egressACL, ingressACL}
-	ops, err := libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, nil, acls...)
+	ops, err := libovsdbops.CreateOrUpdateACLsOps(bnc.nbClient, nil, acls...)
 	if err != nil {
 		return err
 	}
 
 	// Add all ports from this namespace to the multicast allow group.
 	ports := []*nbdb.LogicalSwitchPort{}
-	pods, err := oc.watchFactory.GetPods(ns)
+	pods, err := bnc.watchFactory.GetPods(ns)
 	if err != nil {
 		klog.Warningf("Failed to get pods for namespace %q: %v", ns, err)
 	}
@@ -118,20 +118,23 @@ func (oc *DefaultNetworkController) createMulticastAllowPolicy(ns string, nsInfo
 		if util.PodCompleted(pod) {
 			continue
 		}
-		if portInfo, err := oc.logicalPortCache.get(pod, types.DefaultNetworkName); err != nil {
+		portInfoMap, err := bnc.logicalPortCache.getAll(pod)
+		if err != nil {
 			klog.Errorf(err.Error())
 		} else {
-			ports = append(ports, &nbdb.LogicalSwitchPort{UUID: portInfo.uuid})
+			for _, portInfo := range portInfoMap {
+				ports = append(ports, &nbdb.LogicalSwitchPort{UUID: portInfo.uuid})
+			}
 		}
 	}
 
-	pg := libovsdbops.BuildPortGroup(portGroupName, ns, ports, acls)
-	ops, err = libovsdbops.CreateOrUpdatePortGroupsOps(oc.nbClient, ops, pg)
+	pg := bnc.buildPortGroup(portGroupName, ns, ports, acls)
+	ops, err = libovsdbops.CreateOrUpdatePortGroupsOps(bnc.nbClient, ops, pg)
 	if err != nil {
 		return err
 	}
 
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
+	_, err = libovsdbops.TransactAndCheck(bnc.nbClient, ops)
 	if err != nil {
 		return err
 	}
@@ -139,8 +142,8 @@ func (oc *DefaultNetworkController) createMulticastAllowPolicy(ns string, nsInfo
 	return nil
 }
 
-func deleteMulticastAllowPolicy(nbClient libovsdbclient.Client, ns string) error {
-	portGroupName := hashedPortGroup(ns)
+func (bnc *BaseNetworkController) deleteMulticastAllowPolicy(nbClient libovsdbclient.Client, ns string) error {
+	portGroupName := bnc.GetNetworkScopedName(hashedPortGroup(ns))
 	// ACLs referenced by the port group wil be deleted by db if there are no other references
 	err := libovsdbops.DeletePortGroups(nbClient, portGroupName)
 	if err != nil {
@@ -157,41 +160,41 @@ func deleteMulticastAllowPolicy(nbClient libovsdbclient.Client, ns string) error
 //   - one ACL dropping ingress multicast traffic to all pods.
 //
 // Caller must hold the namespace's namespaceInfo object lock.
-func (oc *DefaultNetworkController) createDefaultDenyMulticastPolicy() error {
+func (bnc *BaseNetworkController) createDefaultDenyMulticastPolicy() error {
 	match := getMulticastACLMatch()
 
 	// By default deny any egress multicast traffic from any pod. This drops
 	// IP multicast membership reports therefore denying any multicast traffic
 	// to be forwarded to pods.
 	aclT := lportEgressAfterLB
-	egressACL := BuildACL(getMcastACLName(types.ClusterPortGroupName, "DefaultDenyMulticastEgress"),
+	egressACL := bnc.BuildACL(getMcastACLName(types.ClusterPortGroupName, "DefaultDenyMulticastEgress"),
 		types.DefaultMcastDenyPriority, match, nbdb.ACLActionDrop, nil,
 		aclT, getDefaultDenyPolicyExternalIDs(aclT))
 
 	// By default deny any ingress multicast traffic to any pod.
 	aclT = lportIngress
-	ingressACL := BuildACL(getMcastACLName(types.ClusterPortGroupName, "DefaultDenyMulticastIngress"),
+	ingressACL := bnc.BuildACL(getMcastACLName(types.ClusterPortGroupName, "DefaultDenyMulticastIngress"),
 		types.DefaultMcastDenyPriority, match, nbdb.ACLActionDrop, nil,
 		aclT, getDefaultDenyPolicyExternalIDs(aclT))
 
-	ops, err := libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, nil, egressACL, ingressACL)
+	ops, err := libovsdbops.CreateOrUpdateACLsOps(bnc.nbClient, nil, egressACL, ingressACL)
 	if err != nil {
 		return err
 	}
 
-	ops, err = libovsdbops.AddACLsToPortGroupOps(oc.nbClient, ops, types.ClusterPortGroupName, egressACL, ingressACL)
+	ops, err = libovsdbops.AddACLsToPortGroupOps(bnc.nbClient, ops, bnc.GetNetworkScopedName(types.ClusterPortGroupName), egressACL, ingressACL)
 	if err != nil {
 		return err
 	}
 
 	// Remove old multicastDefaultDeny port group now that all ports
 	// have been added to the clusterPortGroup by WatchPods()
-	ops, err = libovsdbops.DeletePortGroupsOps(oc.nbClient, ops, legacyMulticastDefaultDenyPortGroup)
+	ops, err = libovsdbops.DeletePortGroupsOps(bnc.nbClient, ops, bnc.GetNetworkScopedName(legacyMulticastDefaultDenyPortGroup))
 	if err != nil {
 		return err
 	}
 
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
+	_, err = libovsdbops.TransactAndCheck(bnc.nbClient, ops)
 	if err != nil {
 		return err
 	}
@@ -203,32 +206,33 @@ func (oc *DefaultNetworkController) createDefaultDenyMulticastPolicy() error {
 // - one ACL allowing multicast traffic from cluster router ports
 // - one ACL allowing multicast traffic to cluster router ports.
 // Caller must hold the namespace's namespaceInfo object lock.
-func (oc *DefaultNetworkController) createDefaultAllowMulticastPolicy() error {
+func (bnc *BaseNetworkController) createDefaultAllowMulticastPolicy() error {
 	mcastMatch := getMulticastACLMatch()
 
 	aclT := lportEgressAfterLB
-	egressMatch := getACLMatch(types.ClusterRtrPortGroupName, mcastMatch, aclT)
-	egressACL := BuildACL(getMcastACLName(types.ClusterRtrPortGroupName, "DefaultAllowMulticastEgress"),
+	egressMatch := bnc.getACLMatch(types.ClusterRtrPortGroupName, mcastMatch, aclT)
+	egressACL := bnc.BuildACL(getMcastACLName(types.ClusterRtrPortGroupName, "DefaultAllowMulticastEgress"),
 		types.DefaultMcastAllowPriority, egressMatch, nbdb.ACLActionAllow, nil,
 		aclT, getDefaultDenyPolicyExternalIDs(aclT))
 
 	aclT = lportIngress
-	ingressMatch := getACLMatch(types.ClusterRtrPortGroupName, mcastMatch, aclT)
-	ingressACL := BuildACL(getMcastACLName(types.ClusterRtrPortGroupName, "DefaultAllowMulticastIngress"),
+	ingressMatch := bnc.getACLMatch(types.ClusterRtrPortGroupName, mcastMatch, aclT)
+	ingressACL := bnc.BuildACL(getMcastACLName(types.ClusterRtrPortGroupName, "DefaultAllowMulticastIngress"),
 		types.DefaultMcastAllowPriority, ingressMatch, nbdb.ACLActionAllow, nil,
 		aclT, getDefaultDenyPolicyExternalIDs(aclT))
 
-	ops, err := libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, nil, egressACL, ingressACL)
+	ops, err := libovsdbops.CreateOrUpdateACLsOps(bnc.nbClient, nil, egressACL, ingressACL)
 	if err != nil {
 		return err
 	}
 
-	ops, err = libovsdbops.AddACLsToPortGroupOps(oc.nbClient, ops, types.ClusterRtrPortGroupName, egressACL, ingressACL)
+	ops, err = libovsdbops.AddACLsToPortGroupOps(bnc.nbClient, ops,
+		bnc.GetNetworkScopedName(types.ClusterRtrPortGroupName), egressACL, ingressACL)
 	if err != nil {
 		return err
 	}
 
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
+	_, err = libovsdbops.TransactAndCheck(bnc.nbClient, ops)
 	if err != nil {
 		return err
 	}
@@ -239,13 +243,13 @@ func (oc *DefaultNetworkController) createDefaultAllowMulticastPolicy() error {
 // podAddAllowMulticastPolicy adds the pod's logical switch port to the namespace's
 // multicast port group. Caller must hold the namespace's namespaceInfo object
 // lock.
-func podAddAllowMulticastPolicy(nbClient libovsdbclient.Client, ns string, portInfo *lpInfo) error {
-	return libovsdbops.AddPortsToPortGroup(nbClient, hashedPortGroup(ns), portInfo.uuid)
+func (bnc *BaseNetworkController) podAddAllowMulticastPolicy(ns string, portInfo *lpInfo) error {
+	return libovsdbops.AddPortsToPortGroup(bnc.nbClient, bnc.GetNetworkScopedName(hashedPortGroup(ns)), portInfo.uuid)
 }
 
 // podDeleteAllowMulticastPolicy removes the pod's logical switch port from the
 // namespace's multicast port group. Caller must hold the namespace's
 // namespaceInfo object lock.
-func podDeleteAllowMulticastPolicy(nbClient libovsdbclient.Client, ns string, portUUID string) error {
-	return libovsdbops.DeletePortsFromPortGroup(nbClient, hashedPortGroup(ns), portUUID)
+func (bnc *BaseNetworkController) podDeleteAllowMulticastPolicy(ns string, portUUID string) error {
+	return libovsdbops.DeletePortsFromPortGroup(bnc.nbClient, bnc.GetNetworkScopedName(hashedPortGroup(ns)), portUUID)
 }

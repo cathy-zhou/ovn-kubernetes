@@ -406,7 +406,7 @@ func (oc *DefaultNetworkController) createEgressFirewallRules(priority int, matc
 	// egressFirewall_<namespace name>_<priority>
 	aclName := buildEgressFwAclName(externalID, priority)
 
-	egressFirewallACL := BuildACL(
+	egressFirewallACL := oc.BuildACL(
 		aclName,
 		priority,
 		match,

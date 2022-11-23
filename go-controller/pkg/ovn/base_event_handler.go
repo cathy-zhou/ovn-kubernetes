@@ -7,9 +7,9 @@ import (
 	kapi "k8s.io/api/core/v1"
 	knet "k8s.io/api/networking/v1"
 	"k8s.io/client-go/tools/cache"
-
 	"k8s.io/klog/v2"
 
+	mnpapi "github.com/k8snetworkplumbingwg/multi-networkpolicy/pkg/apis/k8s.cni.cncf.io/v1beta1"
 	egressfirewall "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -55,6 +55,17 @@ func (h *baseNetworkControllerEventHandler) areResourcesEqual(objType reflect.Ty
 			return false, fmt.Errorf("could not cast obj2 of type %T to *knet.NetworkPolicy", obj2)
 		}
 		return reflect.DeepEqual(np1, np2), nil
+
+	case factory.MultiNetworkPolicyType:
+		mnp1, ok := obj1.(*mnpapi.MultiNetworkPolicy)
+		if !ok {
+			return false, fmt.Errorf("could not cast obj1 of type %T to *multinetworkpolicyapi.MultiNetworkPolicy", obj1)
+		}
+		mnp2, ok := obj2.(*mnpapi.MultiNetworkPolicy)
+		if !ok {
+			return false, fmt.Errorf("could not cast obj2 of type %T to *multinetworkpolicyapi.MultiNetworkPolicy", obj2)
+		}
+		return reflect.DeepEqual(mnp1, mnp2), nil
 
 	case factory.NodeType:
 		node1, ok := obj1.(*kapi.Node)
@@ -144,6 +155,9 @@ func (h *baseNetworkControllerEventHandler) getResourceFromInformerCache(objType
 	switch objType {
 	case factory.PolicyType:
 		obj, err = watchFactory.GetNetworkPolicy(namespace, name)
+
+	case factory.MultiNetworkPolicyType:
+		obj, err = watchFactory.GetMultiNetworkPolicy(namespace, name)
 
 	case factory.NodeType,
 		factory.EgressNodeType,

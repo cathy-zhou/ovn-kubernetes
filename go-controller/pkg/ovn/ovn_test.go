@@ -167,6 +167,7 @@ func NewOvnController(ovnClient *util.OVNMasterClientset, wf *factory.WatchFacto
 		&podRecorder,
 		false,
 		false,
+		true,
 	)
 	if err != nil {
 		return nil, err
