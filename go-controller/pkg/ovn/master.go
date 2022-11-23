@@ -129,7 +129,7 @@ func (oc *DefaultNetworkController) SetupMaster(existingNodeNames []string) erro
 	if pg == nil {
 		// we didn't find an existing clusterPG, let's create a new empty PG (fresh cluster install)
 		// Create a cluster-wide port group that all logical switch ports are part of
-		pg := libovsdbops.BuildPortGroup(types.ClusterPortGroupName, types.ClusterPortGroupName, nil, nil)
+		pg := oc.buildPortGroup(types.ClusterPortGroupName, types.ClusterPortGroupName, nil, nil)
 		err = libovsdbops.CreateOrUpdatePortGroups(oc.nbClient, pg)
 		if err != nil {
 			klog.Errorf("Failed to create cluster port group: %v", err)
@@ -149,7 +149,7 @@ func (oc *DefaultNetworkController) SetupMaster(existingNodeNames []string) erro
 		// Create a cluster-wide port group with all node-to-cluster router
 		// logical switch ports. Currently the only user is multicast but it might
 		// be used for other features in the future.
-		pg = libovsdbops.BuildPortGroup(types.ClusterRtrPortGroupName, types.ClusterRtrPortGroupName, nil, nil)
+		pg = oc.buildPortGroup(types.ClusterRtrPortGroupName, types.ClusterRtrPortGroupName, nil, nil)
 		err = libovsdbops.CreateOrUpdatePortGroups(oc.nbClient, pg)
 		if err != nil {
 			klog.Errorf("Failed to create cluster port group: %v", err)
@@ -877,35 +877,5 @@ func (oc *DefaultNetworkController) deleteNodeEvent(node *kapi.Node) error {
 	oc.mgmtPortFailed.Delete(node.Name)
 	oc.gatewaysFailed.Delete(node.Name)
 	oc.nodeClusterRouterPortFailed.Delete(node.Name)
-	return nil
-}
-
-func (oc *DefaultNetworkController) createACLLoggingMeter() error {
-	band := &nbdb.MeterBand{
-		Action: types.MeterAction,
-		Rate:   config.Logging.ACLLoggingRateLimit,
-	}
-	ops, err := libovsdbops.CreateMeterBandOps(oc.nbClient, nil, band)
-	if err != nil {
-		return fmt.Errorf("can't create meter band %v: %v", band, err)
-	}
-
-	meterFairness := true
-	meter := &nbdb.Meter{
-		Name: types.OvnACLLoggingMeter,
-		Fair: &meterFairness,
-		Unit: types.PacketsPerSecond,
-	}
-	ops, err = libovsdbops.CreateOrUpdateMeterOps(oc.nbClient, ops, meter, []*nbdb.MeterBand{band},
-		&meter.Bands, &meter.Fair, &meter.Unit)
-	if err != nil {
-		return fmt.Errorf("can't create meter %v: %v", meter, err)
-	}
-
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
-	if err != nil {
-		return fmt.Errorf("can't transact ACL logging meter: %v", err)
-	}
-
 	return nil
 }

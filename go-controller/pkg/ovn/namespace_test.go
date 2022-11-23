@@ -295,7 +295,6 @@ var _ = ginkgo.Describe("OVN Namespace Operations", func() {
 
 			err = fakeOvn.controller.WatchNamespaces()
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			fakeOvn.asf.EventuallyExpectEmptyAddressSetExist(hostNetworkNamespace)
 
 			err = fakeOvn.controller.WatchNodes()
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())

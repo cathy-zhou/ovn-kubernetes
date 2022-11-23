@@ -69,6 +69,11 @@ func joinACLName(substrings ...string) string {
 	return strings.Join(substrings, "_")
 }
 
+func buildPortGroup(hashName, name string, ports []*nbdb.LogicalSwitchPort, acls []*nbdb.ACL) *nbdb.PortGroup {
+	externalIds := map[string]string{"name": name}
+	return libovsdbops.BuildPortGroup(hashName, ports, acls, externalIds)
+}
+
 var _ = ginkgo.Describe("OVN ACL Syncer", func() {
 	const (
 		controllerName = "fake-controller"
@@ -422,7 +427,7 @@ var _ = ginkgo.Describe("OVN ACL Syncer", func() {
 			nil,
 		)
 		staleARPEgressACL.UUID = "staleARPEgressACL-UUID"
-		egressDenyPG := libovsdbops.BuildPortGroup(
+		egressDenyPG := buildPortGroup(
 			egressPGName,
 			egressPGName,
 			nil,
@@ -443,7 +448,7 @@ var _ = ginkgo.Describe("OVN ACL Syncer", func() {
 			nil,
 		)
 		staleARPIngressACL.UUID = "staleARPIngressACL-UUID"
-		ingressDenyPG := libovsdbops.BuildPortGroup(
+		ingressDenyPG := buildPortGroup(
 			ingressPGName,
 			ingressPGName,
 			nil,
@@ -451,14 +456,14 @@ var _ = ginkgo.Describe("OVN ACL Syncer", func() {
 		)
 		ingressDenyPG.UUID = ingressDenyPG.Name + "-UUID"
 		initialDb := []libovsdbtest.TestData{staleARPEgressACL, egressDenyPG, staleARPIngressACL, ingressDenyPG}
-		finalEgressDenyPG := libovsdbops.BuildPortGroup(
+		finalEgressDenyPG := buildPortGroup(
 			egressPGName,
 			egressPGName,
 			nil,
 			nil,
 		)
 		finalEgressDenyPG.UUID = finalEgressDenyPG.Name + "-UUID"
-		finalIngressDenyPG := libovsdbops.BuildPortGroup(
+		finalIngressDenyPG := buildPortGroup(
 			ingressPGName,
 			ingressPGName,
 			nil,
@@ -558,7 +563,7 @@ var _ = ginkgo.Describe("OVN ACL Syncer", func() {
 			nil,
 		)
 		staleARPEgressACL.UUID = "staleARPEgressACL-UUID"
-		egressDenyPG := libovsdbops.BuildPortGroup(
+		egressDenyPG := buildPortGroup(
 			egressPGName,
 			egressPGName,
 			nil,
@@ -579,7 +584,7 @@ var _ = ginkgo.Describe("OVN ACL Syncer", func() {
 			nil,
 		)
 		staleARPIngressACL.UUID = "staleARPIngressACL-UUID"
-		ingressDenyPG := libovsdbops.BuildPortGroup(
+		ingressDenyPG := buildPortGroup(
 			ingressPGName,
 			ingressPGName,
 			nil,
@@ -587,14 +592,14 @@ var _ = ginkgo.Describe("OVN ACL Syncer", func() {
 		)
 		ingressDenyPG.UUID = ingressDenyPG.Name + "-UUID"
 		initialDb := []libovsdbtest.TestData{staleARPEgressACL, egressDenyPG, staleARPIngressACL, ingressDenyPG}
-		finalEgressDenyPG := libovsdbops.BuildPortGroup(
+		finalEgressDenyPG := buildPortGroup(
 			egressPGName,
 			egressPGName,
 			nil,
 			nil,
 		)
 		finalEgressDenyPG.UUID = finalEgressDenyPG.Name + "-UUID"
-		finalIngressDenyPG := libovsdbops.BuildPortGroup(
+		finalIngressDenyPG := buildPortGroup(
 			ingressPGName,
 			ingressPGName,
 			nil,
