@@ -170,13 +170,6 @@ func (oc *DefaultNetworkController) removePod(pod *kapi.Pod, portInfo *lpInfo) e
 	return nil
 }
 
-// WatchNetworkPolicy starts the watching of the network policy resource and calls
-// back the appropriate handler logic
-func (oc *DefaultNetworkController) WatchNetworkPolicy() error {
-	_, err := oc.retryNetworkPolicies.WatchResource()
-	return err
-}
-
 // WatchEgressFirewall starts the watching of egressfirewall resource and calls
 // back the appropriate handler logic
 func (oc *DefaultNetworkController) WatchEgressFirewall() error {
@@ -218,8 +211,15 @@ func (oc *DefaultNetworkController) WatchEgressIPPods() error {
 
 // WatchNamespaces starts the watching of namespace resource and calls
 // back the appropriate handler logic
-func (oc *DefaultNetworkController) WatchNamespaces() error {
-	_, err := oc.retryNamespaces.WatchResource()
+func (bnc *BaseNetworkController) WatchNamespaces() error {
+	if bnc.namespaceHandler != nil {
+		return nil
+	}
+
+	handler, err := bnc.retryNamespaces.WatchResource()
+	if err == nil {
+		bnc.namespaceHandler = handler
+	}
 	return err
 }
 
@@ -276,12 +276,12 @@ func (oc *DefaultNetworkController) syncNodeGateway(node *kapi.Node, hostSubnets
 // *) If one of "allow" or "deny" can be parsed and has a valid value, but the other key is not present in the
 //
 //	annotation, then assume that this key should be disabled by setting its nsInfo value to "".
-func (oc *DefaultNetworkController) aclLoggingUpdateNsInfo(annotation string, nsInfo *namespaceInfo) error {
+func (bnc *BaseNetworkController) aclLoggingUpdateNsInfo(annotation string, nsInfo *namespaceInfo) error {
 	var aclLevels ACLLoggingLevels
 	var errors []error
 
 	// If logging is disabled or if the annotation is "" or "{}", use empty strings. Otherwise, parse the annotation.
-	if oc.aclLoggingEnabled && annotation != "" && annotation != "{}" {
+	if bnc.aclLoggingEnabled && annotation != "" && annotation != "{}" {
 		err := json.Unmarshal([]byte(annotation), &aclLevels)
 		if err != nil {
 			// Disable Allow and Deny logging to ensure idempotency.

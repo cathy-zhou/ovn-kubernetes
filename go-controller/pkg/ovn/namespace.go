@@ -60,7 +60,7 @@ type namespaceInfo struct {
 
 // This function implements the main body of work of syncNamespaces.
 // Upon failure, it may be invoked multiple times in order to avoid a pod restart.
-func (oc *DefaultNetworkController) syncNamespaces(namespaces []interface{}) error {
+func (bnc *BaseNetworkController) syncNamespaces(namespaces []interface{}) error {
 	expectedNs := make(map[string]bool)
 	for _, nsInterface := range namespaces {
 		ns, ok := nsInterface.(*kapi.Namespace)
@@ -70,7 +70,7 @@ func (oc *DefaultNetworkController) syncNamespaces(namespaces []interface{}) err
 		expectedNs[ns.Name] = true
 	}
 
-	err := oc.addressSetFactory.ProcessEachAddressSet(func(hashedName, addrSetName string) error {
+	err := bnc.addressSetFactory.ProcessEachAddressSet(func(hashedName, addrSetName string) error {
 		// filter out address sets owned by HybridRoutePolicy and EgressQoS by prefix.
 		// network policy-owned address set would have a dot in the address set name due to the format
 		// (namespace can't have dots in its name, and their address sets too).
@@ -86,7 +86,7 @@ func (oc *DefaultNetworkController) syncNamespaces(namespaces []interface{}) err
 		aclPred := func(acl *nbdb.ACL) bool {
 			return strings.Contains(acl.Match, "$"+hashedName)
 		}
-		acls, err := libovsdbops.FindACLsWithPredicate(oc.nbClient, aclPred)
+		acls, err := libovsdbops.FindACLsWithPredicate(bnc.nbClient, aclPred)
 		if err != nil {
 			return fmt.Errorf("failed to find referencing acls for address set %s: %v", addrSetName, err)
 		}
@@ -102,7 +102,7 @@ func (oc *DefaultNetworkController) syncNamespaces(namespaces []interface{}) err
 		}
 		// address set is owned by namespace, namespace name = address set name
 		if !expectedNs[addrSetName] {
-			if err = oc.addressSetFactory.DestroyAddressSetInBackingStore(addrSetName); err != nil {
+			if err = bnc.addressSetFactory.DestroyAddressSetInBackingStore(addrSetName); err != nil {
 				return err
 			}
 		}
@@ -188,8 +188,8 @@ func isNamespaceMulticastEnabled(annotations map[string]string) bool {
 // Creates an explicit "allow" policy for multicast traffic within the
 // namespace if multicast is enabled. Otherwise, removes the "allow" policy.
 // Traffic will be dropped by the default multicast deny ACL.
-func (oc *DefaultNetworkController) multicastUpdateNamespace(ns *kapi.Namespace, nsInfo *namespaceInfo) error {
-	if !oc.multicastSupport {
+func (bnc *BaseNetworkController) multicastUpdateNamespace(ns *kapi.Namespace, nsInfo *namespaceInfo) error {
+	if !bnc.multicastSupport {
 		return nil
 	}
 
@@ -202,9 +202,9 @@ func (oc *DefaultNetworkController) multicastUpdateNamespace(ns *kapi.Namespace,
 	var err error
 	nsInfo.multicastEnabled = enabled
 	if enabled {
-		err = oc.createMulticastAllowPolicy(ns.Name, nsInfo)
+		err = bnc.createMulticastAllowPolicy(ns.Name, nsInfo)
 	} else {
-		err = deleteMulticastAllowPolicy(oc.nbClient, ns.Name)
+		err = deleteMulticastAllowPolicy(bnc.nbClient, ns.Name)
 	}
 	if err != nil {
 		return err
@@ -214,10 +214,10 @@ func (oc *DefaultNetworkController) multicastUpdateNamespace(ns *kapi.Namespace,
 
 // Cleans up the multicast policy for this namespace if multicast was
 // previously allowed.
-func (oc *DefaultNetworkController) multicastDeleteNamespace(ns *kapi.Namespace, nsInfo *namespaceInfo) error {
+func (bnc *BaseNetworkController) multicastDeleteNamespace(ns *kapi.Namespace, nsInfo *namespaceInfo) error {
 	if nsInfo.multicastEnabled {
 		nsInfo.multicastEnabled = false
-		if err := deleteMulticastAllowPolicy(oc.nbClient, ns.Name); err != nil {
+		if err := deleteMulticastAllowPolicy(bnc.nbClient, ns.Name); err != nil {
 			return err
 		}
 	}
@@ -245,6 +245,7 @@ func (oc *DefaultNetworkController) AddNamespace(ns *kapi.Namespace) error {
 // must be called with nsInfo lock
 func (oc *DefaultNetworkController) configureNamespace(nsInfo *namespaceInfo, ns *kapi.Namespace) error {
 	var errors []error
+
 	if annotation, ok := ns.Annotations[util.RoutingExternalGWsAnnotation]; ok {
 		exGateways, err := util.ParseRoutingExternalGWAnnotation(annotation)
 		if err != nil {
@@ -261,8 +262,15 @@ func (oc *DefaultNetworkController) configureNamespace(nsInfo *namespaceInfo, ns
 		}
 	}
 
+	if err := oc.configureNamespaceCommon(nsInfo, ns); err != nil {
+		errors = append(errors, err)
+	}
+	return kerrors.NewAggregate(errors)
+}
+
+func (bnc *BaseNetworkController) configureNamespaceCommon(nsInfo *namespaceInfo, ns *kapi.Namespace) error {
 	if annotation, ok := ns.Annotations[util.AclLoggingAnnotation]; ok {
-		if err := oc.aclLoggingUpdateNsInfo(annotation, nsInfo); err == nil {
+		if err := bnc.aclLoggingUpdateNsInfo(annotation, nsInfo); err == nil {
 			klog.Infof("Namespace %s: ACL logging is set to deny=%s allow=%s", ns.Name, nsInfo.aclLogging.Deny, nsInfo.aclLogging.Allow)
 		} else {
 			klog.Warningf("Namespace %s: ACL logging contained malformed annotation, "+
@@ -277,10 +285,10 @@ func (oc *DefaultNetworkController) configureNamespace(nsInfo *namespaceInfo, ns
 	// created
 
 	// If multicast enabled, adds all current pods in the namespace to the allow policy
-	if err := oc.multicastUpdateNamespace(ns, nsInfo); err != nil {
-		errors = append(errors, fmt.Errorf("failed to update multicast (%v)", err))
+	if err := bnc.multicastUpdateNamespace(ns, nsInfo); err != nil {
+		return fmt.Errorf("failed to update multicast (%v)", err)
 	}
-	return kerrors.NewAggregate(errors)
+	return nil
 }
 
 func (oc *DefaultNetworkController) updateNamespace(old, newer *kapi.Namespace) error {
@@ -369,18 +377,8 @@ func (oc *DefaultNetworkController) updateNamespace(old, newer *kapi.Namespace) 
 	oldACLAnnotation := old.Annotations[util.AclLoggingAnnotation]
 	// support for ACL logging update, if new annotation is empty, make sure we propagate new setting
 	if aclAnnotation != oldACLAnnotation {
-		// When input cannot be parsed correctly, aclLoggingUpdateNsInfo disables logging and returns an error. Hence,
-		// log a warning to make users aware of issues with the annotation. See aclLoggingUpdateNsInfo for more details.
-		if err := oc.aclLoggingUpdateNsInfo(aclAnnotation, nsInfo); err != nil {
-			klog.Warningf("Namespace %s: ACL logging contained malformed annotation, "+
-				"ACL logging is set to deny=%s allow=%s, err: %q",
-				newer.Name, nsInfo.aclLogging.Deny, nsInfo.aclLogging.Allow, err)
-		}
-		if err := oc.handleNetPolNamespaceUpdate(old.Name, nsInfo); err != nil {
+		if err := oc.updateNamespaceAclLogging(old.Name, aclAnnotation, nsInfo); err != nil {
 			errors = append(errors, err)
-		} else {
-			klog.Infof("Namespace %s: NetworkPolicy ACL logging setting updated to deny=%s allow=%s",
-				old.Name, nsInfo.aclLogging.Deny, nsInfo.aclLogging.Allow)
 		}
 		// Trigger an egress fw logging update - this will only happen if an egress firewall exists for the NS, otherwise
 		// this will not do anything.
@@ -397,6 +395,23 @@ func (oc *DefaultNetworkController) updateNamespace(old, newer *kapi.Namespace) 
 		errors = append(errors, err)
 	}
 	return kerrors.NewAggregate(errors)
+}
+
+func (bnc *BaseNetworkController) updateNamespaceAclLogging(ns, aclAnnotation string, nsInfo *namespaceInfo) error {
+	// When input cannot be parsed correctly, aclLoggingUpdateNsInfo disables logging and returns an error. Hence,
+	// log a warning to make users aware of issues with the annotation. See aclLoggingUpdateNsInfo for more details.
+	if err := bnc.aclLoggingUpdateNsInfo(aclAnnotation, nsInfo); err != nil {
+		klog.Warningf("Namespace %s: ACL logging contained malformed annotation, "+
+			"ACL logging is set to deny=%s allow=%s, err: %q",
+			ns, nsInfo.aclLogging.Deny, nsInfo.aclLogging.Allow, err)
+	}
+	if err := bnc.handleNetPolNamespaceUpdate(ns, nsInfo); err != nil {
+		return err
+	} else {
+		klog.Infof("Namespace %s: NetworkPolicy ACL logging setting updated to deny=%s allow=%s",
+			ns, nsInfo.aclLogging.Deny, nsInfo.aclLogging.Allow)
+	}
+	return nil
 }
 
 func (oc *DefaultNetworkController) deleteNamespace(ns *kapi.Namespace) error {
@@ -422,6 +437,15 @@ func (oc *DefaultNetworkController) deleteNamespace(ns *kapi.Namespace) error {
 // ns is the name of the namespace, while namespace is the optional k8s namespace object
 // if no k8s namespace object is provided, this function will attempt to find it via informer cache
 func (oc *DefaultNetworkController) ensureNamespaceLocked(ns string, readOnly bool, namespace *kapi.Namespace) (*namespaceInfo, func(), error) {
+	var ips []net.IP
+
+	// special handling of host network namespace, bug? TBD cathy
+	if config.Kubernetes.HostNetworkNamespace != "" && ns == config.Kubernetes.HostNetworkNamespace {
+		ips = oc.getAllHostNamespaceAddresses(ns)
+	} else {
+		ips = oc.getAllNamespacePodAddresses(ns)
+	}
+
 	oc.namespacesMutex.Lock()
 	nsInfo := oc.namespaces[ns]
 	nsInfoExisted := false
@@ -437,7 +461,7 @@ func (oc *DefaultNetworkController) ensureNamespaceLocked(ns string, readOnly bo
 		defer oc.namespacesMutex.Unlock()
 		// create the adddress set for the new namespace
 		var err error
-		nsInfo.addressSet, err = oc.createNamespaceAddrSetAllPods(ns)
+		nsInfo.addressSet, err = oc.createNamespaceAddrSetAllPods(ns, ips)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create address set for namespace: %s, error: %v", ns, err)
 		}
@@ -492,49 +516,50 @@ func (oc *DefaultNetworkController) ensureNamespaceLocked(ns string, readOnly bo
 	return nsInfo, unlockFunc, nil
 }
 
-func (oc *DefaultNetworkController) createNamespaceAddrSetAllPods(ns string) (addressset.AddressSet, error) {
+func (oc *DefaultNetworkController) getAllHostNamespaceAddresses(ns string) []net.IP {
 	var ips []net.IP
-	// special handling of host network namespace
-	if config.Kubernetes.HostNetworkNamespace != "" &&
-		ns == config.Kubernetes.HostNetworkNamespace {
-		// add the mp0 interface addresses to this namespace.
-		existingNodes, err := oc.watchFactory.GetNodes()
-		if err != nil {
-			klog.Errorf("Failed to get all nodes (%v)", err)
-		} else {
-			ips = make([]net.IP, 0, len(existingNodes))
-			for _, node := range existingNodes {
-				hostSubnets, err := util.ParseNodeHostSubnetAnnotation(node, types.DefaultNetworkName)
-				if err != nil {
-					klog.Warningf("Error parsing host subnet annotation for node %s (%v)",
-						node.Name, err)
-				}
-				for _, hostSubnet := range hostSubnets {
-					mgmtIfAddr := util.GetNodeManagementIfAddr(hostSubnet)
-					ips = append(ips, mgmtIfAddr.IP)
-				}
-				// for shared gateway mode we will use LRP IPs to SNAT host network traffic
-				// so add these to the address set.
-				lrpIPs, err := oc.joinSwIPManager.EnsureJoinLRPIPs(node.Name)
-				if err != nil {
-					klog.Errorf("Failed to get join switch port IP address for node %s: %v", node.Name, err)
-				}
+	// add the mp0 interface addresses to this namespace.
+	existingNodes, err := oc.watchFactory.GetNodes()
+	if err != nil {
+		klog.Errorf("Failed to get all nodes (%v)", err)
+	} else {
+		ips = make([]net.IP, 0, len(existingNodes))
+		for _, node := range existingNodes {
+			hostSubnets, err := util.ParseNodeHostSubnetAnnotation(node, types.DefaultNetworkName)
+			if err != nil {
+				klog.Warningf("Error parsing host subnet annotation for node %s (%v)",
+					node.Name, err)
+			}
+			for _, hostSubnet := range hostSubnets {
+				mgmtIfAddr := util.GetNodeManagementIfAddr(hostSubnet)
+				ips = append(ips, mgmtIfAddr.IP)
+			}
+			// for shared gateway mode we will use LRP IPs to SNAT host network traffic
+			// so add these to the address set.
+			lrpIPs, err := oc.joinSwIPManager.EnsureJoinLRPIPs(node.Name)
+			if err != nil {
+				klog.Errorf("Failed to get join switch port IP address for node %s: %v", node.Name, err)
+			}
 
-				for _, lrpIP := range lrpIPs {
-					ips = append(ips, lrpIP.IP)
-				}
+			for _, lrpIP := range lrpIPs {
+				ips = append(ips, lrpIP.IP)
 			}
 		}
 	}
+	return ips
+}
+
+func (bnc *BaseNetworkController) getAllNamespacePodAddresses(ns string) []net.IP {
+	var ips []net.IP
 	// Get all the pods in the namespace and append their IP to the address_set
-	existingPods, err := oc.watchFactory.GetPods(ns)
+	existingPods, err := bnc.watchFactory.GetPods(ns)
 	if err != nil {
 		klog.Errorf("Failed to get all the pods (%v)", err)
 	} else {
 		ips = make([]net.IP, 0, len(existingPods))
 		for _, pod := range existingPods {
 			if util.PodWantsNetwork(pod) && !util.PodCompleted(pod) && util.PodScheduled(pod) {
-				podIPs, err := util.GetPodIPsOfNetwork(pod, oc.NetInfo)
+				podIPs, err := util.GetPodIPsOfNetwork(pod, bnc.NetInfo)
 				if err != nil {
 					klog.Warningf(err.Error())
 					continue
@@ -543,5 +568,9 @@ func (oc *DefaultNetworkController) createNamespaceAddrSetAllPods(ns string) (ad
 			}
 		}
 	}
-	return oc.addressSetFactory.NewAddressSet(ns, ips)
+	return ips
+}
+
+func (bnc *BaseNetworkController) createNamespaceAddrSetAllPods(ns string, ips []net.IP) (addressset.AddressSet, error) {
+	return bnc.addressSetFactory.NewAddressSet(ns, ips)
 }

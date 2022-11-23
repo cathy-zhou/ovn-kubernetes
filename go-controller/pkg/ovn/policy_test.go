@@ -158,11 +158,12 @@ func getDefaultDenyData(networkPolicy *knet.NetworkPolicy, ports []string,
 	if policyTypeEgress {
 		egressDenyPorts = lsps
 	}
-	egressDenyPG := libovsdbops.BuildPortGroup(
+	egressDenyPG := buildPortGroup(
 		egressPGName,
 		egressPGName,
 		egressDenyPorts,
 		[]*nbdb.ACL{egressDenyACL, egressAllowACL},
+		&util.DefaultNetInfo{},
 	)
 	egressDenyPG.UUID = egressDenyPG.Name + "-UUID"
 
@@ -170,11 +171,12 @@ func getDefaultDenyData(networkPolicy *knet.NetworkPolicy, ports []string,
 	if policyTypeIngress {
 		ingressDenyPorts = lsps
 	}
-	ingressDenyPG := libovsdbops.BuildPortGroup(
+	ingressDenyPG := buildPortGroup(
 		ingressPGName,
 		ingressPGName,
 		ingressDenyPorts,
 		[]*nbdb.ACL{ingressDenyACL, ingressAllowACL},
+		&util.DefaultNetInfo{},
 	)
 	ingressDenyPG.UUID = ingressDenyPG.Name + "-UUID"
 
@@ -303,11 +305,12 @@ func getPolicyData(networkPolicy *knet.NetworkPolicy, policyPorts []string, peer
 	}
 
 	pgName, readableName := getNetworkPolicyPGName(networkPolicy.Namespace, networkPolicy.Name)
-	pg := libovsdbops.BuildPortGroup(
+	pg := buildPortGroup(
 		pgName,
 		readableName,
 		lsps,
 		acls,
+		&util.DefaultNetInfo{},
 	)
 	pg.UUID = pg.Name + "-UUID"
 
@@ -1040,11 +1043,12 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 					egressOptions,
 				)
 				leftOverACL1FromUpgrade.UUID = *leftOverACL1FromUpgrade.Name + "-egressAllowACL-UUID"
-				testOnlyEgressDenyPG := libovsdbops.BuildPortGroup(
+				testOnlyEgressDenyPG := buildPortGroup(
 					egressPGName,
 					egressPGName,
 					nil,
 					[]*nbdb.ACL{leftOverACL1FromUpgrade},
+					&util.DefaultNetInfo{},
 				)
 				testOnlyEgressDenyPG.UUID = testOnlyEgressDenyPG.Name + "-UUID"
 				// ACL2: leftover arp allow ACL ingress with old match (arp)
@@ -1063,11 +1067,12 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 					nil,
 				)
 				leftOverACL2FromUpgrade.UUID = *leftOverACL2FromUpgrade.Name + "-ingressAllowACL-UUID"
-				testOnlyIngressDenyPG := libovsdbops.BuildPortGroup(
+				testOnlyIngressDenyPG := buildPortGroup(
 					ingressPGName,
 					ingressPGName,
 					nil,
 					[]*nbdb.ACL{leftOverACL2FromUpgrade},
+					&util.DefaultNetInfo{},
 				)
 				testOnlyIngressDenyPG.UUID = testOnlyIngressDenyPG.Name + "-UUID"
 
@@ -1199,11 +1204,12 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 					nil,
 				)
 				leftOverACL1FromUpgrade.UUID = *leftOverACL1FromUpgrade.Name + "-egressAllowACL-UUID"
-				testOnlyEgressDenyPG := libovsdbops.BuildPortGroup(
+				testOnlyEgressDenyPG := buildPortGroup(
 					egressPGName,
 					egressPGName,
 					nil,
 					[]*nbdb.ACL{leftOverACL1FromUpgrade},
+					&util.DefaultNetInfo{},
 				)
 				testOnlyEgressDenyPG.UUID = testOnlyEgressDenyPG.Name + "-UUID"
 				// ACL2: leftover arp allow ACL ingress with old match (arp)
@@ -1239,11 +1245,12 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 					nil,
 				)
 				leftOverACL3FromUpgrade.UUID = *leftOverACL3FromUpgrade.Name + "-ingressAllowACL-UUID1"
-				testOnlyIngressDenyPG := libovsdbops.BuildPortGroup(
+				testOnlyIngressDenyPG := buildPortGroup(
 					ingressPGName,
 					ingressPGName,
 					nil,
 					[]*nbdb.ACL{leftOverACL2FromUpgrade, leftOverACL3FromUpgrade},
+					&util.DefaultNetInfo{},
 				)
 				testOnlyIngressDenyPG.UUID = testOnlyIngressDenyPG.Name + "-UUID"
 
@@ -2019,7 +2026,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Low-Level Operations", func() {
 			},
 		}
 
-		gp := newGressPolicy(knet.PolicyTypeIngress, 0, policy.Namespace, policy.Name)
+		gp := newGressPolicy(knet.PolicyTypeIngress, 0, policy.Namespace, policy.Name, &util.DefaultNetInfo{})
 		err := gp.ensurePeerAddressSet(asFactory)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		asName := gp.peerAddressSet.GetName()

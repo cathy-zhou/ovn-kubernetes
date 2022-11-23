@@ -795,3 +795,20 @@ func (bnc *BaseNetworkController) WatchPods() error {
 	}
 	return err
 }
+
+// WatchNetworkPolicy starts the watching of multinetworkpolicy resource and calls
+// back the appropriate handler logic
+func (bnc *BaseNetworkController) WatchNetworkPolicy() error {
+	if bnc.IsSecondary() && !config.OVNKubernetesFeature.EnableMultiNetworkPolicy {
+		return nil
+	}
+
+	if bnc.policyHandler != nil {
+		return nil
+	}
+	handler, err := bnc.retryNetworkPolicies.WatchResource()
+	if err != nil {
+		bnc.policyHandler = handler
+	}
+	return err
+}

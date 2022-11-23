@@ -114,6 +114,7 @@ var _ = ginkgo.Describe("OVN Namespace Operations", func() {
 				nil,
 				lportIngress,
 				map[string]string{egressFirewallACLExtIdKey: "egressfirewall1"},
+				&util.DefaultNetInfo{},
 			)
 
 			fakeOvn.startWithDBSetup(libovsdbtest.TestSetup{NBData: []libovsdbtest.TestData{egressFirewallACL}})

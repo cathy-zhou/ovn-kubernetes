@@ -348,6 +348,7 @@ func (oc *DefaultNetworkController) createEgressFirewallRules(priority int, matc
 		// since egressFirewall has direction to-lport, set type to ingress
 		lportIngress,
 		map[string]string{egressFirewallACLExtIdKey: externalID},
+		oc.NetInfo,
 	)
 	ops, err := libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, nil, egressFirewallACL)
 	if err != nil {

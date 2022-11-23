@@ -87,30 +87,30 @@ func getMcastACLName(nsORpg, mcastSuffix string) string {
 // - one "to-lport" ACL allowing ingress multicast traffic to pods in 'ns'.
 //   This matches only traffic originated by pods in 'ns' (based on the
 //   namespace address set).
-func (oc *DefaultNetworkController) createMulticastAllowPolicy(ns string, nsInfo *namespaceInfo) error {
+func (bnc *BaseNetworkController) createMulticastAllowPolicy(ns string, nsInfo *namespaceInfo) error {
 	portGroupName := hashedPortGroup(ns)
 
 	aclT := lportEgressAfterLB
-	egressMatch := getACLMatch(portGroupName, getMulticastACLEgrMatch(), aclT)
+	egressMatch := getACLMatch(portGroupName, getMulticastACLEgrMatch(), aclT, bnc.NetInfo)
 	egressACL := BuildACL(getMcastACLName(ns, "MulticastAllowEgress"),
 		types.DefaultMcastAllowPriority, egressMatch, nbdb.ACLActionAllow, nil, aclT,
-		getDefaultDenyPolicyExternalIDs(aclT))
+		getDefaultDenyPolicyExternalIDs(aclT), bnc.NetInfo)
 
 	aclT = lportIngress
-	ingressMatch := getACLMatch(portGroupName, getMulticastACLIgrMatch(nsInfo), aclT)
+	ingressMatch := getACLMatch(portGroupName, getMulticastACLIgrMatch(nsInfo), aclT, bnc.NetInfo)
 	ingressACL := BuildACL(getMcastACLName(ns, "MulticastAllowIngress"),
 		types.DefaultMcastAllowPriority, ingressMatch, nbdb.ACLActionAllow, nil, aclT,
-		getDefaultDenyPolicyExternalIDs(aclT))
+		getDefaultDenyPolicyExternalIDs(aclT), bnc.NetInfo)
 
 	acls := []*nbdb.ACL{egressACL, ingressACL}
-	ops, err := libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, nil, acls...)
+	ops, err := libovsdbops.CreateOrUpdateACLsOps(bnc.nbClient, nil, acls...)
 	if err != nil {
 		return err
 	}
 
 	// Add all ports from this namespace to the multicast allow group.
 	ports := []*nbdb.LogicalSwitchPort{}
-	pods, err := oc.watchFactory.GetPods(ns)
+	pods, err := bnc.watchFactory.GetPods(ns)
 	if err != nil {
 		klog.Warningf("Failed to get pods for namespace %q: %v", ns, err)
 	}
@@ -118,20 +118,23 @@ func (oc *DefaultNetworkController) createMulticastAllowPolicy(ns string, nsInfo
 		if util.PodCompleted(pod) {
 			continue
 		}
-		if portInfo, err := oc.logicalPortCache.get(pod, types.DefaultNetworkName); err != nil {
+		portInfoMap, err := bnc.logicalPortCache.getAll(pod)
+		if err != nil {
 			klog.Errorf(err.Error())
 		} else {
-			ports = append(ports, &nbdb.LogicalSwitchPort{UUID: portInfo.uuid})
+			for _, portInfo := range portInfoMap {
+				ports = append(ports, &nbdb.LogicalSwitchPort{UUID: portInfo.uuid})
+			}
 		}
 	}
 
-	pg := libovsdbops.BuildPortGroup(portGroupName, ns, ports, acls)
-	ops, err = libovsdbops.CreateOrUpdatePortGroupsOps(oc.nbClient, ops, pg)
+	pg := buildPortGroup(portGroupName, ns, ports, acls, bnc.NetInfo)
+	ops, err = libovsdbops.CreateOrUpdatePortGroupsOps(bnc.nbClient, ops, pg)
 	if err != nil {
 		return err
 	}
 
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
+	_, err = libovsdbops.TransactAndCheck(bnc.nbClient, ops)
 	if err != nil {
 		return err
 	}
@@ -165,13 +168,13 @@ func (oc *DefaultNetworkController) createDefaultDenyMulticastPolicy() error {
 	aclT := lportEgressAfterLB
 	egressACL := BuildACL(getMcastACLName(types.ClusterPortGroupName, "DefaultDenyMulticastEgress"),
 		types.DefaultMcastDenyPriority, match, nbdb.ACLActionDrop, nil,
-		aclT, getDefaultDenyPolicyExternalIDs(aclT))
+		aclT, getDefaultDenyPolicyExternalIDs(aclT), oc.NetInfo)
 
 	// By default deny any ingress multicast traffic to any pod.
 	aclT = lportIngress
 	ingressACL := BuildACL(getMcastACLName(types.ClusterPortGroupName, "DefaultDenyMulticastIngress"),
 		types.DefaultMcastDenyPriority, match, nbdb.ACLActionDrop, nil,
-		aclT, getDefaultDenyPolicyExternalIDs(aclT))
+		aclT, getDefaultDenyPolicyExternalIDs(aclT), oc.NetInfo)
 
 	ops, err := libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, nil, egressACL, ingressACL)
 	if err != nil {
@@ -206,16 +209,16 @@ func (oc *DefaultNetworkController) createDefaultAllowMulticastPolicy() error {
 	mcastMatch := getMulticastACLMatch()
 
 	aclT := lportEgressAfterLB
-	egressMatch := getACLMatch(types.ClusterRtrPortGroupName, mcastMatch, aclT)
+	egressMatch := getACLMatch(types.ClusterRtrPortGroupName, mcastMatch, aclT, oc.NetInfo)
 	egressACL := BuildACL(getMcastACLName(types.ClusterRtrPortGroupName, "DefaultAllowMulticastEgress"),
 		types.DefaultMcastAllowPriority, egressMatch, nbdb.ACLActionAllow, nil,
-		aclT, getDefaultDenyPolicyExternalIDs(aclT))
+		aclT, getDefaultDenyPolicyExternalIDs(aclT), oc.NetInfo)
 
 	aclT = lportIngress
-	ingressMatch := getACLMatch(types.ClusterRtrPortGroupName, mcastMatch, aclT)
+	ingressMatch := getACLMatch(types.ClusterRtrPortGroupName, mcastMatch, aclT, oc.NetInfo)
 	ingressACL := BuildACL(getMcastACLName(types.ClusterRtrPortGroupName, "DefaultAllowMulticastIngress"),
 		types.DefaultMcastAllowPriority, ingressMatch, nbdb.ACLActionAllow, nil,
-		aclT, getDefaultDenyPolicyExternalIDs(aclT))
+		aclT, getDefaultDenyPolicyExternalIDs(aclT), oc.NetInfo)
 
 	ops, err := libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, nil, egressACL, ingressACL)
 	if err != nil {

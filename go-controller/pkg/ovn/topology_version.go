@@ -5,7 +5,6 @@ import (
 	"strconv"
 
 	globalconfig "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
-	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -23,7 +22,7 @@ func (oc *DefaultNetworkController) ovnTopologyCleanup() error {
 
 	// Cleanup address sets in non dual stack formats in all versions known to possibly exist.
 	if ver <= ovntypes.OvnPortBindingTopoVersion {
-		err = addressset.NonDualStackAddressSetCleanup(oc.nbClient)
+		err = oc.addressSetFactory.NonDualStackAddressSetCleanup()
 	}
 	return err
 }

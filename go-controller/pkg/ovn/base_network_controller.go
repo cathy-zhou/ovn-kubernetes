@@ -22,6 +22,7 @@ import (
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/subnetallocator"
 	ovnretry "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
@@ -60,6 +61,9 @@ type CommonNetworkControllerInfo struct {
 
 	// Supports multicast?
 	multicastSupport bool
+
+	// Is ACL logging enabled while configuring meters?
+	aclLoggingEnabled bool
 }
 
 // BaseNetworkController structure holds per-network fields and network specific configuration
@@ -75,11 +79,19 @@ type BaseNetworkController struct {
 	retryPods *ovnretry.RetryFramework
 	// retry framework for nodes
 	retryNodes *ovnretry.RetryFramework
+	// retry framework for namespaces
+	retryNamespaces *ovnretry.RetryFramework
+	// retry framework for network policies
+	retryNetworkPolicies *ovnretry.RetryFramework
 
 	// pod events factory handler
 	podHandler *factory.Handler
 	// node events factory handler
 	nodeHandler *factory.Handler
+	// namespace events factory Handler
+	namespaceHandler *factory.Handler
+	// [multi-]network policy events factory handler
+	policyHandler *factory.Handler
 
 	// A cache of all logical switches seen by the watcher and their subnets
 	lsManager *lsm.LogicalSwitchManager
@@ -97,8 +109,24 @@ type BaseNetworkController struct {
 	// An address set factory that creates address sets
 	addressSetFactory addressset.AddressSetFactory
 
+	// network policies map, key should be retrieved with getPolicyKey(policy *knet.NetworkPolicy).
+	// network policies that failed to be created will also be added here, and can be retried or cleaned up later.
+	// network policy is only deleted from this map after successful cleanup.
+	// Allowed order of locking is namespace Lock -> oc.networkPolicies key Lock -> networkPolicy.Lock
+	// Don't take namespace Lock while holding networkPolicy key lock to avoid deadlock.
+	networkPolicies *syncmap.SyncMap[*networkPolicy]
+
+	// map of existing shared port groups for network policies
+	// port group exists in the db if and only if port group key is present in this map
+	// key is namespace
+	// allowed locking order is namespace Lock -> networkPolicy.Lock -> sharedNetpolPortGroups key Lock
+	// make sure to keep this order to avoid deadlocks
+	sharedNetpolPortGroups *syncmap.SyncMap[*defaultDenyPortGroups]
+
 	// stopChan per controller
 	stopChan chan struct{}
+	// waitGroup per-Controller
+	wg *sync.WaitGroup
 }
 
 // BaseSecondaryNetworkController structure holds per-network fields and network specific
@@ -110,17 +138,18 @@ type BaseSecondaryNetworkController struct {
 // NewCommonNetworkControllerInfo creates CommonNetworkControllerInfo shared by controllers
 func NewCommonNetworkControllerInfo(client clientset.Interface, kube kube.Interface, wf *factory.WatchFactory,
 	recorder record.EventRecorder, nbClient libovsdbclient.Client, sbClient libovsdbclient.Client,
-	podRecorder *metrics.PodRecorder, SCTPSupport, multicastSupport bool) *CommonNetworkControllerInfo {
+	podRecorder *metrics.PodRecorder, SCTPSupport, multicastSupport, aclLoggingEnabled bool) *CommonNetworkControllerInfo {
 	return &CommonNetworkControllerInfo{
-		client:           client,
-		kube:             kube,
-		watchFactory:     wf,
-		recorder:         recorder,
-		nbClient:         nbClient,
-		sbClient:         sbClient,
-		podRecorder:      podRecorder,
-		SCTPSupport:      SCTPSupport,
-		multicastSupport: multicastSupport,
+		client:            client,
+		kube:              kube,
+		watchFactory:      wf,
+		recorder:          recorder,
+		nbClient:          nbClient,
+		sbClient:          sbClient,
+		podRecorder:       podRecorder,
+		SCTPSupport:       SCTPSupport,
+		multicastSupport:  multicastSupport,
+		aclLoggingEnabled: aclLoggingEnabled,
 	}
 }
 
