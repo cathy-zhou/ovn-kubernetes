@@ -15,9 +15,11 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
+	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/subnetallocator"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
@@ -221,9 +223,7 @@ func (h *secondaryLayer3NetworkControllerEventHandler) IsObjectInTerminalState(o
 type SecondaryLayer3NetworkController struct {
 	NetworkControllerInfo
 
-	wg       *sync.WaitGroup
-	stopChan chan struct{}
-
+	wg          *sync.WaitGroup
 	nodeHandler *factory.Handler
 	podHandler  *factory.Handler
 
@@ -252,16 +252,26 @@ func NewSecondaryLayer3NetworkController(bnc *BaseNetworkController, nInfo util.
 	stopChan := make(chan struct{})
 	oc := &SecondaryLayer3NetworkController{
 		NetworkControllerInfo: NetworkControllerInfo{
-			BaseNetworkController: *bnc,
-			NetInfo:               nInfo,
-			NetConfInfo:           netconfInfo,
+			BaseNetworkController:  *bnc,
+			NetInfo:                nInfo,
+			NetConfInfo:            netconfInfo,
+			lsManager:              lsm.NewLogicalSwitchManager(),
+			logicalPortCache:       newPortCache(stopChan),
+			addressSetFactory:      addressset.NewOvnAddressSetFactory(bnc.nbClient),
+			networkPolicies:        syncmap.NewSyncMap[*networkPolicy](),
+			sharedNetpolPortGroups: syncmap.NewSyncMap[*defaultDenyPortGroups](),
+			namespaceManager: namespaceManager{
+				namespaces:      make(map[string]*namespaceInfo),
+				namespacesMutex: sync.Mutex{},
+			},
+			stopChan: stopChan,
 		},
-		stopChan:              stopChan,
 		wg:                    &sync.WaitGroup{},
 		masterSubnetAllocator: subnetallocator.NewHostSubnetAllocator(),
-		lsManager:             lsm.NewLogicalSwitchManager(),
-		logicalPortCache:      newPortCache(stopChan),
 	}
+
+	// disable multicast support for secondary networks for now
+	oc.multicastSupport = false
 
 	oc.initRetryFramework()
 	return oc
@@ -507,7 +517,7 @@ func (oc *SecondaryLayer3NetworkController) addLogicalPort(pod *kapi.Pod, nadNam
 			pod.Namespace, pod.Name, nadName, time.Since(start), libovsdbExecuteTime)
 	}()
 
-	ops, lsp, podAnnotation, newlyCreated, err := oc.addPodLogicalPort(pod, oc.lsManager, nadName, network)
+	ops, lsp, podAnnotation, newlyCreated, err := oc.addPodLogicalPort(pod, nadName, network)
 	if err != nil {
 		return err
 	}
@@ -563,7 +573,7 @@ func (oc *SecondaryLayer3NetworkController) removePod(pod *kapi.Pod, portInfo *l
 
 	nadName := util.GetNadName(network.Namespace, network.Name)
 	// TBD namespaceInfo needed when multi-network policy support is added
-	pInfo, err := oc.deletePodLogicalPort(pod, portInfo, nadName, nil, oc.lsManager, false)
+	pInfo, err := oc.deletePodLogicalPort(pod, portInfo, nadName, nil)
 	if err != nil {
 		return err
 	}
@@ -700,12 +710,12 @@ func (oc *SecondaryLayer3NetworkController) syncPods(pods []interface{}) error {
 		if err != nil {
 			continue
 		}
-		err = oc.updateExpectedLogicalPorts(pod, oc.lsManager, annotations, nadName, expectedLogicalPorts)
+		err = oc.updateExpectedLogicalPorts(pod, annotations, nadName, expectedLogicalPorts)
 		if err != nil {
 			return err
 		}
 	}
-	return oc.deleteAllNodesStaleLogicalSwitchPorts(oc.lsManager, expectedLogicalPorts)
+	return oc.deleteAllNodesStaleLogicalSwitchPorts(expectedLogicalPorts)
 }
 
 // We only deal with cleaning up nodes that shouldn't exist here, since

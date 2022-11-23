@@ -73,6 +73,8 @@ type networkControllerManager struct {
 	SCTPSupport bool
 	// ACL logging support enabled
 	aclLoggingEnabled bool
+	// able to enable multicast support
+	multicastSupport bool
 
 	stopChan chan struct{}
 	wg       *sync.WaitGroup
@@ -301,6 +303,7 @@ func NewNetworkControllerManager(ovnClient *util.OVNClientset, identity string, 
 		podRecorder:       &podRecorder,
 		SCTPSupport:       false,
 		aclLoggingEnabled: true,
+		multicastSupport:  config.EnableMulticast,
 		wg:                wg,
 		identity:          identity,
 	}
@@ -321,12 +324,8 @@ func (cm *networkControllerManager) Init() error {
 		return err
 	}
 
-	err = cm.createACLLoggingMeter()
-	if err != nil {
-		klog.Warningf("ACL logging support enabled, however acl-logging meter could not be created: %v. "+
-			"Disabling ACL logging support", err)
-		cm.aclLoggingEnabled = false
-	}
+	cm.configureAclLoggingSupport()
+	cm.configureMultiastSupport()
 
 	err = cm.enableOVNLogicalDataPathGroups()
 	if err != nil {
@@ -350,6 +349,26 @@ func (cm *networkControllerManager) configureSCTPSupport() error {
 	}
 	cm.SCTPSupport = hasSCTPSupport
 	return nil
+}
+
+func (cm *networkControllerManager) configureAclLoggingSupport() {
+	if cm.aclLoggingEnabled {
+		if err := cm.createACLLoggingMeter(); err != nil {
+			klog.Warningf("ACL logging support enabled, however acl-logging meter could not be created: %v. "+
+				"Disabling ACL logging support", err)
+			cm.aclLoggingEnabled = false
+		}
+	}
+}
+
+func (cm *networkControllerManager) configureMultiastSupport() {
+	if cm.multicastSupport {
+		if _, _, err := util.RunOVNSbctl("--columns=_uuid", "list", "IGMP_Group"); err != nil {
+			klog.Warningf("Multicast support enabled, however version of OVN in use does not support IGMP Group. " +
+				"Disabling Multicast Support")
+			cm.multicastSupport = false
+		}
+	}
 }
 
 // enableOVNLogicalDataPathGroups sets an OVN flag to enable logical datapath
@@ -407,7 +426,7 @@ func (cm *networkControllerManager) createACLLoggingMeter() error {
 // newBaseNetworkController creates and returns the base controller
 func (cm *networkControllerManager) newBaseNetworkController() *ovn.BaseNetworkController {
 	return ovn.NewBaseNetworkController(cm.client, cm.kube, cm.watchFactory, cm.recorder, cm.nbClient,
-		cm.sbClient, cm.podRecorder, cm.SCTPSupport, cm.aclLoggingEnabled)
+		cm.sbClient, cm.podRecorder, cm.SCTPSupport, cm.aclLoggingEnabled, cm.multicastSupport)
 }
 
 // NewDefaultNetworkController creates and returns the controller for default network

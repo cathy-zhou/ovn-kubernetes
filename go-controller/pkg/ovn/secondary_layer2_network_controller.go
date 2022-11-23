@@ -13,8 +13,10 @@ import (
 	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
+	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
@@ -168,16 +170,8 @@ func (h *secondaryLayer2NetworkControllerEventHandler) IsObjectInTerminalState(o
 type SecondaryLayer2NetworkController struct {
 	NetworkControllerInfo
 
-	wg       *sync.WaitGroup
-	stopChan chan struct{}
-
+	wg         *sync.WaitGroup
 	podHandler *factory.Handler
-
-	// A cache of all logical switches seen by the watcher and their subnets
-	lsManager *lsm.LogicalSwitchManager
-
-	// A cache of all logical ports known to the controller
-	logicalPortCache *portCache
 
 	// retry framework for pods
 	retryPods *retry.RetryFramework
@@ -190,16 +184,24 @@ func NewSecondaryLayer2NetworkController(bnc *BaseNetworkController, nInfo util.
 
 	oc := &SecondaryLayer2NetworkController{
 		NetworkControllerInfo: NetworkControllerInfo{
-			BaseNetworkController: *bnc,
-			NetInfo:               nInfo,
-			NetConfInfo:           netconfInfo,
+			BaseNetworkController:  *bnc,
+			NetInfo:                nInfo,
+			NetConfInfo:            netconfInfo,
+			lsManager:              lsm.NewL2SwitchManager(),
+			logicalPortCache:       newPortCache(stopChan),
+			addressSetFactory:      addressset.NewOvnAddressSetFactory(bnc.nbClient),
+			networkPolicies:        syncmap.NewSyncMap[*networkPolicy](),
+			sharedNetpolPortGroups: syncmap.NewSyncMap[*defaultDenyPortGroups](),
+			namespaceManager: namespaceManager{
+				namespaces:      make(map[string]*namespaceInfo),
+				namespacesMutex: sync.Mutex{},
+			},
+			stopChan: stopChan,
 		},
-		stopChan:         stopChan,
-		wg:               &sync.WaitGroup{},
-		lsManager:        lsm.NewL2SwitchManager(),
-		logicalPortCache: newPortCache(stopChan),
+		wg: &sync.WaitGroup{},
 	}
-
+	// disable multicast support for secondary networks for now
+	oc.multicastSupport = false
 	oc.initRetryFramework()
 	return oc
 }
@@ -406,7 +408,7 @@ func (oc *SecondaryLayer2NetworkController) addLogicalPort(pod *kapi.Pod, nadNam
 			pod.Namespace, pod.Name, nadName, time.Since(start), libovsdbExecuteTime)
 	}()
 
-	ops, lsp, podAnnotation, newlyCreated, err := oc.addPodLogicalPort(pod, oc.lsManager, nadName, network)
+	ops, lsp, podAnnotation, newlyCreated, err := oc.addPodLogicalPort(pod, nadName, network)
 	if err != nil {
 		return err
 	}
@@ -463,7 +465,7 @@ func (oc *SecondaryLayer2NetworkController) removePod(pod *kapi.Pod, portInfo *l
 
 	nadName := util.GetNadName(network.Namespace, network.Name)
 	// TBD namespaceInfo needed when multi-network policy support is added
-	pInfo, err := oc.deletePodLogicalPort(pod, portInfo, nadName, nil, oc.lsManager, false)
+	pInfo, err := oc.deletePodLogicalPort(pod, portInfo, nadName, nil)
 	if err != nil {
 		return err
 	}
@@ -504,11 +506,11 @@ func (oc *SecondaryLayer2NetworkController) syncPods(pods []interface{}) error {
 		if err != nil {
 			continue
 		}
-		err = oc.updateExpectedLogicalPorts(pod, oc.lsManager, annotations, nadName, expectedLogicalPorts)
+		err = oc.updateExpectedLogicalPorts(pod, annotations, nadName, expectedLogicalPorts)
 		if err != nil {
 			return err
 		}
 	}
 	switchName := oc.GetPrefix() + types.OvnLayer2Switch
-	return oc.deleteStaleLogicalSwitchPorts(oc.lsManager, []string{switchName}, expectedLogicalPorts)
+	return oc.deleteStaleLogicalSwitchPorts([]string{switchName}, expectedLogicalPorts)
 }

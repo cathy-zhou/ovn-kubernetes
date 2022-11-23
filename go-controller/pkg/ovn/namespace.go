@@ -141,7 +141,7 @@ func (oc *DefaultNetworkController) addPodToNamespace(ns string, ips []*net.IPNe
 }
 
 func (bnc *BaseNetworkController) deletePodFromNamespace(nsm *namespaceManager, ns string,
-	podIfAddrs []*net.IPNet, portUUID string, multicastSupport bool) ([]ovsdb.Operation, error) {
+	podIfAddrs []*net.IPNet, portUUID string) ([]ovsdb.Operation, error) {
 	// for secondary network, namespace may be not managed
 	nsInfo, nsUnlock := nsm.getNamespaceLocked(ns, true)
 	if nsInfo == nil {
@@ -157,7 +157,7 @@ func (bnc *BaseNetworkController) deletePodFromNamespace(nsm *namespaceManager, 
 	}
 
 	// Remove the port from the multicast allow policy.
-	if multicastSupport && nsInfo.multicastEnabled && len(portUUID) > 0 {
+	if bnc.multicastSupport && nsInfo.multicastEnabled && len(portUUID) > 0 {
 		if err = podDeleteAllowMulticastPolicy(bnc.nbClient, ns, portUUID); err != nil {
 			return nil, err
 		}

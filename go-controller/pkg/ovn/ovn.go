@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	ref "k8s.io/client-go/tools/reference"
 	"net"
 	"reflect"
 	"sync"
@@ -18,9 +17,12 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
+	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	egresssvc "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/egress_services"
 	svccontroller "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/services"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/healthcheck"
+	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
 	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
@@ -34,6 +36,7 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
+	ref "k8s.io/client-go/tools/reference"
 	"k8s.io/klog/v2"
 )
 
@@ -68,6 +71,9 @@ type BaseNetworkController struct {
 
 	// Is ACL logging enabled while configuring meters?
 	aclLoggingEnabled bool
+
+	// support multicast?
+	multicastSupport bool
 }
 
 // NetworkControllerInfo structure holds network specific configuration
@@ -76,6 +82,33 @@ type NetworkControllerInfo struct {
 	// per controller nad/netconf name information
 	util.NetInfo
 	util.NetConfInfo
+
+	// A cache of all logical switches seen by the watcher and their subnets
+	lsManager *lsm.LogicalSwitchManager
+
+	// A cache of all logical ports known to the controller
+	logicalPortCache *portCache
+
+	namespaceManager
+
+	// An address set factory that creates address sets
+	addressSetFactory addressset.AddressSetFactory
+
+	// network policies map, key should be retrieved with getPolicyKey(policy *knet.NetworkPolicy).
+	// network policies that failed to be created will also be added here, and can be retried or cleaned up later.
+	// network policy is only deleted from this map after successful cleanup.
+	// Allowed order of locking is namespace Lock -> oc.networkPolicies key Lock -> networkPolicy.Lock
+	// Don't take namespace Lock while holding networkPolicy key lock to avoid deadlock.
+	networkPolicies *syncmap.SyncMap[*networkPolicy]
+
+	// map of existing shared port groups for network policies
+	// port group exists in the db if and only if port group key is present in this map
+	// key is namespace
+	// allowed locking order is namespace Lock -> networkPolicy.Lock -> sharedNetpolPortGroups key Lock
+	// make sure to keep this order to avoid deadlocks
+	sharedNetpolPortGroups *syncmap.SyncMap[*defaultDenyPortGroups]
+
+	stopChan chan struct{}
 }
 
 type namespaceManager struct {
@@ -106,7 +139,7 @@ func getPodNamespacedName(pod *kapi.Pod) string {
 // NewBaseNetworkController creates BaseNetworkController shared by controllers
 func NewBaseNetworkController(client clientset.Interface, kube kube.Interface, wf *factory.WatchFactory,
 	recorder record.EventRecorder, nbClient libovsdbclient.Client, sbClient libovsdbclient.Client,
-	podRecorder *metrics.PodRecorder, SCTPSupport bool, aclLoggingEnabled bool) *BaseNetworkController {
+	podRecorder *metrics.PodRecorder, SCTPSupport, aclLoggingEnabled, multicastSupport bool) *BaseNetworkController {
 	return &BaseNetworkController{
 		client:            client,
 		kube:              kube,
@@ -117,6 +150,7 @@ func NewBaseNetworkController(client clientset.Interface, kube kube.Interface, w
 		podRecorder:       podRecorder,
 		SCTPSupport:       SCTPSupport,
 		aclLoggingEnabled: aclLoggingEnabled,
+		multicastSupport:  multicastSupport,
 	}
 }
 

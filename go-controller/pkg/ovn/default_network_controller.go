@@ -43,8 +43,7 @@ type DefaultNetworkController struct {
 	NetworkControllerInfo
 
 	// wg and stopChan per-Controller
-	wg       *sync.WaitGroup
-	stopChan chan struct{}
+	wg *sync.WaitGroup
 
 	// FIXME DUAL-STACK -  Make IP Allocators more dual-stack friendly
 	masterSubnetAllocator        *subnetallocator.HostSubnetAllocator
@@ -53,14 +52,6 @@ type DefaultNetworkController struct {
 	// For TCP, UDP, and SCTP type traffic, cache OVN load-balancers used for the
 	// cluster's east-west traffic.
 	loadbalancerClusterCache map[kapi.Protocol]string
-
-	// A cache of all logical switches seen by the watcher and their subnets
-	lsManager *lsm.LogicalSwitchManager
-
-	// A cache of all logical ports known to the controller
-	logicalPortCache *portCache
-
-	namespaceManager
 
 	externalGWCache map[ktypes.NamespacedName]*externalRouteInfo
 	exGWCacheMutex  sync.RWMutex
@@ -81,26 +72,6 @@ type DefaultNetworkController struct {
 	egressQoSNodeLister corev1listers.NodeLister
 	egressQoSNodeSynced cache.InformerSynced
 	egressQoSNodeQueue  workqueue.RateLimitingInterface
-
-	// An address set factory that creates address sets
-	addressSetFactory addressset.AddressSetFactory
-
-	// network policies map, key should be retrieved with getPolicyKey(policy *knet.NetworkPolicy).
-	// network policies that failed to be created will also be added here, and can be retried or cleaned up later.
-	// network policy is only deleted from this map after successful cleanup.
-	// Allowed order of locking is namespace Lock -> oc.networkPolicies key Lock -> networkPolicy.Lock
-	// Don't take namespace Lock while holding networkPolicy key lock to avoid deadlock.
-	networkPolicies *syncmap.SyncMap[*networkPolicy]
-
-	// map of existing shared port groups for network policies
-	// port group exists in the db if and only if port group key is present in this map
-	// key is namespace
-	// allowed locking order is namespace Lock -> networkPolicy.Lock -> sharedNetpolPortGroups key Lock
-	// make sure to keep this order to avoid deadlocks
-	sharedNetpolPortGroups *syncmap.SyncMap[*defaultDenyPortGroups]
-
-	// Supports multicast?
-	multicastSupport bool
 
 	// Cluster wide Load_Balancer_Group UUID.
 	loadBalancerGroupUUID string
@@ -185,25 +156,25 @@ func newDefaultNetworkControllerCommon(bnc *BaseNetworkController,
 	}
 	oc := &DefaultNetworkController{
 		NetworkControllerInfo: NetworkControllerInfo{
-			BaseNetworkController: *bnc,
-			NetConfInfo:           nil,
-			NetInfo:               (*util.NetNameInfo)(nil),
+			BaseNetworkController:  *bnc,
+			NetConfInfo:            nil,
+			NetInfo:                (*util.NetNameInfo)(nil),
+			lsManager:              lsm.NewLogicalSwitchManager(),
+			logicalPortCache:       newPortCache(defaultStopChan),
+			addressSetFactory:      addressSetFactory,
+			networkPolicies:        syncmap.NewSyncMap[*networkPolicy](),
+			sharedNetpolPortGroups: syncmap.NewSyncMap[*defaultDenyPortGroups](),
+			namespaceManager: namespaceManager{
+				namespaces:      make(map[string]*namespaceInfo),
+				namespacesMutex: sync.Mutex{},
+			},
+			stopChan: defaultStopChan,
 		},
-		stopChan:                     defaultStopChan,
 		wg:                           defaultWg,
 		masterSubnetAllocator:        subnetallocator.NewHostSubnetAllocator(),
 		hybridOverlaySubnetAllocator: hybridOverlaySubnetAllocator,
-		lsManager:                    lsm.NewLogicalSwitchManager(),
-		logicalPortCache:             newPortCache(defaultStopChan),
-		namespaceManager: namespaceManager{
-			namespaces:      make(map[string]*namespaceInfo),
-			namespacesMutex: sync.Mutex{},
-		},
-		externalGWCache:        make(map[ktypes.NamespacedName]*externalRouteInfo),
-		exGWCacheMutex:         sync.RWMutex{},
-		addressSetFactory:      addressSetFactory,
-		networkPolicies:        syncmap.NewSyncMap[*networkPolicy](),
-		sharedNetpolPortGroups: syncmap.NewSyncMap[*defaultDenyPortGroups](),
+		externalGWCache:              make(map[ktypes.NamespacedName]*externalRouteInfo),
+		exGWCacheMutex:               sync.RWMutex{},
 		eIPC: egressIPController{
 			egressIPAssignmentMutex:           &sync.Mutex{},
 			podAssignmentMutex:                &sync.Mutex{},
@@ -217,7 +188,6 @@ func newDefaultNetworkControllerCommon(bnc *BaseNetworkController,
 			egressIPNodeHealthCheckPort:       config.OVNKubernetesFeature.EgressIPNodeHealthCheckPort,
 		},
 		loadbalancerClusterCache: make(map[kapi.Protocol]string),
-		multicastSupport:         config.EnableMulticast,
 		loadBalancerGroupUUID:    "",
 		joinSwIPManager:          nil,
 		svcController:            svcController,
@@ -330,14 +300,6 @@ func (oc *DefaultNetworkController) Init() error {
 		if err := oc.hybridOverlaySubnetAllocator.InitRanges(config.HybridOverlay.ClusterSubnets); err != nil {
 			klog.Errorf("Failed to initialize hybrid overlay subnet allocator ranges: %v", err)
 			return err
-		}
-	}
-
-	if oc.multicastSupport {
-		if _, _, err := util.RunOVNSbctl("--columns=_uuid", "list", "IGMP_Group"); err != nil {
-			klog.Warningf("Multicast support enabled, however version of OVN in use does not support IGMP Group. " +
-				"Disabling Multicast Support")
-			oc.multicastSupport = false
 		}
 	}
 
