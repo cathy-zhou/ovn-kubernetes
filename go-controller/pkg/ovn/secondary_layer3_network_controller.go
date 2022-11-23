@@ -244,6 +244,9 @@ type SecondaryLayer3NetworkController struct {
 	// Node-specific syncMaps used by node event handler
 	addNodeFailed               sync.Map
 	nodeClusterRouterPortFailed sync.Map
+
+	// retry framework for namespaces
+	retryNamespaces *retry.RetryFramework
 }
 
 // NewSecondaryLayer3NetworkController create a new OVN controller for the given secondary l3 nad
@@ -257,7 +260,7 @@ func NewSecondaryLayer3NetworkController(bnc *BaseNetworkController, nInfo util.
 			NetConfInfo:            netconfInfo,
 			lsManager:              lsm.NewLogicalSwitchManager(),
 			logicalPortCache:       newPortCache(stopChan),
-			addressSetFactory:      addressset.NewOvnAddressSetFactory(bnc.nbClient),
+			addressSetFactory:      addressset.NewOvnAddressSetFactory(bnc.nbClient, nInfo),
 			networkPolicies:        syncmap.NewSyncMap[*networkPolicy](),
 			sharedNetpolPortGroups: syncmap.NewSyncMap[*defaultDenyPortGroups](),
 			namespaceManager: namespaceManager{
@@ -279,23 +282,23 @@ func NewSecondaryLayer3NetworkController(bnc *BaseNetworkController, nInfo util.
 
 func (oc *SecondaryLayer3NetworkController) initRetryFramework() {
 	// Init the retry framework for pods, nodes
-	oc.retryPods = oc.newRetryFrameworkWithParameters(factory.PodType, nil, nil)
-	oc.retryNodes = oc.newRetryFrameworkWithParameters(factory.NodeType, nil, nil)
+	oc.retryPods = oc.newRetryFramework(factory.PodType)
+	oc.retryNodes = oc.newRetryFramework(factory.NodeType)
+	oc.retryNamespaces = oc.newRetryFramework(factory.NamespaceType)
+	oc.NetworkControllerInfo.initRetryFramework()
 }
 
-// newRetryFrameworkWithParameters builds and returns a retry framework for the input resource
+// newRetryFramework builds and returns a retry framework for the input resource
 // type and assigns all ovnk-master-specific function attributes in the returned struct;
-func (oc *SecondaryLayer3NetworkController) newRetryFrameworkWithParameters(
-	objectType reflect.Type,
-	syncFunc func([]interface{}) error,
-	extraParameters interface{}) *retry.RetryFramework {
+func (oc *SecondaryLayer3NetworkController) newRetryFramework(
+	objectType reflect.Type) *retry.RetryFramework {
 	eventHandler := &secondaryLayer3NetworkControllerEventHandler{
 		baseHandler:     baseNetworkControllerEventHandler{},
 		objType:         objectType,
 		watchFactory:    oc.watchFactory,
 		oc:              oc,
-		extraParameters: extraParameters, // in use by network policy dynamic watchers
-		syncFunc:        syncFunc,
+		extraParameters: nil, // in use by network policy dynamic watchers
+		syncFunc:        nil,
 	}
 	resourceHandler := &retry.ResourceHandler{
 		HasUpdateFunc:          hasResourceAnUpdateFunc(objectType),

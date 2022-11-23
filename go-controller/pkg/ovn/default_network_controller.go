@@ -141,8 +141,9 @@ func newDefaultNetworkControllerCommon(bnc *BaseNetworkController,
 	defaultStopChan chan struct{}, defaultWg *sync.WaitGroup,
 	addressSetFactory addressset.AddressSetFactory) *DefaultNetworkController {
 
+	netInfo := (*util.NetNameInfo)(nil)
 	if addressSetFactory == nil {
-		addressSetFactory = addressset.NewOvnAddressSetFactory(bnc.nbClient)
+		addressSetFactory = addressset.NewOvnAddressSetFactory(bnc.nbClient, netInfo)
 	}
 	svcController, svcFactory := newServiceController(bnc.client, bnc.nbClient, bnc.recorder)
 	egressSvcController := newEgressServiceController(bnc.client, bnc.nbClient, svcFactory, defaultStopChan)
@@ -154,7 +155,7 @@ func newDefaultNetworkControllerCommon(bnc *BaseNetworkController,
 		NetworkControllerInfo: NetworkControllerInfo{
 			BaseNetworkController:  *bnc,
 			NetConfInfo:            nil,
-			NetInfo:                (*util.NetNameInfo)(nil),
+			NetInfo:                netInfo,
 			lsManager:              lsm.NewLogicalSwitchManager(),
 			logicalPortCache:       newPortCache(defaultStopChan),
 			addressSetFactory:      addressSetFactory,

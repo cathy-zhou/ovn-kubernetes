@@ -189,7 +189,7 @@ func NewSecondaryLayer2NetworkController(bnc *BaseNetworkController, nInfo util.
 			NetConfInfo:            netconfInfo,
 			lsManager:              lsm.NewL2SwitchManager(),
 			logicalPortCache:       newPortCache(stopChan),
-			addressSetFactory:      addressset.NewOvnAddressSetFactory(bnc.nbClient),
+			addressSetFactory:      addressset.NewOvnAddressSetFactory(bnc.nbClient, nInfo),
 			networkPolicies:        syncmap.NewSyncMap[*networkPolicy](),
 			sharedNetpolPortGroups: syncmap.NewSyncMap[*defaultDenyPortGroups](),
 			namespaceManager: namespaceManager{

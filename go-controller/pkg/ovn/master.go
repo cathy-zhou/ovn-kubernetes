@@ -165,7 +165,7 @@ func (oc *DefaultNetworkController) SetupMaster(existingNodeNames []string) erro
 	oc.defaultCOPPUUID = *(logicalRouter.Copp)
 
 	// Create a cluster-wide port group that all logical switch ports are part of
-	pg := libovsdbops.BuildPortGroup(types.ClusterPortGroupName, types.ClusterPortGroupName, nil, nil)
+	pg := buildPortGroup(types.ClusterPortGroupName, types.ClusterPortGroupName, nil, nil, oc.NetInfo)
 	err = libovsdbops.CreateOrUpdatePortGroups(oc.nbClient, pg)
 	if err != nil {
 		klog.Errorf("Failed to create cluster port group: %v", err)
@@ -175,7 +175,7 @@ func (oc *DefaultNetworkController) SetupMaster(existingNodeNames []string) erro
 	// Create a cluster-wide port group with all node-to-cluster router
 	// logical switch ports.  Currently the only user is multicast but it might
 	// be used for other features in the future.
-	pg = libovsdbops.BuildPortGroup(types.ClusterRtrPortGroupName, types.ClusterRtrPortGroupName, nil, nil)
+	pg = buildPortGroup(types.ClusterRtrPortGroupName, types.ClusterRtrPortGroupName, nil, nil, oc.NetInfo)
 	err = libovsdbops.CreateOrUpdatePortGroups(oc.nbClient, pg)
 	if err != nil {
 		klog.Errorf("Failed to create cluster port group: %v", err)
