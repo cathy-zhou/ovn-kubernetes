@@ -54,13 +54,18 @@ func (cnm *secondaryNetworkControllerNameManager) AddSecondaryNetworkNad(ncm Net
 	klog.Infof("Add net-attach-def %s", netAttachDefName)
 
 	nInfo, netConfInfo, err = util.ParseNADInfo(netattachdef)
-	if err == nil && !nInfo.IsSecondary() {
-		err = fmt.Errorf("skip default network")
+	netName := ""
+	if err == nil {
+		netName = nInfo.GetNetworkName()
+		if !nInfo.IsSecondary() {
+			err = fmt.Errorf("skip default network")
+		}
 	}
 
 	return cnm.perNadNetConfInfo.DoWithLock(netAttachDefName, func(nadName string) error {
-		nadNetConfInfo, loaded := cnm.perNadNetConfInfo.LoadOrStore(nadName, &nadNetConfInfo{
+		nadNci, loaded := cnm.perNadNetConfInfo.LoadOrStore(nadName, &nadNetConfInfo{
 			NetConfInfo: netConfInfo,
+			netName:     netName,
 		})
 		if !loaded {
 			// first time to process this nad
@@ -70,30 +75,48 @@ func (cnm *secondaryNetworkControllerNameManager) AddSecondaryNetworkNad(ncm Net
 				cnm.perNadNetConfInfo.Delete(nadName)
 				return nil
 			}
-			nadNetConfInfo.netName = nInfo.GetNetworkName()
 			err = cnm.addNadToController(ncm, nadName, nInfo, netConfInfo, doStart)
 			if err != nil {
-				klog.Errorf("Failed to add net-attach-def %s to network %s: %v", nadName, nInfo.GetNetworkName(), err)
+				klog.Errorf("Failed to add net-attach-def %s to network %s: %v", nadName, netName, err)
 				cnm.perNadNetConfInfo.Delete(nadName)
 				return err
 			}
-
 		} else {
-			// this nad is already associated with a network controller
+			nadUpdated := false
+			if nadNci.netName != netName {
+				// netconf network name changed
+				klog.Warningf("net-attach-def %s network name %s has changed", netName, nadNci.netName)
+				nadUpdated = true
+			} else if !nadNci.CompareNetConf(netConfInfo) {
+				// netconf spec changed
+				klog.Warningf("net-attach-def %s spec has changed", nadName)
+				nadUpdated = true
+			}
+
+			if err == nil && !nadUpdated {
+				// nothing changed
+				return nil
+			}
+			if nadUpdated {
+				// delete the nad from the old network first
+				err := cnm.deleteNadFromController(nadNci.netName, nadName)
+				if err != nil {
+					klog.Errorf("Failed to delete net-attach-def %s from network %s: %v", nadName, nadNci.netName, err)
+					return err
+				}
+				cnm.perNadNetConfInfo.Delete(nadName)
+			}
 			if err != nil {
 				klog.Warningf("net-attach-def %s is invalid: %v", nadName, err)
 				return nil
 			}
-			klog.V(5).Infof("net-attach-def of the same name %s already processed: %v", nadName, nadNetConfInfo)
-			// TBD, is it possible a delete event is missing? if so, we'd need to delete
-			// the old nad from the associated network then add the new one
-			if nadNetConfInfo.netName != nInfo.GetNetworkName() {
-				// netconf network name changed or netconf spec changed
-				klog.Warningf("net-attach-def %s network name %s has changed, expect %s, not supported",
-					nInfo.GetNetworkName(), nadNetConfInfo.netName)
-			} else if !nadNetConfInfo.CompareNetConf(netConfInfo) {
-				// netconf network name changed or netconf spec changed
-				klog.Warningf("net-attach-def %s spec has changed, not supported", nadName)
+			klog.V(5).Infof("Add updated net-attach-def %s", nadName)
+			cnm.perNadNetConfInfo.LoadOrStore(nadName, &nadNetConfInfo{NetConfInfo: netConfInfo, netName: netName})
+			err = cnm.addNadToController(ncm, nadName, nInfo, netConfInfo, doStart)
+			if err != nil {
+				klog.Errorf("Failed to add net-attach-def %s to network %s: %v", nadName, netName, err)
+				cnm.perNadNetConfInfo.Delete(nadName)
+				return err
 			}
 			return nil
 		}
