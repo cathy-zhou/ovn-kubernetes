@@ -57,7 +57,7 @@ type namespaceInfo struct {
 
 // This function implements the main body of work of syncNamespaces.
 // Upon failure, it may be invoked multiple times in order to avoid a pod restart.
-func (oc *DefaultNetworkController) syncNamespaces(namespaces []interface{}) error {
+func (nci *NetworkControllerInfo) syncNamespaces(namespaces []interface{}) error {
 	expectedNs := make(map[string]bool)
 	for _, nsInterface := range namespaces {
 		ns, ok := nsInterface.(*kapi.Namespace)
@@ -67,9 +67,9 @@ func (oc *DefaultNetworkController) syncNamespaces(namespaces []interface{}) err
 		expectedNs[ns.Name] = true
 	}
 
-	err := oc.addressSetFactory.ProcessEachAddressSet(func(addrSetName, namespaceName, nameSuffix string) error {
+	err := nci.addressSetFactory.ProcessEachAddressSet(func(addrSetName, namespaceName, nameSuffix string) error {
 		if nameSuffix == "" && !expectedNs[namespaceName] {
-			if err := oc.addressSetFactory.DestroyAddressSetInBackingStore(addrSetName); err != nil {
+			if err := nci.addressSetFactory.DestroyAddressSetInBackingStore(addrSetName); err != nil {
 				klog.Errorf(err.Error())
 				return err
 			}

@@ -306,7 +306,10 @@ func (nci *NetworkControllerInfo) syncNetworkPolicies(networkPolicies []interfac
 			}
 		}
 	}
+	return nci.syncNetworkPoliciesCommon(expectedPolicies)
+}
 
+func (nci *NetworkControllerInfo) syncNetworkPoliciesCommon(expectedPolicies map[string]map[string]bool) error {
 	stalePGs := []string{}
 	err := nci.addressSetFactory.ProcessEachAddressSet(func(addrSetName, namespaceName, policyName string) error {
 		if policyName != "" && !expectedPolicies[namespaceName][policyName] {

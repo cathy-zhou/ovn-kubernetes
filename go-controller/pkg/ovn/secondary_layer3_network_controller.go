@@ -3,6 +3,7 @@ package ovn
 import (
 	"context"
 	"fmt"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"net"
 	"reflect"
 	"strings"
@@ -124,6 +125,13 @@ func (h *secondaryLayer3NetworkControllerEventHandler) AddResource(obj interface
 			return err
 		}
 
+	case factory.NamespaceType:
+		ns, ok := obj.(*kapi.Namespace)
+		if !ok {
+			return fmt.Errorf("could not cast %T object to *kapi.Namespace", obj)
+		}
+		return h.oc.AddNamespace(ns)
+
 	default:
 		return fmt.Errorf("no add function for object type %s", h.objType)
 	}
@@ -157,6 +165,10 @@ func (h *secondaryLayer3NetworkControllerEventHandler) UpdateResource(oldObj, ne
 		clusterRtrSync := failed || nodeChassisChanged(oldNode, newNode) || nodeSubnetChanged(oldNode, newNode)
 
 		return h.oc.addUpdateNodeEvent(newNode, &nodeSyncs{syncNode: nodeSync, syncClusterRouterPort: clusterRtrSync})
+
+	case factory.NamespaceType:
+		oldNs, newNs := oldObj.(*kapi.Namespace), newObj.(*kapi.Namespace)
+		return h.oc.updateNamespace(oldNs, newNs)
 	}
 	return fmt.Errorf("no update function for object type %s", h.objType)
 }
@@ -183,6 +195,10 @@ func (h *secondaryLayer3NetworkControllerEventHandler) DeleteResource(obj, cache
 		}
 		return h.oc.deleteNodeEvent(node)
 
+	case factory.NamespaceType:
+		ns := obj.(*kapi.Namespace)
+		return h.oc.deleteNamespace(ns)
+
 	default:
 		return fmt.Errorf("object type %s not supported", h.objType)
 	}
@@ -201,6 +217,9 @@ func (h *secondaryLayer3NetworkControllerEventHandler) SyncFunc(objs []interface
 
 		case factory.NodeType:
 			syncFunc = h.oc.syncNodes
+
+		case factory.NamespaceType:
+			syncFunc = h.oc.syncNamespaces
 
 		default:
 			return fmt.Errorf("no sync function for object type %s", h.objType)
@@ -223,9 +242,11 @@ func (h *secondaryLayer3NetworkControllerEventHandler) IsObjectInTerminalState(o
 type SecondaryLayer3NetworkController struct {
 	NetworkControllerInfo
 
-	wg          *sync.WaitGroup
-	nodeHandler *factory.Handler
-	podHandler  *factory.Handler
+	wg               *sync.WaitGroup
+	nodeHandler      *factory.Handler
+	podHandler       *factory.Handler
+	namespaceHandler *factory.Handler
+	policyHandler    *factory.Handler
 
 	// FIXME DUAL-STACK -  Make IP Allocators more dual-stack friendly
 	masterSubnetAllocator *subnetallocator.HostSubnetAllocator
@@ -329,14 +350,18 @@ func (oc *SecondaryLayer3NetworkController) Stop(deleteLogicalEntities bool) err
 	close(oc.stopChan)
 	oc.wg.Wait()
 
+	if oc.policyHandler != nil {
+		oc.watchFactory.RemovePodHandler(oc.policyHandler)
+	}
 	if oc.podHandler != nil {
 		oc.watchFactory.RemovePodHandler(oc.podHandler)
 	}
-
 	if oc.nodeHandler != nil {
 		oc.watchFactory.RemoveNodeHandler(oc.nodeHandler)
 	}
-
+	if oc.namespaceHandler != nil {
+		oc.watchFactory.RemoveNodeHandler(oc.namespaceHandler)
+	}
 	if !deleteLogicalEntities {
 		return nil
 	}
@@ -399,11 +424,22 @@ func (oc *SecondaryLayer3NetworkController) Run() error {
 	klog.Infof("Starting all the Watchers for network %s ...", oc.GetNetworkName())
 	start := time.Now()
 
+	// WatchNamespaces() should be started first because it has no other
+	// dependencies, and WatchNodes() depends on it
+	if err := oc.WatchNamespaces(); err != nil {
+		return err
+	}
+
 	if err := oc.WatchNodes(); err != nil {
 		return err
 	}
 
 	if err := oc.WatchPods(); err != nil {
+		return err
+	}
+
+	// WatchNetworkPolicy depends on WatchPods and WatchNamespaces
+	if err := oc.WatchNetworkPolicy(); err != nil {
 		return err
 	}
 
@@ -415,6 +451,19 @@ func (oc *SecondaryLayer3NetworkController) Run() error {
 	}
 
 	return nil
+}
+
+// WatchNamespaces starts the watching of namespace resource and calls
+// back the appropriate handler logic
+func (oc *SecondaryLayer3NetworkController) WatchNamespaces() error {
+	if oc.namespaceHandler != nil {
+		return nil
+	}
+	handler, err := oc.retryNamespaces.WatchResource()
+	if err != nil {
+		oc.namespaceHandler = handler
+	}
+	return err
 }
 
 // WatchNodes starts the watching of node resource and calls
@@ -438,6 +487,19 @@ func (oc *SecondaryLayer3NetworkController) WatchPods() error {
 	handler, err := oc.retryPods.WatchResource()
 	if err == nil {
 		oc.podHandler = handler
+	}
+	return err
+}
+
+// WatchNetworkPolicy starts the watching of multinetworkpolicy resource and calls
+// back the appropriate handler logic
+func (oc *SecondaryLayer3NetworkController) WatchNetworkPolicy() error {
+	if oc.policyHandler != nil {
+		return nil
+	}
+	handler, err := oc.retryNetworkPolicies.WatchResource()
+	if err != nil {
+		oc.policyHandler = handler
 	}
 	return err
 }
@@ -753,6 +815,139 @@ func (oc *SecondaryLayer3NetworkController) syncNodes(nodes []interface{}) error
 				return fmt.Errorf("failed to delete node:%s, err:%v", nodeName, err)
 			}
 		}
+	}
+	return nil
+}
+
+// AddNamespace creates corresponding addressset in ovn db
+func (nci *NetworkControllerInfo) AddNamespace(ns *kapi.Namespace) error {
+	klog.Infof("[%s] adding namespace", ns.Name)
+	// Keep track of how long syncs take.
+	start := time.Now()
+	defer func() {
+		klog.Infof("[%s] adding namespace took %v", ns.Name, time.Since(start))
+	}()
+
+	_, nsUnlock, err := nci.ensureNamespaceLocked(ns.Name, false, ns)
+	if err != nil {
+		return fmt.Errorf("failed to ensure namespace locked: %v", err)
+	}
+	defer nsUnlock()
+	return nil
+}
+
+// ensureNamespaceLocked locks namespacesMutex, gets/creates an entry for ns, configures OVN nsInfo, and returns it
+// with its mutex locked.
+// ns is the name of the namespace, while namespace is the optional k8s namespace object
+// if no k8s namespace object is provided, this function will attempt to find it via informer cache
+func (nci *NetworkControllerInfo) ensureNamespaceLocked(ns string, readOnly bool, namespace *kapi.Namespace) (*namespaceInfo, func(), error) {
+	ips := nci.getAllNamespacePodAddresses(ns)
+
+	nci.namespacesMutex.Lock()
+	nsInfo := nci.namespaces[ns]
+	nsInfoExisted := false
+	if nsInfo == nil {
+		nsInfo = &namespaceInfo{
+			relatedNetworkPolicies: map[string]bool{},
+			multicastEnabled:       false,
+		}
+		// we are creating nsInfo and going to set it in namespaces map
+		// so safe to hold the lock while we create and add it
+		defer nci.namespacesMutex.Unlock()
+		// create the adddress set for the new namespace
+		var err error
+		nsInfo.addressSet, err = nci.createNamespaceAddrSetAllPods(ns, ips)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create address set for namespace: %s, error: %v", ns, err)
+		}
+		nci.namespaces[ns] = nsInfo
+	} else {
+		nsInfoExisted = true
+		// if we found an existing nsInfo, do not hold the namespaces lock
+		// while waiting for nsInfo to Lock
+		nci.namespacesMutex.Unlock()
+	}
+
+	var unlockFunc func()
+	if readOnly {
+		unlockFunc = func() { nsInfo.RUnlock() }
+		nsInfo.RLock()
+	} else {
+		unlockFunc = func() { nsInfo.Unlock() }
+		nsInfo.Lock()
+	}
+
+	if nsInfoExisted {
+		// Check that the namespace wasn't deleted while we were waiting for the lock
+		nci.namespacesMutex.Lock()
+		defer nci.namespacesMutex.Unlock()
+		if nsInfo != nci.namespaces[ns] {
+			unlockFunc()
+			return nil, nil, fmt.Errorf("namespace %s, was removed during ensure", ns)
+		}
+	}
+
+	// nsInfo and namespace didn't exist, get it from lister
+	if namespace == nil {
+		var err error
+		namespace, err = nci.watchFactory.GetNamespace(ns)
+		if err != nil {
+			namespace, err = nci.client.CoreV1().Namespaces().Get(context.TODO(), ns, metav1.GetOptions{})
+			if err != nil {
+				klog.Warningf("Unable to find namespace during ensure in informer cache or kube api server. " +
+					"Will defer configuring namespace.")
+			}
+		}
+	}
+
+	if namespace != nil {
+		// if we have the namespace, attempt to configure nsInfo with it
+		if err := nci.configureNamespaceCommon(nsInfo, namespace); err != nil {
+			unlockFunc()
+			return nil, nil, fmt.Errorf("failed to configure namespace %s: %v", ns, err)
+		}
+	}
+
+	return nsInfo, unlockFunc, nil
+}
+
+func (nci *NetworkControllerInfo) updateNamespace(old, newer *kapi.Namespace) error {
+	var errors []error
+	klog.Infof("[%s] updating namespace", old.Name)
+
+	nsInfo, nsUnlock := nci.namespaceManager.getNamespaceLocked(old.Name, false)
+	if nsInfo == nil {
+		klog.Warningf("Update event for unknown namespace %q", old.Name)
+		return nil
+	}
+	defer nsUnlock()
+
+	aclAnnotation := newer.Annotations[util.AclLoggingAnnotation]
+	oldACLAnnotation := old.Annotations[util.AclLoggingAnnotation]
+	// support for ACL logging update, if new annotation is empty, make sure we propagate new setting
+	if aclAnnotation != oldACLAnnotation {
+		if err := nci.updateNamespaceAclLogging(old.Name, aclAnnotation, nsInfo); err != nil {
+			errors = append(errors, err)
+		}
+	}
+
+	if err := nci.multicastUpdateNamespace(newer, nsInfo); err != nil {
+		errors = append(errors, err)
+	}
+	return kerrors.NewAggregate(errors)
+}
+
+func (nci *NetworkControllerInfo) deleteNamespace(ns *kapi.Namespace) error {
+	klog.Infof("[%s] deleting namespace", ns.Name)
+
+	nsInfo := nci.namespaceManager.deleteNamespaceLocked(nci.stopChan, ns.Name)
+	if nsInfo == nil {
+		return nil
+	}
+	defer nsInfo.Unlock()
+
+	if err := nci.multicastDeleteNamespace(ns, nsInfo); err != nil {
+		return fmt.Errorf("failed to delete multicast nameosace error %v", err)
 	}
 	return nil
 }

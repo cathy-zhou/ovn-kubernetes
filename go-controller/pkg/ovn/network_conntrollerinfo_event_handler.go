@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 
+	multinetworkpolicyapi "github.com/k8snetworkplumbingwg/multi-networkpolicy/pkg/apis/k8s.cni.cncf.io/v1beta1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
@@ -15,7 +16,11 @@ import (
 func (nci *NetworkControllerInfo) initRetryFramework() {
 	// Init the retry framework for pods, namespaces, nodes, network policies, egress firewalls,
 	// egress IP (and dependent namespaces, pods, nodes), cloud private ip config.
-	nci.retryNetworkPolicies = nci.newRetryFrameworkWithParameters(factory.PolicyType, nil, nil)
+	if nci.IsSecondary() {
+		nci.retryNetworkPolicies = nci.newRetryFrameworkWithParameters(factory.PolicyType, nil, nil)
+	} else {
+		nci.retryNetworkPolicies = nci.newRetryFrameworkWithParameters(factory.MultinetworkpolicyType, nil, nil)
+	}
 }
 
 // newRetryFrameworkWithParameters builds and returns a retry framework for the input resource
@@ -155,6 +160,23 @@ func (h *networkControllerInfoEventHandler) AddResource(obj interface{}, fromRet
 			return err
 		}
 
+	case factory.MultinetworkpolicyType:
+		mp, ok := obj.(*multinetworkpolicyapi.MultiNetworkPolicy)
+		if !ok {
+			return fmt.Errorf("could not cast %T object to *multinetworkpolicyapi.MultiNetworkPolicy", obj)
+		}
+
+		if !h.nci.shouldApplyMultiPolicy(mp) {
+			return nil
+		}
+
+		np := convertMultiNetPolicyToNetPolicy(mp)
+		if err = h.nci.addNetworkPolicy(np); err != nil {
+			klog.Infof("MultiNetworkPolicy add failed for %s/%s, will try again later: %v",
+				mp.Namespace, mp.Name, err)
+			return err
+		}
+
 	case factory.PeerPodSelectorType:
 		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
 		return h.nci.handlePeerPodSelectorAddUpdate(extraParameters.np, extraParameters.gp, obj)
@@ -191,6 +213,39 @@ func (h *networkControllerInfoEventHandler) AddResource(obj interface{}, fromRet
 // is in the retryCache or not.
 func (h *networkControllerInfoEventHandler) UpdateResource(oldObj, newObj interface{}, inRetryCache bool) error {
 	switch h.objType {
+	case factory.MultinetworkpolicyType:
+		oldMp, ok := oldObj.(*multinetworkpolicyapi.MultiNetworkPolicy)
+		if !ok {
+			return fmt.Errorf("could not cast %T object to *multinetworkpolicyapi.MultiNetworkPolicy", oldObj)
+		}
+		newMp, ok := newObj.(*multinetworkpolicyapi.MultiNetworkPolicy)
+		if !ok {
+			return fmt.Errorf("could not cast %T object to *multinetworkpolicyapi.MultiNetworkPolicy", newObj)
+		}
+
+		oldShouldApply := h.nci.shouldApplyMultiPolicy(oldMp)
+		newShouldApply := h.nci.shouldApplyMultiPolicy(newMp)
+		if oldShouldApply == newShouldApply {
+			return nil
+		}
+		// annotation changed,
+		if newShouldApply {
+			// now this multi-netpol applies to this network controller
+			np := convertMultiNetPolicyToNetPolicy(newMp)
+			if err := h.nci.addNetworkPolicy(np); err != nil {
+				klog.Infof("MultiNetworkPolicy add failed for %s/%s, will try again later: %v",
+					newMp.Namespace, newMp.Name, err)
+				return err
+			}
+		} else {
+			// this multi-netpol no longer applies to this network controller, delete it
+			np := convertMultiNetPolicyToNetPolicy(oldMp)
+			if err := h.nci.deleteNetworkPolicy(np); err != nil {
+				klog.Infof("MultiNetworkPolicy delete failed for %s/%s, will try again later: %v",
+					oldMp.Namespace, oldMp.Name, err)
+				return err
+			}
+		}
 	case factory.PeerPodSelectorType:
 		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
 		return h.nci.handlePeerPodSelectorAddUpdate(extraParameters.np, extraParameters.gp, newObj)
@@ -220,6 +275,19 @@ func (h *networkControllerInfoEventHandler) DeleteResource(obj, cachedObj interf
 		}
 		return h.nci.deleteNetworkPolicy(knp)
 
+	case factory.MultinetworkpolicyType:
+		mp, ok := obj.(*multinetworkpolicyapi.MultiNetworkPolicy)
+		if !ok {
+			return fmt.Errorf("could not cast %T object to *multinetworkpolicyapi.MultiNetworkPolicy", obj)
+		}
+		np := convertMultiNetPolicyToNetPolicy(mp)
+		// delete this policy regardless it applies to this network controller, in case of missing update event
+		if err := h.nci.deleteNetworkPolicy(np); err != nil {
+			klog.Infof("MultiNetworkPolicy delete failed for %s/%s, will try again later: %v",
+				mp.Namespace, mp.Name, err)
+			return err
+		}
+
 	case factory.PeerPodSelectorType:
 		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
 		return h.nci.handlePeerPodSelectorDelete(extraParameters.np, extraParameters.gp, obj)
@@ -245,6 +313,7 @@ func (h *networkControllerInfoEventHandler) DeleteResource(obj, cachedObj interf
 	default:
 		return fmt.Errorf("object type %s not supported", h.objType)
 	}
+	return nil
 }
 
 func (h *networkControllerInfoEventHandler) SyncFunc(objs []interface{}) error {
@@ -257,7 +326,8 @@ func (h *networkControllerInfoEventHandler) SyncFunc(objs []interface{}) error {
 		switch h.objType {
 		case factory.PolicyType:
 			syncFunc = h.nci.syncNetworkPolicies
-
+		case factory.MultinetworkpolicyType:
+			syncFunc = h.nci.syncMultiNetworkPolicies
 		case factory.LocalPodSelectorType,
 			factory.PeerNamespaceAndPodSelectorType,
 			factory.PeerPodSelectorType,
