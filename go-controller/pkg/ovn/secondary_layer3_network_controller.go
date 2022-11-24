@@ -241,33 +241,17 @@ func (h *secondaryLayer3NetworkControllerEventHandler) IsObjectInTerminalState(o
 // for a secondary l3 network
 type SecondaryLayer3NetworkController struct {
 	NetworkControllerInfo
-
-	wg               *sync.WaitGroup
-	nodeHandler      *factory.Handler
-	podHandler       *factory.Handler
-	namespaceHandler *factory.Handler
-	policyHandler    *factory.Handler
+	wg *sync.WaitGroup
 
 	// FIXME DUAL-STACK -  Make IP Allocators more dual-stack friendly
 	masterSubnetAllocator *subnetallocator.HostSubnetAllocator
 
-	// A cache of all logical switches seen by the watcher and their subnets
-	lsManager *lsm.LogicalSwitchManager
-
-	// A cache of all logical ports known to the controller
-	logicalPortCache *portCache
-
-	// retry framework for pods
-	retryPods *retry.RetryFramework
-
 	// retry framework for nodes
-	retryNodes *retry.RetryFramework
+	retryNodes  *retry.RetryFramework
+	nodeHandler *factory.Handler
 	// Node-specific syncMaps used by node event handler
 	addNodeFailed               sync.Map
 	nodeClusterRouterPortFailed sync.Map
-
-	// retry framework for namespaces
-	retryNamespaces *retry.RetryFramework
 }
 
 // NewSecondaryLayer3NetworkController create a new OVN controller for the given secondary l3 nad
@@ -351,7 +335,7 @@ func (oc *SecondaryLayer3NetworkController) Stop(deleteLogicalEntities bool) err
 	oc.wg.Wait()
 
 	if oc.policyHandler != nil {
-		oc.watchFactory.RemovePodHandler(oc.policyHandler)
+		oc.watchFactory.RemoveMultiNetworkPolicyHandler(oc.policyHandler)
 	}
 	if oc.podHandler != nil {
 		oc.watchFactory.RemovePodHandler(oc.podHandler)
@@ -453,19 +437,6 @@ func (oc *SecondaryLayer3NetworkController) Run() error {
 	return nil
 }
 
-// WatchNamespaces starts the watching of namespace resource and calls
-// back the appropriate handler logic
-func (oc *SecondaryLayer3NetworkController) WatchNamespaces() error {
-	if oc.namespaceHandler != nil {
-		return nil
-	}
-	handler, err := oc.retryNamespaces.WatchResource()
-	if err != nil {
-		oc.namespaceHandler = handler
-	}
-	return err
-}
-
 // WatchNodes starts the watching of node resource and calls
 // back the appropriate handler logic
 func (oc *SecondaryLayer3NetworkController) WatchNodes() error {
@@ -475,31 +446,6 @@ func (oc *SecondaryLayer3NetworkController) WatchNodes() error {
 	handler, err := oc.retryNodes.WatchResource()
 	if err == nil {
 		oc.nodeHandler = handler
-	}
-	return err
-}
-
-// WatchPods starts the watching of the Pod resource and calls back the appropriate handler logic
-func (oc *SecondaryLayer3NetworkController) WatchPods() error {
-	if oc.podHandler != nil {
-		return nil
-	}
-	handler, err := oc.retryPods.WatchResource()
-	if err == nil {
-		oc.podHandler = handler
-	}
-	return err
-}
-
-// WatchNetworkPolicy starts the watching of multinetworkpolicy resource and calls
-// back the appropriate handler logic
-func (oc *SecondaryLayer3NetworkController) WatchNetworkPolicy() error {
-	if oc.policyHandler != nil {
-		return nil
-	}
-	handler, err := oc.retryNetworkPolicies.WatchResource()
-	if err != nil {
-		oc.policyHandler = handler
 	}
 	return err
 }

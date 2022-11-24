@@ -16,7 +16,8 @@ import (
 func (nci *NetworkControllerInfo) initRetryFramework() {
 	// Init the retry framework for pods, namespaces, nodes, network policies, egress firewalls,
 	// egress IP (and dependent namespaces, pods, nodes), cloud private ip config.
-	if nci.IsSecondary() {
+	if !nci.IsSecondary() {
+		klog.Infof("Cathy nci create policy retryFramework")
 		nci.retryNetworkPolicies = nci.newRetryFrameworkWithParameters(factory.PolicyType, nil, nil)
 	} else {
 		nci.retryNetworkPolicies = nci.newRetryFrameworkWithParameters(factory.MultinetworkpolicyType, nil, nil)
@@ -97,6 +98,10 @@ func (h *networkControllerInfoEventHandler) RecordAddEvent(obj interface{}) {
 		np := obj.(*knet.NetworkPolicy)
 		klog.V(5).Infof("Recording add event on network policy %s/%s", np.Namespace, np.Name)
 		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
+		//case factory.MultinetworkpolicyType:
+		//	mnp := obj.(*multinetworkpolicyapi.MultiNetworkPolicy)
+		//	klog.V(5).Infof("Recording add event on multinetwork policy %s/%s", mnp.Namespace, mnp.Name)
+		//	metrics.GetConfigDurationRecorder().Start("multinetworkpolicy", mnp.Namespace, mnp.Name)
 	}
 }
 
@@ -107,6 +112,10 @@ func (h *networkControllerInfoEventHandler) RecordUpdateEvent(obj interface{}) {
 		np := obj.(*knet.NetworkPolicy)
 		klog.V(5).Infof("Recording update event on network policy %s/%s", np.Namespace, np.Name)
 		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
+		//case factory.MultinetworkpolicyType:
+		//	mnp := obj.(*multinetworkpolicyapi.MultiNetworkPolicy)
+		//	klog.V(5).Infof("Recording update event on multinetwork policy %s/%s", mnp.Namespace, mnp.Name)
+		//	metrics.GetConfigDurationRecorder().Start("multinetworkpolicy", mnp.Namespace, mnp.Name)
 	}
 }
 
@@ -117,6 +126,10 @@ func (h *networkControllerInfoEventHandler) RecordDeleteEvent(obj interface{}) {
 		np := obj.(*knet.NetworkPolicy)
 		klog.V(5).Infof("Recording delete event on network policy %s/%s", np.Namespace, np.Name)
 		metrics.GetConfigDurationRecorder().Start("networkpolicy", np.Namespace, np.Name)
+		//case factory.MultinetworkpolicyType:
+		//	mnp := obj.(*multinetworkpolicyapi.MultiNetworkPolicy)
+		//	klog.V(5).Infof("Recording delete event on multinetwork policy %s/%s", mnp.Namespace, mnp.Name)
+		//	metrics.GetConfigDurationRecorder().Start("multinetworkpolicy", mnp.Namespace, mnp.Name)
 	}
 }
 
@@ -127,6 +140,10 @@ func (h *networkControllerInfoEventHandler) RecordSuccessEvent(obj interface{}) 
 		np := obj.(*knet.NetworkPolicy)
 		klog.V(5).Infof("Recording success event on network policy %s/%s", np.Namespace, np.Name)
 		metrics.GetConfigDurationRecorder().End("networkpolicy", np.Namespace, np.Name)
+		//case factory.MultinetworkpolicyType:
+		//	mnp := obj.(*multinetworkpolicyapi.MultiNetworkPolicy)
+		//	klog.V(5).Infof("Recording success event on multinetwork policy %s/%s", mnp.Namespace, mnp.Name)
+		//	metrics.GetConfigDurationRecorder().End("multinetworkpolicy", mnp.Namespace, mnp.Name)
 	}
 }
 
@@ -154,6 +171,7 @@ func (h *networkControllerInfoEventHandler) AddResource(obj interface{}, fromRet
 			return fmt.Errorf("could not cast %T object to *knet.NetworkPolicy", obj)
 		}
 
+		klog.Infof("Cathy Add policy %s/%s", np.Namespace, np.Name)
 		if err = h.nci.addNetworkPolicy(np); err != nil {
 			klog.Infof("Network Policy add failed for %s/%s, will try again later: %v",
 				np.Namespace, np.Name, err)
@@ -161,19 +179,20 @@ func (h *networkControllerInfoEventHandler) AddResource(obj interface{}, fromRet
 		}
 
 	case factory.MultinetworkpolicyType:
-		mp, ok := obj.(*multinetworkpolicyapi.MultiNetworkPolicy)
+		mnp, ok := obj.(*multinetworkpolicyapi.MultiNetworkPolicy)
 		if !ok {
 			return fmt.Errorf("could not cast %T object to *multinetworkpolicyapi.MultiNetworkPolicy", obj)
 		}
 
-		if !h.nci.shouldApplyMultiPolicy(mp) {
+		klog.Infof("Cathy Add multipolicy %s/%s", mnp.Namespace, mnp.Name)
+		if !h.nci.shouldApplyMultiPolicy(mnp) {
 			return nil
 		}
 
-		np := convertMultiNetPolicyToNetPolicy(mp)
+		np := convertMultiNetPolicyToNetPolicy(mnp)
 		if err = h.nci.addNetworkPolicy(np); err != nil {
 			klog.Infof("MultiNetworkPolicy add failed for %s/%s, will try again later: %v",
-				mp.Namespace, mp.Name, err)
+				mnp.Namespace, mnp.Name, err)
 			return err
 		}
 
@@ -213,39 +232,6 @@ func (h *networkControllerInfoEventHandler) AddResource(obj interface{}, fromRet
 // is in the retryCache or not.
 func (h *networkControllerInfoEventHandler) UpdateResource(oldObj, newObj interface{}, inRetryCache bool) error {
 	switch h.objType {
-	case factory.MultinetworkpolicyType:
-		oldMp, ok := oldObj.(*multinetworkpolicyapi.MultiNetworkPolicy)
-		if !ok {
-			return fmt.Errorf("could not cast %T object to *multinetworkpolicyapi.MultiNetworkPolicy", oldObj)
-		}
-		newMp, ok := newObj.(*multinetworkpolicyapi.MultiNetworkPolicy)
-		if !ok {
-			return fmt.Errorf("could not cast %T object to *multinetworkpolicyapi.MultiNetworkPolicy", newObj)
-		}
-
-		oldShouldApply := h.nci.shouldApplyMultiPolicy(oldMp)
-		newShouldApply := h.nci.shouldApplyMultiPolicy(newMp)
-		if oldShouldApply == newShouldApply {
-			return nil
-		}
-		// annotation changed,
-		if newShouldApply {
-			// now this multi-netpol applies to this network controller
-			np := convertMultiNetPolicyToNetPolicy(newMp)
-			if err := h.nci.addNetworkPolicy(np); err != nil {
-				klog.Infof("MultiNetworkPolicy add failed for %s/%s, will try again later: %v",
-					newMp.Namespace, newMp.Name, err)
-				return err
-			}
-		} else {
-			// this multi-netpol no longer applies to this network controller, delete it
-			np := convertMultiNetPolicyToNetPolicy(oldMp)
-			if err := h.nci.deleteNetworkPolicy(np); err != nil {
-				klog.Infof("MultiNetworkPolicy delete failed for %s/%s, will try again later: %v",
-					oldMp.Namespace, oldMp.Name, err)
-				return err
-			}
-		}
 	case factory.PeerPodSelectorType:
 		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
 		return h.nci.handlePeerPodSelectorAddUpdate(extraParameters.np, extraParameters.gp, newObj)
@@ -281,7 +267,7 @@ func (h *networkControllerInfoEventHandler) DeleteResource(obj, cachedObj interf
 			return fmt.Errorf("could not cast %T object to *multinetworkpolicyapi.MultiNetworkPolicy", obj)
 		}
 		np := convertMultiNetPolicyToNetPolicy(mp)
-		// delete this policy regardless it applies to this network controller, in case of missing update event
+		// delete this policy regardless it applies to this network controller, in case of a missing update event
 		if err := h.nci.deleteNetworkPolicy(np); err != nil {
 			klog.Infof("MultiNetworkPolicy delete failed for %s/%s, will try again later: %v",
 				mp.Namespace, mp.Name, err)

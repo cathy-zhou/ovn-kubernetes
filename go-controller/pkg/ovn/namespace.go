@@ -219,6 +219,7 @@ func (nci *NetworkControllerInfo) multicastDeleteNamespace(ns *kapi.Namespace, n
 
 // AddNamespace creates corresponding addressset in ovn db
 func (oc *DefaultNetworkController) AddNamespace(ns *kapi.Namespace) error {
+	klog.Infof("Cathy AddNamespace %s", ns.Name)
 	klog.Infof("[%s] adding namespace", ns.Name)
 	// Keep track of how long syncs take.
 	start := time.Now()

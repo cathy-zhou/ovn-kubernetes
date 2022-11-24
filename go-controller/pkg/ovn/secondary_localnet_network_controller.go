@@ -169,12 +169,7 @@ func (h *secondaryLocalnetNetworkControllerEventHandler) IsObjectInTerminalState
 // for a secondary layer2 network
 type SecondaryLocalnetNetworkController struct {
 	NetworkControllerInfo
-
-	wg         *sync.WaitGroup
-	podHandler *factory.Handler
-
-	// retry framework for pods
-	retryPods *retry.RetryFramework
+	wg *sync.WaitGroup
 }
 
 // NewSecondaryLocalnetNetworkController create a new OVN controller for the given secondary layer2 nad
@@ -208,22 +203,22 @@ func NewSecondaryLocalnetNetworkController(bnc *BaseNetworkController, nInfo uti
 
 func (oc *SecondaryLocalnetNetworkController) initRetryFramework() {
 	// Init the retry framework for pods
-	oc.retryPods = oc.newRetryFrameworkWithParameters(factory.PodType, nil, nil)
+	oc.retryPods = oc.newRetryFramework(factory.PodType)
+	oc.retryNamespaces = oc.newRetryFramework(factory.NamespaceType)
+	oc.NetworkControllerInfo.initRetryFramework()
 }
 
 // newRetryFrameworkMasterWithParameters builds and returns a retry framework for the input resource
 // type and assigns all ovnk-master-specific function attributes in the returned struct;
-func (oc *SecondaryLocalnetNetworkController) newRetryFrameworkWithParameters(
-	objectType reflect.Type,
-	syncFunc func([]interface{}) error,
-	extraParameters interface{}) *retry.RetryFramework {
+func (oc *SecondaryLocalnetNetworkController) newRetryFramework(
+	objectType reflect.Type) *retry.RetryFramework {
 	eventHandler := &secondaryLocalnetNetworkControllerEventHandler{
 		baseHandler:     baseNetworkControllerEventHandler{},
 		objType:         objectType,
 		watchFactory:    oc.watchFactory,
 		oc:              oc,
-		extraParameters: extraParameters, // in use by network policy dynamic watchers
-		syncFunc:        syncFunc,
+		extraParameters: nil, // in use by network policy dynamic watchers
+		syncFunc:        nil,
 	}
 	resourceHandler := &retry.ResourceHandler{
 		HasUpdateFunc:          hasResourceAnUpdateFunc(objectType),
@@ -274,8 +269,14 @@ func (oc *SecondaryLocalnetNetworkController) Stop(deleteLogicalEntities bool) e
 	close(oc.stopChan)
 	oc.wg.Wait()
 
+	if oc.policyHandler != nil {
+		oc.watchFactory.RemoveMultiNetworkPolicyHandler(oc.policyHandler)
+	}
 	if oc.podHandler != nil {
 		oc.watchFactory.RemovePodHandler(oc.podHandler)
+	}
+	if oc.namespaceHandler != nil {
+		oc.watchFactory.RemoveNodeHandler(oc.namespaceHandler)
 	}
 
 	if !deleteLogicalEntities {
@@ -289,8 +290,17 @@ func (oc *SecondaryLocalnetNetworkController) Stop(deleteLogicalEntities bool) e
 func (oc *SecondaryLocalnetNetworkController) Run() error {
 	klog.Infof("Starting all the Watchers for network %s ...", oc.GetNetworkName())
 	start := time.Now()
+	// WatchNamespaces() should be started first because it has no other dependencies
+	if err := oc.WatchNamespaces(); err != nil {
+		return err
+	}
 
 	if err := oc.WatchPods(); err != nil {
+		return err
+	}
+
+	// WatchNetworkPolicy depends on WatchPods and WatchNamespaces
+	if err := oc.WatchNetworkPolicy(); err != nil {
 		return err
 	}
 
@@ -302,18 +312,6 @@ func (oc *SecondaryLocalnetNetworkController) Run() error {
 	}
 
 	return nil
-}
-
-// WatchPods starts the watching of the Pod resource and calls back the appropriate handler logic
-func (oc *SecondaryLocalnetNetworkController) WatchPods() error {
-	if oc.podHandler != nil {
-		return nil
-	}
-	handler, err := oc.retryPods.WatchResource()
-	if err == nil {
-		oc.podHandler = handler
-	}
-	return err
 }
 
 func (oc *SecondaryLocalnetNetworkController) getPortInfo(pod *kapi.Pod) *lpInfo {

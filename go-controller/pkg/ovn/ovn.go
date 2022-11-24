@@ -109,8 +109,18 @@ type NetworkControllerInfo struct {
 	// make sure to keep this order to avoid deadlocks
 	sharedNetpolPortGroups *syncmap.SyncMap[*defaultDenyPortGroups]
 
+	// retry framework for pods
+	retryPods *retry.RetryFramework
+
+	// retry framework for namespaces
+	retryNamespaces *retry.RetryFramework
+
 	// retry framework for network policies
 	retryNetworkPolicies *retry.RetryFramework
+
+	podHandler       *factory.Handler
+	namespaceHandler *factory.Handler
+	policyHandler    *factory.Handler
 
 	stopChan chan struct{}
 }
@@ -268,15 +278,36 @@ func (oc *DefaultNetworkController) removePod(pod *kapi.Pod, portInfo *lpInfo) e
 }
 
 // WatchPods starts the watching of the Pod resource and calls back the appropriate handler logic
-func (oc *DefaultNetworkController) WatchPods() error {
-	_, err := oc.retryPods.WatchResource()
+func (nci *NetworkControllerInfo) WatchPods() error {
+	if nci.podHandler != nil {
+		return nil
+	}
+
+	handler, err := nci.retryPods.WatchResource()
+	if err == nil {
+		nci.podHandler = handler
+	}
 	return err
 }
 
 // WatchNetworkPolicy starts the watching of the network policy resource and calls
 // back the appropriate handler logic
-func (oc *DefaultNetworkController) WatchNetworkPolicy() error {
-	_, err := oc.retryNetworkPolicies.WatchResource()
+func (nci *NetworkControllerInfo) WatchNetworkPolicy() error {
+	klog.Infof("Cathy WatchNetworkPolicy 1 is secondary %v policyHandler %v", nci.IsSecondary(), nci.policyHandler)
+	if nci.IsSecondary() && !config.OVNKubernetesFeature.EnableMultiNetworkPolicy {
+		return nil
+	}
+
+	klog.Infof("Cathy WatchNetworkPolicy 2")
+	if nci.policyHandler != nil {
+		return nil
+	}
+
+	klog.Infof("Cathy WatchNetworkPolicy 3")
+	handler, err := nci.retryNetworkPolicies.WatchResource()
+	if err == nil {
+		nci.policyHandler = handler
+	}
 	return err
 }
 
@@ -321,8 +352,15 @@ func (oc *DefaultNetworkController) WatchEgressIPPods() error {
 
 // WatchNamespaces starts the watching of namespace resource and calls
 // back the appropriate handler logic
-func (oc *DefaultNetworkController) WatchNamespaces() error {
-	_, err := oc.retryNamespaces.WatchResource()
+func (nci *NetworkControllerInfo) WatchNamespaces() error {
+	if nci.namespaceHandler != nil {
+		return nil
+	}
+
+	handler, err := nci.retryNamespaces.WatchResource()
+	if err == nil {
+		nci.namespaceHandler = handler
+	}
 	return err
 }
 

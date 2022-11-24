@@ -98,6 +98,13 @@ func (h *secondaryLayer2NetworkControllerEventHandler) AddResource(obj interface
 		}
 		return h.oc.ensurePod(nil, pod, true)
 
+	case factory.NamespaceType:
+		ns, ok := obj.(*kapi.Namespace)
+		if !ok {
+			return fmt.Errorf("could not cast %T object to *kapi.Namespace", obj)
+		}
+		return h.oc.AddNamespace(ns)
+
 	default:
 		return fmt.Errorf("no add function for object type %s", h.objType)
 	}
@@ -114,6 +121,10 @@ func (h *secondaryLayer2NetworkControllerEventHandler) UpdateResource(oldObj, ne
 		newPod := newObj.(*kapi.Pod)
 
 		return h.oc.ensurePod(oldPod, newPod, inRetryCache || util.PodScheduled(oldPod) != util.PodScheduled(newPod))
+
+	case factory.NamespaceType:
+		oldNs, newNs := oldObj.(*kapi.Namespace), newObj.(*kapi.Namespace)
+		return h.oc.updateNamespace(oldNs, newNs)
 	}
 	return fmt.Errorf("no update function for object type %s", h.objType)
 }
@@ -133,6 +144,10 @@ func (h *secondaryLayer2NetworkControllerEventHandler) DeleteResource(obj, cache
 		h.oc.logicalPortCache.remove(util.GetLogicalPortName(pod.Namespace, pod.Name))
 		return h.oc.removePod(pod, portInfo)
 
+	case factory.NamespaceType:
+		ns := obj.(*kapi.Namespace)
+		return h.oc.deleteNamespace(ns)
+
 	default:
 		return fmt.Errorf("object type %s not supported", h.objType)
 	}
@@ -148,6 +163,9 @@ func (h *secondaryLayer2NetworkControllerEventHandler) SyncFunc(objs []interface
 		switch h.objType {
 		case factory.PodType:
 			syncFunc = h.oc.syncPods
+
+		case factory.NamespaceType:
+			syncFunc = h.oc.syncNamespaces
 
 		default:
 			return fmt.Errorf("no sync function for object type %s", h.objType)
@@ -169,12 +187,7 @@ func (h *secondaryLayer2NetworkControllerEventHandler) IsObjectInTerminalState(o
 // for a secondary layer2 network
 type SecondaryLayer2NetworkController struct {
 	NetworkControllerInfo
-
-	wg         *sync.WaitGroup
-	podHandler *factory.Handler
-
-	// retry framework for pods
-	retryPods *retry.RetryFramework
+	wg *sync.WaitGroup
 }
 
 // NewSecondaryLayer2NetworkController create a new OVN controller for the given secondary layer2 nad
@@ -208,22 +221,22 @@ func NewSecondaryLayer2NetworkController(bnc *BaseNetworkController, nInfo util.
 
 func (oc *SecondaryLayer2NetworkController) initRetryFramework() {
 	// Init the retry framework for pods
-	oc.retryPods = oc.newRetryFrameworkWithParameters(factory.PodType, nil, nil)
+	oc.retryPods = oc.newRetryFramework(factory.PodType)
+	oc.retryNamespaces = oc.newRetryFramework(factory.NamespaceType)
+	oc.NetworkControllerInfo.initRetryFramework()
 }
 
-// newRetryFrameworkMasterWithParameters builds and returns a retry framework for the input resource
+// newRetryFramework builds and returns a retry framework for the input resource
 // type and assigns all ovnk-master-specific function attributes in the returned struct;
-func (oc *SecondaryLayer2NetworkController) newRetryFrameworkWithParameters(
-	objectType reflect.Type,
-	syncFunc func([]interface{}) error,
-	extraParameters interface{}) *retry.RetryFramework {
+func (oc *SecondaryLayer2NetworkController) newRetryFramework(
+	objectType reflect.Type) *retry.RetryFramework {
 	eventHandler := &secondaryLayer2NetworkControllerEventHandler{
 		baseHandler:     baseNetworkControllerEventHandler{},
 		objType:         objectType,
 		watchFactory:    oc.watchFactory,
 		oc:              oc,
-		extraParameters: extraParameters, // in use by network policy dynamic watchers
-		syncFunc:        syncFunc,
+		extraParameters: nil, // in use by network policy dynamic watchers
+		syncFunc:        nil,
 	}
 	resourceHandler := &retry.ResourceHandler{
 		HasUpdateFunc:          hasResourceAnUpdateFunc(objectType),
@@ -275,8 +288,14 @@ func (oc *SecondaryLayer2NetworkController) Stop(deleteLogicalEntities bool) err
 	close(oc.stopChan)
 	oc.wg.Wait()
 
+	if oc.policyHandler != nil {
+		oc.watchFactory.RemoveMultiNetworkPolicyHandler(oc.policyHandler)
+	}
 	if oc.podHandler != nil {
 		oc.watchFactory.RemovePodHandler(oc.podHandler)
+	}
+	if oc.namespaceHandler != nil {
+		oc.watchFactory.RemoveNodeHandler(oc.namespaceHandler)
 	}
 
 	if !deleteLogicalEntities {
@@ -291,7 +310,17 @@ func (oc *SecondaryLayer2NetworkController) Run() error {
 	klog.Infof("Starting all the Watchers for network %s ...", oc.GetNetworkName())
 	start := time.Now()
 
+	// WatchNamespaces() should be started first because it has no other dependencies
+	if err := oc.WatchNamespaces(); err != nil {
+		return err
+	}
+
 	if err := oc.WatchPods(); err != nil {
+		return err
+	}
+
+	// WatchNetworkPolicy depends on WatchPods and WatchNamespaces
+	if err := oc.WatchNetworkPolicy(); err != nil {
 		return err
 	}
 
@@ -303,18 +332,6 @@ func (oc *SecondaryLayer2NetworkController) Run() error {
 	}
 
 	return nil
-}
-
-// WatchPods starts the watching of the Pod resource and calls back the appropriate handler logic
-func (oc *SecondaryLayer2NetworkController) WatchPods() error {
-	if oc.podHandler != nil {
-		return nil
-	}
-	handler, err := oc.retryPods.WatchResource()
-	if err == nil {
-		oc.podHandler = handler
-	}
-	return err
 }
 
 func (oc *SecondaryLayer2NetworkController) getPortInfo(pod *kapi.Pod) *lpInfo {

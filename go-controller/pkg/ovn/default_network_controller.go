@@ -92,9 +92,6 @@ type DefaultNetworkController struct {
 
 	joinSwIPManager *lsm.JoinSwitchIPManager
 
-	// retry framework for pods
-	retryPods *retry.RetryFramework
-
 	// retry framework for egress firewall
 	retryEgressFirewalls *retry.RetryFramework
 
@@ -120,9 +117,6 @@ type DefaultNetworkController struct {
 
 	// retry framework for Cloud private IP config
 	retryCloudPrivateIPConfig *retry.RetryFramework
-
-	// retry framework for namespaces
-	retryNamespaces *retry.RetryFramework
 
 	// variable to determine if all pods present on the node during startup have been processed
 	// updated atomically

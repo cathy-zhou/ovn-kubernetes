@@ -35,6 +35,7 @@ import (
 	multinetworkpolicyscheme "github.com/k8snetworkplumbingwg/multi-networkpolicy/pkg/client/clientset/versioned/scheme"
 	//multinetworkpolicyclientset "github.com/k8snetworkplumbingwg/multi-networkpolicy/pkg/client/clientset/versioned"
 	multinetworkpolicyinformerfactory "github.com/k8snetworkplumbingwg/multi-networkpolicy/pkg/client/informers/externalversions"
+	multinplister "github.com/k8snetworkplumbingwg/multi-networkpolicy/pkg/client/listers/k8s.cni.cncf.io/v1beta1"
 
 	kapi "k8s.io/api/core/v1"
 	discovery "k8s.io/api/discovery/v1"
@@ -521,6 +522,12 @@ func (wf *WatchFactory) GetResourceHandlerFunc(objType reflect.Type) (AddHandler
 			return wf.AddPolicyHandler(funcs, processExisting)
 		}, nil
 
+	case MultinetworkpolicyType:
+		return func(namespace string, sel labels.Selector,
+			funcs cache.ResourceEventHandler, processExisting func([]interface{}) error) (*Handler, error) {
+			return wf.AddMultiNetworkPolicyHandler(funcs, processExisting)
+		}, nil
+
 	case NodeType, EgressNodeType:
 		return func(namespace string, sel labels.Selector,
 			funcs cache.ResourceEventHandler, processExisting func([]interface{}) error) (*Handler, error) {
@@ -676,6 +683,7 @@ func (wf *WatchFactory) RemoveEndpointSliceHandler(handler *Handler) {
 
 // AddPolicyHandler adds a handler function that will be executed on NetworkPolicy object changes
 func (wf *WatchFactory) AddPolicyHandler(handlerFuncs cache.ResourceEventHandler, processExisting func([]interface{}) error) (*Handler, error) {
+	klog.Infof("Cathy AddPolicyHandler")
 	return wf.addHandler(PolicyType, "", nil, handlerFuncs, processExisting, defaultHandlerPriority)
 }
 
@@ -731,6 +739,7 @@ func (wf *WatchFactory) RemoveCloudPrivateIPConfigHandler(handler *Handler) {
 
 // AddMultiNetworkPolicyHandler adds a handler function that will be executed on MultiNetworkPolicy object changes
 func (wf *WatchFactory) AddMultiNetworkPolicyHandler(handlerFuncs cache.ResourceEventHandler, processExisting func([]interface{}) error) (*Handler, error) {
+	klog.Infof("Cathy AddMultiNetworkPolicyHandler")
 	return wf.addHandler(MultinetworkpolicyType, "", nil, handlerFuncs, processExisting, defaultHandlerPriority)
 }
 
@@ -741,6 +750,7 @@ func (wf *WatchFactory) RemoveMultiNetworkPolicyHandler(handler *Handler) {
 
 // AddNamespaceHandler adds a handler function that will be executed on Namespace object changes
 func (wf *WatchFactory) AddNamespaceHandler(handlerFuncs cache.ResourceEventHandler, processExisting func([]interface{}) error) (*Handler, error) {
+	klog.Infof("Cathy AddNamespaceHandler")
 	return wf.addHandler(NamespaceType, "", nil, handlerFuncs, processExisting, defaultHandlerPriority)
 }
 
@@ -876,6 +886,12 @@ func (wf *WatchFactory) GetNamespacesBySelector(labelSelector metav1.LabelSelect
 func (wf *WatchFactory) GetNetworkPolicy(namespace, name string) (*knet.NetworkPolicy, error) {
 	networkPolicyLister := wf.informers[PolicyType].lister.(netlisters.NetworkPolicyLister)
 	return networkPolicyLister.NetworkPolicies(namespace).Get(name)
+}
+
+// GetMultinetworkPolicy gets a specific multinetwork policy by the namespace/name
+func (wf *WatchFactory) GetMultinetworkPolicy(namespace, name string) (*multinetworkpolicyapi.MultiNetworkPolicy, error) {
+	multinetworkPolicyLister := wf.informers[MultinetworkpolicyType].lister.(multinplister.MultiNetworkPolicyLister)
+	return multinetworkPolicyLister.MultiNetworkPolicies(namespace).Get(name)
 }
 
 func (wf *WatchFactory) GetEgressFirewall(namespace, name string) (*egressfirewallapi.EgressFirewall, error) {
