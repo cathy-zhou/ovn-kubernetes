@@ -53,7 +53,7 @@ func (h *secondaryLayer3NetworkControllerEventHandler) GetInternalCacheEntry(obj
 	switch h.objType {
 	case factory.PodType:
 		pod := obj.(*kapi.Pod)
-		return h.oc.getPortInfo(pod)
+		return h.oc.getPortInfo4SecondaryNetwork(pod)
 	default:
 		return nil
 	}
@@ -103,7 +103,7 @@ func (h *secondaryLayer3NetworkControllerEventHandler) AddResource(obj interface
 		if !ok {
 			return fmt.Errorf("could not cast %T object to *knet.Pod", obj)
 		}
-		return h.oc.ensurePod(nil, pod, true)
+		return h.oc.ensurePod(pod, true)
 
 	case factory.NodeType:
 		node, ok := obj.(*kapi.Node)
@@ -130,7 +130,7 @@ func (h *secondaryLayer3NetworkControllerEventHandler) AddResource(obj interface
 		if !ok {
 			return fmt.Errorf("could not cast %T object to *kapi.Namespace", obj)
 		}
-		return h.oc.AddNamespace(ns)
+		return h.oc.AddNamespace4SecondaryNetwork(ns)
 
 	default:
 		return fmt.Errorf("no add function for object type %s", h.objType)
@@ -148,7 +148,7 @@ func (h *secondaryLayer3NetworkControllerEventHandler) UpdateResource(oldObj, ne
 		oldPod := oldObj.(*kapi.Pod)
 		newPod := newObj.(*kapi.Pod)
 
-		return h.oc.ensurePod(oldPod, newPod, inRetryCache || util.PodScheduled(oldPod) != util.PodScheduled(newPod))
+		return h.oc.ensurePod(newPod, inRetryCache || util.PodScheduled(oldPod) != util.PodScheduled(newPod))
 
 	case factory.NodeType:
 		newNode, ok := newObj.(*kapi.Node)
@@ -168,7 +168,7 @@ func (h *secondaryLayer3NetworkControllerEventHandler) UpdateResource(oldObj, ne
 
 	case factory.NamespaceType:
 		oldNs, newNs := oldObj.(*kapi.Namespace), newObj.(*kapi.Namespace)
-		return h.oc.updateNamespace(oldNs, newNs)
+		return h.oc.updateNamespace4SecondaryNetwork(oldNs, newNs)
 	}
 	return fmt.Errorf("no update function for object type %s", h.objType)
 }
@@ -178,16 +178,6 @@ func (h *secondaryLayer3NetworkControllerEventHandler) UpdateResource(oldObj, ne
 // used for now for pods and network policies.
 func (h *secondaryLayer3NetworkControllerEventHandler) DeleteResource(obj, cachedObj interface{}) error {
 	switch h.objType {
-	case factory.PodType:
-		var portInfo *lpInfo
-		pod := obj.(*kapi.Pod)
-
-		if cachedObj != nil {
-			portInfo = cachedObj.(*lpInfo)
-		}
-		h.oc.logicalPortCache.remove(util.GetLogicalPortName(pod.Namespace, pod.Name))
-		return h.oc.removePod(pod, portInfo)
-
 	case factory.NodeType:
 		node, ok := obj.(*kapi.Node)
 		if !ok {
@@ -195,12 +185,8 @@ func (h *secondaryLayer3NetworkControllerEventHandler) DeleteResource(obj, cache
 		}
 		return h.oc.deleteNodeEvent(node)
 
-	case factory.NamespaceType:
-		ns := obj.(*kapi.Namespace)
-		return h.oc.deleteNamespace(ns)
-
 	default:
-		return fmt.Errorf("object type %s not supported", h.objType)
+		return h.oc.DeleteSecondaryNetworkResourceCommon(h.objType, obj, cachedObj)
 	}
 }
 
@@ -213,7 +199,7 @@ func (h *secondaryLayer3NetworkControllerEventHandler) SyncFunc(objs []interface
 	} else {
 		switch h.objType {
 		case factory.PodType:
-			syncFunc = h.oc.syncPods
+			syncFunc = h.oc.syncPods4SecondaryNetwork
 
 		case factory.NodeType:
 			syncFunc = h.oc.syncNodes
@@ -344,7 +330,7 @@ func (oc *SecondaryLayer3NetworkController) Stop(deleteLogicalEntities bool) err
 		oc.watchFactory.RemoveNodeHandler(oc.nodeHandler)
 	}
 	if oc.namespaceHandler != nil {
-		oc.watchFactory.RemoveNodeHandler(oc.namespaceHandler)
+		oc.watchFactory.RemoveNamespaceHandler(oc.namespaceHandler)
 	}
 	if !deleteLogicalEntities {
 		return nil
@@ -450,11 +436,7 @@ func (oc *SecondaryLayer3NetworkController) WatchNodes() error {
 	return err
 }
 
-func (oc *SecondaryLayer3NetworkController) getPortInfo(pod *kapi.Pod) *lpInfo {
-	return oc.NetworkControllerInfo.getPortInfo(pod, oc.logicalPortCache)
-}
-
-func (nci *NetworkControllerInfo) getPortInfo(pod *kapi.Pod, logicalPortCache *portCache) *lpInfo {
+func (nci *NetworkControllerInfo) getPortInfo4SecondaryNetwork(pod *kapi.Pod) *lpInfo {
 	if !util.PodWantsNetwork(pod) {
 		return nil
 	} else {
@@ -462,7 +444,7 @@ func (nci *NetworkControllerInfo) getPortInfo(pod *kapi.Pod, logicalPortCache *p
 		if err == nil && on {
 			nadName := util.GetNadName(network.Namespace, network.Name)
 			key := util.GetSecondaryNetworkLogicalPortName(pod.Namespace, pod.Name, nadName)
-			portInfo, _ := logicalPortCache.get(key)
+			portInfo, _ := nci.logicalPortCache.get(key)
 			return portInfo
 		}
 	}
@@ -484,7 +466,19 @@ func (oc *SecondaryLayer3NetworkController) Init() error {
 
 // ensurePod tries to set up a pod. It returns nil on success and error on failure; failure
 // indicates the pod set up should be retried later.
-func (oc *SecondaryLayer3NetworkController) ensurePod(oldPod, pod *kapi.Pod, addPort bool) error {
+func (oc *SecondaryLayer3NetworkController) ensurePod(pod *kapi.Pod, addPort bool) error {
+	// If a node does node have an assigned hostsubnet don't wait for the logical switch to appear
+	switchName := oc.GetPrefix() + pod.Spec.NodeName
+	if oc.lsManager.IsNonHostSubnetSwitch(switchName) {
+		return nil
+	}
+
+	return oc.ensurePod4SecondaryNetworkCommon(pod, addPort)
+}
+
+// ensurePod4SecondaryNetworkCommon tries to set up a pod. It returns nil on success and error on failure; failure
+// indicates the pod set up should be retried later.
+func (nci *NetworkControllerInfo) ensurePod4SecondaryNetworkCommon(pod *kapi.Pod, addPort bool) error {
 	// Try unscheduled pods later
 	if !util.PodScheduled(pod) {
 		return nil
@@ -494,33 +488,30 @@ func (oc *SecondaryLayer3NetworkController) ensurePod(oldPod, pod *kapi.Pod, add
 		return nil
 	}
 
-	// If a node does node have an assigned hostsubnet don't wait for the logical switch to appear
-	switchName := oc.GetPrefix() + pod.Spec.NodeName
-	if oc.lsManager.IsNonHostSubnetSwitch(switchName) {
-		return nil
-	}
-
-	on, network, err := util.IsNetworkOnPod(pod, oc.NetInfo)
+	on, network, err := util.IsNetworkOnPod(pod, nci.NetInfo)
 	if err != nil || !on {
 		// the pod is not attached to this specific network
 		klog.V(5).Infof("Pod %s/%s is not attached on this network controller %s error (%v) ",
-			pod.Namespace, pod.Name, oc.GetNetworkName(), err)
+			pod.Namespace, pod.Name, nci.GetNetworkName(), err)
 		return nil
 	}
 
 	nadName := util.GetNadName(network.Namespace, network.Name)
-	err = oc.addLogicalPort(pod, nadName, network)
+	err = nci.addLogicalPort4SecondaryNetworkCommon(pod, nadName, network)
 	if err != nil {
 		return fmt.Errorf("failed to add port of nad %s for pod %s/%s", nadName, pod.Namespace, pod.Name)
 	}
 	return nil
 }
 
-func (oc *SecondaryLayer3NetworkController) addLogicalPort(pod *kapi.Pod, nadName string,
+func (nci *NetworkControllerInfo) addLogicalPort4SecondaryNetworkCommon(pod *kapi.Pod, nadName string,
 	network *networkattachmentdefinitionapi.NetworkSelectionElement) error {
 	var libovsdbExecuteTime time.Duration
 
-	switchName := oc.GetPrefix() + pod.Spec.NodeName
+	switchName, err := nci.getExpectedSwitchName(pod)
+	if err != nil {
+		return err
+	}
 	// Keep track of how long syncs take.
 	start := time.Now()
 	defer func() {
@@ -528,26 +519,26 @@ func (oc *SecondaryLayer3NetworkController) addLogicalPort(pod *kapi.Pod, nadNam
 			pod.Namespace, pod.Name, nadName, time.Since(start), libovsdbExecuteTime)
 	}()
 
-	ops, lsp, podAnnotation, newlyCreated, err := oc.addPodLogicalPort(pod, nadName, network)
+	ops, lsp, podAnnotation, newlyCreated, err := nci.addPodLogicalPort(pod, nadName, network)
 	if err != nil {
 		return err
 	}
 
-	recordOps, txOkCallBack, _, err := metrics.GetConfigDurationRecorder().AddOVN(oc.nbClient, "pod", pod.Namespace,
-		pod.Name, oc.NetInfo)
+	recordOps, txOkCallBack, _, err := metrics.GetConfigDurationRecorder().AddOVN(nci.nbClient, "pod", pod.Namespace,
+		pod.Name, nci.NetInfo)
 	if err != nil {
 		klog.Errorf("Config duration recorder: %v", err)
 	}
 	ops = append(ops, recordOps...)
 
 	transactStart := time.Now()
-	_, err = libovsdbops.TransactAndCheckAndSetUUIDs(oc.nbClient, lsp, ops)
+	_, err = libovsdbops.TransactAndCheckAndSetUUIDs(nci.nbClient, lsp, ops)
 	libovsdbExecuteTime = time.Since(transactStart)
 	if err != nil {
 		return fmt.Errorf("error transacting operations %+v: %v", ops, err)
 	}
 	txOkCallBack()
-	oc.podRecorder.AddLSP(pod.UID, oc.NetInfo)
+	nci.podRecorder.AddLSP(pod.UID, nci.NetInfo)
 
 	// if somehow lspUUID is empty, there is a bug here with interpreting OVSDB results
 	if len(lsp.UUID) == 0 {
@@ -555,17 +546,39 @@ func (oc *SecondaryLayer3NetworkController) addLogicalPort(pod *kapi.Pod, nadNam
 	}
 
 	// Add the pod's logical switch port to the port cache
-	_ = oc.logicalPortCache.add(switchName, lsp.Name, lsp.UUID, podAnnotation.MAC, podAnnotation.IPs)
+	_ = nci.logicalPortCache.add(switchName, lsp.Name, lsp.UUID, podAnnotation.MAC, podAnnotation.IPs)
 
 	if newlyCreated {
-		metrics.RecordPodCreated(pod, oc.NetInfo)
+		metrics.RecordPodCreated(pod, nci.NetInfo)
 	}
 	return nil
 }
 
+func (nci *NetworkControllerInfo) DeleteSecondaryNetworkResourceCommon(objType reflect.Type, obj, cachedObj interface{}) error {
+	switch objType {
+	case factory.PodType:
+		var portInfo *lpInfo
+		pod := obj.(*kapi.Pod)
+
+		if cachedObj != nil {
+			portInfo = cachedObj.(*lpInfo)
+		}
+		return nci.removePod4SecondaryNetwork(pod, portInfo)
+
+	case factory.NamespaceType:
+		ns := obj.(*kapi.Namespace)
+		return nci.deleteNamespace4SecondaryNetwork(ns)
+
+	default:
+		return fmt.Errorf("object type %s not supported", objType)
+	}
+}
+
 // removePod tried to tear down a pod. It returns nil on success and error on failure;
 // failure indicates the pod tear down should be retried later.
-func (oc *SecondaryLayer3NetworkController) removePod(pod *kapi.Pod, portInfo *lpInfo) error {
+func (nci *NetworkControllerInfo) removePod4SecondaryNetwork(pod *kapi.Pod, portInfo *lpInfo) error {
+	var nadName, logicalPortName string
+
 	if !util.PodWantsNetwork(pod) {
 		return nil
 	}
@@ -576,15 +589,23 @@ func (oc *SecondaryLayer3NetworkController) removePod(pod *kapi.Pod, portInfo *l
 		return nil
 	}
 
-	on, network, err := util.IsNetworkOnPod(pod, oc.NetInfo)
+	if portInfo != nil {
+		logicalPortName = portInfo.name
+		nci.logicalPortCache.remove(logicalPortName)
+	}
+	on, network, err := util.IsNetworkOnPod(pod, nci.NetInfo)
 	if err != nil || !on {
 		// the pod is not attached to this specific network
 		return nil
 	}
+	nadName = util.GetNadName(network.Namespace, network.Name)
+	logicalPortName = util.GetSecondaryNetworkLogicalPortName(pod.Namespace, pod.Name, nadName)
+	if portInfo == nil {
+		nci.logicalPortCache.remove(logicalPortName)
+	}
 
-	nadName := util.GetNadName(network.Namespace, network.Name)
 	// TBD namespaceInfo needed when multi-network policy support is added
-	pInfo, err := oc.deletePodLogicalPort(pod, portInfo, nadName, nil)
+	pInfo, err := nci.deletePodLogicalPort(pod, portInfo, nadName, nil)
 	if err != nil {
 		return err
 	}
@@ -600,7 +621,7 @@ func (oc *SecondaryLayer3NetworkController) removePod(pod *kapi.Pod, portInfo *l
 	// while it is now on another pod
 	klog.Infof("Attempting to release IPs for pod: %s/%s, ips: %s", pod.Namespace, pod.Name,
 		util.JoinIPNetIPs(pInfo.ips, " "))
-	if err := oc.lsManager.ReleaseIPs(pInfo.logicalSwitch, pInfo.ips); err != nil {
+	if err := nci.lsManager.ReleaseIPs(pInfo.logicalSwitch, pInfo.ips); err != nil {
 		return fmt.Errorf("cannot release IPs for pod %s: %w", podDesc, err)
 	}
 
@@ -703,32 +724,6 @@ func (oc *SecondaryLayer3NetworkController) deleteNode(nodeName string) error {
 	return nil
 }
 
-func (oc *SecondaryLayer3NetworkController) syncPods(pods []interface{}) error {
-	// get the list of logical switch ports (equivalent to pods). Reserve all existing Pod IPs to
-	// avoid subsequent new Pods getting the same duplicate Pod IP.
-	expectedLogicalPorts := make(map[string]bool)
-	for _, podInterface := range pods {
-		pod, ok := podInterface.(*kapi.Pod)
-		if !ok {
-			return fmt.Errorf("spurious object in syncPods: %v", podInterface)
-		}
-		on, network, err := util.IsNetworkOnPod(pod, oc.NetInfo)
-		if err != nil || !on {
-			continue
-		}
-		nadName := util.GetNadName(network.Namespace, network.Name)
-		annotations, err := util.UnmarshalPodAnnotation(pod.Annotations, nadName)
-		if err != nil {
-			continue
-		}
-		err = oc.updateExpectedLogicalPorts(pod, annotations, nadName, expectedLogicalPorts)
-		if err != nil {
-			return err
-		}
-	}
-	return oc.deleteAllNodesStaleLogicalSwitchPorts(expectedLogicalPorts)
-}
-
 // We only deal with cleaning up nodes that shouldn't exist here, since
 // watchNodes() will be called for all existing nodes at startup anyway.
 // Note that this list will include the 'join' cluster switch, which we
@@ -766,15 +761,15 @@ func (oc *SecondaryLayer3NetworkController) syncNodes(nodes []interface{}) error
 }
 
 // AddNamespace creates corresponding addressset in ovn db
-func (nci *NetworkControllerInfo) AddNamespace(ns *kapi.Namespace) error {
-	klog.Infof("[%s] adding namespace", ns.Name)
+func (nci *NetworkControllerInfo) AddNamespace4SecondaryNetwork(ns *kapi.Namespace) error {
+	klog.Infof("[%s] adding namespace for network %s", ns.Name, nci.GetNetworkName())
 	// Keep track of how long syncs take.
 	start := time.Now()
 	defer func() {
-		klog.Infof("[%s] adding namespace took %v", ns.Name, time.Since(start))
+		klog.Infof("[%s] adding namespace took %v for network %s", ns.Name, time.Since(start), nci.GetNetworkName())
 	}()
 
-	_, nsUnlock, err := nci.ensureNamespaceLocked(ns.Name, false, ns)
+	_, nsUnlock, err := nci.ensureNamespaceLocked4SecondaryNetwork(ns.Name, false, ns)
 	if err != nil {
 		return fmt.Errorf("failed to ensure namespace locked: %v", err)
 	}
@@ -786,7 +781,7 @@ func (nci *NetworkControllerInfo) AddNamespace(ns *kapi.Namespace) error {
 // with its mutex locked.
 // ns is the name of the namespace, while namespace is the optional k8s namespace object
 // if no k8s namespace object is provided, this function will attempt to find it via informer cache
-func (nci *NetworkControllerInfo) ensureNamespaceLocked(ns string, readOnly bool, namespace *kapi.Namespace) (*namespaceInfo, func(), error) {
+func (nci *NetworkControllerInfo) ensureNamespaceLocked4SecondaryNetwork(ns string, readOnly bool, namespace *kapi.Namespace) (*namespaceInfo, func(), error) {
 	ips := nci.getAllNamespacePodAddresses(ns)
 
 	nci.namespacesMutex.Lock()
@@ -857,9 +852,9 @@ func (nci *NetworkControllerInfo) ensureNamespaceLocked(ns string, readOnly bool
 	return nsInfo, unlockFunc, nil
 }
 
-func (nci *NetworkControllerInfo) updateNamespace(old, newer *kapi.Namespace) error {
+func (nci *NetworkControllerInfo) updateNamespace4SecondaryNetwork(old, newer *kapi.Namespace) error {
 	var errors []error
-	klog.Infof("[%s] updating namespace", old.Name)
+	klog.Infof("[%s] updating namespace for network %s", old.Name, nci.GetNetworkName())
 
 	nsInfo, nsUnlock := nci.namespaceManager.getNamespaceLocked(old.Name, false)
 	if nsInfo == nil {
@@ -877,23 +872,23 @@ func (nci *NetworkControllerInfo) updateNamespace(old, newer *kapi.Namespace) er
 		}
 	}
 
-	if err := nci.multicastUpdateNamespace(newer, nsInfo); err != nil {
-		errors = append(errors, err)
-	}
+	//if err := nci.multicastUpdateNamespace(newer, nsInfo); err != nil {
+	//	errors = append(errors, err)
+	//}
 	return kerrors.NewAggregate(errors)
 }
 
-func (nci *NetworkControllerInfo) deleteNamespace(ns *kapi.Namespace) error {
-	klog.Infof("[%s] deleting namespace", ns.Name)
+func (nci *NetworkControllerInfo) deleteNamespace4SecondaryNetwork(ns *kapi.Namespace) error {
+	klog.Infof("[%s] deleting namespace for network %s", ns.Name, nci.GetNetworkName())
 
 	nsInfo := nci.namespaceManager.deleteNamespaceLocked(nci.stopChan, ns.Name)
 	if nsInfo == nil {
 		return nil
 	}
 	defer nsInfo.Unlock()
-
-	if err := nci.multicastDeleteNamespace(ns, nsInfo); err != nil {
-		return fmt.Errorf("failed to delete multicast nameosace error %v", err)
-	}
+	//
+	//if err := nci.multicastDeleteNamespace(ns, nsInfo); err != nil {
+	//	return fmt.Errorf("failed to delete multicast nameosace error %v", err)
+	//}
 	return nil
 }

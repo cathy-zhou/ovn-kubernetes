@@ -283,6 +283,7 @@ func (asf *ovnAddressSetFactory) newOvnAddressSets(name string, ips []net.IP) (*
 	v4IPs, v6IPs := splitIPsByFamily(ips)
 
 	ip4ASName, ip6ASName := MakeAddressSetName(name)
+	klog.Infof("Cathy new newOvnAddressSets for name %s, v4AsName %s v6AsName %s", name, ip4ASName, ip6ASName)
 	if config.IPv4Mode {
 		v4set, err = asf.newOvnAddressSet(ip4ASName, v4IPs)
 		if err != nil {
@@ -314,6 +315,8 @@ func (asf *ovnAddressSetFactory) newOvnAddressSet(name string, ips []net.IP) (*o
 	if asf.IsSecondary() {
 		addrSet.ExternalIDs[types.NetworkNameExternalID] = asf.GetNetworkName()
 	}
+
+	klog.Infof("Cathy new newOvnAddressSet hashName %s, name %s ip %v network %s", as.hashName, as.name, ips, asf.GetNetworkName())
 
 	err := libovsdbops.CreateOrUpdateAddressSets(asf.nbClient, &addrSet)
 	// UUID should always be set if no error, check anyway

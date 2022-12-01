@@ -8,10 +8,8 @@ import (
 	"sync"
 	"time"
 
-	networkattachmentdefinitionapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
@@ -48,7 +46,7 @@ func (h *secondaryLocalnetNetworkControllerEventHandler) GetInternalCacheEntry(o
 	switch h.objType {
 	case factory.PodType:
 		pod := obj.(*kapi.Pod)
-		return h.oc.getPortInfo(pod)
+		return h.oc.getPortInfo4SecondaryNetwork(pod)
 	default:
 		return nil
 	}
@@ -96,7 +94,14 @@ func (h *secondaryLocalnetNetworkControllerEventHandler) AddResource(obj interfa
 		if !ok {
 			return fmt.Errorf("could not cast %T object to *knet.Pod", obj)
 		}
-		return h.oc.ensurePod(nil, pod, true)
+		return h.oc.ensurePod4SecondaryNetworkCommon(pod, true)
+
+	case factory.NamespaceType:
+		ns, ok := obj.(*kapi.Namespace)
+		if !ok {
+			return fmt.Errorf("could not cast %T object to *kapi.Namespace", obj)
+		}
+		return h.oc.AddNamespace4SecondaryNetwork(ns)
 
 	default:
 		return fmt.Errorf("no add function for object type %s", h.objType)
@@ -113,8 +118,12 @@ func (h *secondaryLocalnetNetworkControllerEventHandler) UpdateResource(oldObj, 
 		oldPod := oldObj.(*kapi.Pod)
 		newPod := newObj.(*kapi.Pod)
 
-		return h.oc.ensurePod(oldPod, newPod, inRetryCache || util.PodScheduled(oldPod) != util.PodScheduled(newPod))
+		return h.oc.ensurePod4SecondaryNetworkCommon(newPod, inRetryCache || util.PodScheduled(oldPod) != util.PodScheduled(newPod))
+	case factory.NamespaceType:
+		oldNs, newNs := oldObj.(*kapi.Namespace), newObj.(*kapi.Namespace)
+		return h.oc.updateNamespace4SecondaryNetwork(oldNs, newNs)
 	}
+
 	return fmt.Errorf("no update function for object type %s", h.objType)
 }
 
@@ -122,20 +131,7 @@ func (h *secondaryLocalnetNetworkControllerEventHandler) UpdateResource(oldObj, 
 // Given an object and optionally a cachedObj; cachedObj is the internal cache entry for this object,
 // used for now for pods and network policies.
 func (h *secondaryLocalnetNetworkControllerEventHandler) DeleteResource(obj, cachedObj interface{}) error {
-	switch h.objType {
-	case factory.PodType:
-		var portInfo *lpInfo
-		pod := obj.(*kapi.Pod)
-
-		if cachedObj != nil {
-			portInfo = cachedObj.(*lpInfo)
-		}
-		h.oc.logicalPortCache.remove(util.GetLogicalPortName(pod.Namespace, pod.Name))
-		return h.oc.removePod(pod, portInfo)
-
-	default:
-		return fmt.Errorf("object type %s not supported", h.objType)
-	}
+	return h.oc.DeleteSecondaryNetworkResourceCommon(h.objType, obj, cachedObj)
 }
 
 func (h *secondaryLocalnetNetworkControllerEventHandler) SyncFunc(objs []interface{}) error {
@@ -147,7 +143,10 @@ func (h *secondaryLocalnetNetworkControllerEventHandler) SyncFunc(objs []interfa
 	} else {
 		switch h.objType {
 		case factory.PodType:
-			syncFunc = h.oc.syncPods
+			syncFunc = h.oc.syncPods4SecondaryNetwork
+
+		case factory.NamespaceType:
+			syncFunc = h.oc.syncNamespaces
 
 		default:
 			return fmt.Errorf("no sync function for object type %s", h.objType)
@@ -276,7 +275,7 @@ func (oc *SecondaryLocalnetNetworkController) Stop(deleteLogicalEntities bool) e
 		oc.watchFactory.RemovePodHandler(oc.podHandler)
 	}
 	if oc.namespaceHandler != nil {
-		oc.watchFactory.RemoveNodeHandler(oc.namespaceHandler)
+		oc.watchFactory.RemoveNamespaceHandler(oc.namespaceHandler)
 	}
 
 	if !deleteLogicalEntities {
@@ -312,10 +311,6 @@ func (oc *SecondaryLocalnetNetworkController) Run() error {
 	}
 
 	return nil
-}
-
-func (oc *SecondaryLocalnetNetworkController) getPortInfo(pod *kapi.Pod) *lpInfo {
-	return oc.NetworkControllerInfo.getPortInfo(pod, oc.logicalPortCache)
 }
 
 func (oc *SecondaryLocalnetNetworkController) Init() error {
@@ -379,150 +374,4 @@ func (oc *SecondaryLocalnetNetworkController) Init() error {
 		_ = oc.lsManager.AllocateIPs(switchName, []*net.IPNet{{IP: excludeIP, Mask: ipMask}})
 	}
 	return nil
-}
-
-// ensurePod tries to set up a pod. It returns nil on success and error on failure; failure
-// indicates the pod set up should be retried later.
-func (oc *SecondaryLocalnetNetworkController) ensurePod(oldPod, pod *kapi.Pod, addPort bool) error {
-	// Try unscheduled pods later
-	if !util.PodScheduled(pod) {
-		return nil
-	}
-
-	if !util.PodWantsNetwork(pod) && !addPort {
-		return nil
-	}
-
-	on, network, err := util.IsNetworkOnPod(pod, oc.NetInfo)
-	if err != nil || !on {
-		// the pod is not attached to this specific network
-		klog.V(5).Infof("Pod %s/%s is not attached on this network controller %s error (%v) ",
-			pod.Namespace, pod.Name, oc.GetNetworkName(), err)
-		return nil
-	}
-
-	nadName := util.GetNadName(network.Namespace, network.Name)
-	err = oc.addLogicalPort(pod, nadName, network)
-	if err != nil {
-		return fmt.Errorf("failed to add port of nad %s for pod %s/%s", nadName, pod.Namespace, pod.Name)
-	}
-	return nil
-}
-
-func (oc *SecondaryLocalnetNetworkController) addLogicalPort(pod *kapi.Pod, nadName string,
-	network *networkattachmentdefinitionapi.NetworkSelectionElement) error {
-	var libovsdbExecuteTime time.Duration
-
-	// Keep track of how long syncs take.
-	start := time.Now()
-	defer func() {
-		klog.Infof("[%s/%s] addLogicalPort for nad %s took %v, libovsdb time %v",
-			pod.Namespace, pod.Name, nadName, time.Since(start), libovsdbExecuteTime)
-	}()
-
-	ops, lsp, podAnnotation, newlyCreated, err := oc.addPodLogicalPort(pod, nadName, network)
-	if err != nil {
-		return err
-	}
-
-	recordOps, txOkCallBack, _, err := metrics.GetConfigDurationRecorder().AddOVN(oc.nbClient, "pod", pod.Namespace,
-		pod.Name, oc.NetInfo)
-	if err != nil {
-		klog.Errorf("Config duration recorder: %v", err)
-	}
-	ops = append(ops, recordOps...)
-
-	transactStart := time.Now()
-	_, err = libovsdbops.TransactAndCheckAndSetUUIDs(oc.nbClient, lsp, ops)
-	libovsdbExecuteTime = time.Since(transactStart)
-	if err != nil {
-		return fmt.Errorf("error transacting operations %+v: %v", ops, err)
-	}
-	txOkCallBack()
-	oc.podRecorder.AddLSP(pod.UID, oc.NetInfo)
-
-	// if somehow lspUUID is empty, there is a bug here with interpreting OVSDB results
-	if len(lsp.UUID) == 0 {
-		return fmt.Errorf("UUID is empty from LSP: %+v", *lsp)
-	}
-
-	// Add the pod's logical switch port to the port cache
-	switchName := oc.GetPrefix() + types.OVNLocalnetSwitch
-	_ = oc.logicalPortCache.add(switchName, lsp.Name, lsp.UUID, podAnnotation.MAC, podAnnotation.IPs)
-
-	if newlyCreated {
-		metrics.RecordPodCreated(pod, oc.NetInfo)
-	}
-	return nil
-}
-
-// removePod tried to tear down a pod. It returns nil on success and error on failure;
-// failure indicates the pod tear down should be retried later.
-func (oc *SecondaryLocalnetNetworkController) removePod(pod *kapi.Pod, portInfo *lpInfo) error {
-	if !util.PodWantsNetwork(pod) {
-		return nil
-	}
-	podDesc := pod.Namespace + "/" + pod.Name
-	klog.Infof("Deleting pod: %s", podDesc)
-
-	if !util.PodScheduled(pod) {
-		return nil
-	}
-
-	on, network, err := util.IsNetworkOnPod(pod, oc.NetInfo)
-	if err != nil || !on {
-		// the pod is not attached to this specific network
-		return nil
-	}
-
-	nadName := util.GetNadName(network.Namespace, network.Name)
-	// TBD namespaceInfo needed when multi-network policy support is added
-	pInfo, err := oc.deletePodLogicalPort(pod, portInfo, nadName, nil)
-	if err != nil {
-		return err
-	}
-
-	// do not release IP address unless we have validated no other pod is using it
-	if pInfo == nil {
-		return nil
-	}
-
-	// Releasing IPs needs to happen last so that we can deterministically know that if delete failed that
-	// the IP of the pod needs to be released. Otherwise we could have a completed pod failed to be removed
-	// and we dont know if the IP was released or not, and subsequently could accidentally release the IP
-	// while it is now on another pod
-	klog.Infof("Attempting to release IPs for pod: %s/%s, ips: %s", pod.Namespace, pod.Name,
-		util.JoinIPNetIPs(pInfo.ips, " "))
-	if err := oc.lsManager.ReleaseIPs(pInfo.logicalSwitch, pInfo.ips); err != nil {
-		return fmt.Errorf("cannot release IPs for pod %s: %w", podDesc, err)
-	}
-
-	return nil
-}
-
-func (oc *SecondaryLocalnetNetworkController) syncPods(pods []interface{}) error {
-	// get the list of logical switch ports (equivalent to pods). Reserve all existing Pod IPs to
-	// avoid subsequent new Pods getting the same duplicate Pod IP.
-	expectedLogicalPorts := make(map[string]bool)
-	for _, podInterface := range pods {
-		pod, ok := podInterface.(*kapi.Pod)
-		if !ok {
-			return fmt.Errorf("spurious object in syncPods: %v", podInterface)
-		}
-		on, network, err := util.IsNetworkOnPod(pod, oc.NetInfo)
-		if err != nil || !on {
-			continue
-		}
-		nadName := util.GetNadName(network.Namespace, network.Name)
-		annotations, err := util.UnmarshalPodAnnotation(pod.Annotations, nadName)
-		if err != nil {
-			continue
-		}
-		err = oc.updateExpectedLogicalPorts(pod, annotations, nadName, expectedLogicalPorts)
-		if err != nil {
-			return err
-		}
-	}
-	switchName := oc.GetPrefix() + types.OVNLocalnetSwitch
-	return oc.deleteStaleLogicalSwitchPorts([]string{switchName}, expectedLogicalPorts)
 }

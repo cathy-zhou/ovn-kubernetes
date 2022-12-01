@@ -14,6 +14,7 @@ import (
 const PolicyForAnnotation = "k8s.v1.cni.cncf.io/policy-for"
 
 func (nci *NetworkControllerInfo) syncMultiNetworkPolicies(multiPolicies []interface{}) error {
+	klog.Infof("Cathy syncMultiNetworkPolicies network %s", nci.GetNetworkName())
 	expectedPolicies := make(map[string]map[string]bool)
 	for _, npInterface := range multiPolicies {
 		policy, ok := npInterface.(*multinetworkpolicyapi.MultiNetworkPolicy)

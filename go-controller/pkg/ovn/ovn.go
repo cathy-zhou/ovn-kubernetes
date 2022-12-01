@@ -293,7 +293,7 @@ func (nci *NetworkControllerInfo) WatchPods() error {
 // WatchNetworkPolicy starts the watching of the network policy resource and calls
 // back the appropriate handler logic
 func (nci *NetworkControllerInfo) WatchNetworkPolicy() error {
-	klog.Infof("Cathy WatchNetworkPolicy 1 is secondary %v policyHandler %v", nci.IsSecondary(), nci.policyHandler)
+	klog.Infof("Cathy WatchNetworkPolicy 1 is secondary %v policyHandler %v network %s", nci.IsSecondary(), nci.policyHandler, nci.GetNetworkName())
 	if nci.IsSecondary() && !config.OVNKubernetesFeature.EnableMultiNetworkPolicy {
 		return nil
 	}

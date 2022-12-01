@@ -29,15 +29,17 @@ import (
 
 func (nci *NetworkControllerInfo) updateExpectedLogicalPorts(pod *kapi.Pod, annotations *util.PodAnnotation,
 	nadName string, expectedLogicalPorts map[string]bool) error {
-	var err error
-	switchName := nci.GetPrefix() + pod.Spec.NodeName
+	switchName, err := nci.getExpectedSwitchName(pod)
+	if err != nil {
+		return err
+	}
 	if util.PodScheduled(pod) && util.PodWantsNetwork(pod) && !util.PodCompleted(pod) {
 		// skip nodes that are not running ovnk (inferred from host subnets)
 		if nci.lsManager.IsNonHostSubnetSwitch(switchName) {
 			return nil
 		}
 		logicalPort := util.GetLogicalPortName(pod.Namespace, pod.Name)
-		if !nci.IsSecondary() {
+		if nci.IsSecondary() {
 			logicalPort = util.GetSecondaryNetworkLogicalPortName(pod.Namespace, pod.Name, nadName)
 		}
 		expectedLogicalPorts[logicalPort] = true
@@ -105,24 +107,39 @@ func (oc *DefaultNetworkController) syncPods(pods []interface{}) error {
 	// all pods present before ovn-kube startup have been processed
 	atomic.StoreUint32(&oc.allInitialPodsProcessed, 1)
 
-	return oc.deleteAllNodesStaleLogicalSwitchPorts(expectedLogicalPorts)
+	return oc.deleteAllStaleLogicalSwitchPorts(expectedLogicalPorts)
 }
 
-func (nci *NetworkControllerInfo) deleteAllNodesStaleLogicalSwitchPorts(expectedLogicalPorts map[string]bool) error {
-	// get all the nodes from the watchFactory
-	nodes, err := nci.watchFactory.GetNodes()
-	if err != nil {
-		return fmt.Errorf("failed to get nodes: %v", err)
+func (nci *NetworkControllerInfo) deleteAllStaleLogicalSwitchPorts(expectedLogicalPorts map[string]bool) error {
+	var switchNames []string
+
+	topoType := ""
+	if nci.IsSecondary() {
+		topoType = nci.GetTopologyType()
 	}
 
-	switchNames := make([]string, 0, len(nodes))
-	for _, n := range nodes {
-		// skip nodes that are not running ovnk (inferred from host subnets)
-		switchName := nci.GetPrefix() + n.Name
-		if nci.lsManager.IsNonHostSubnetSwitch(switchName) {
-			continue
+	if !nci.IsSecondary() || topoType == ovntypes.Layer3AttachDefTopoType {
+		// get all the nodes from the watchFactory
+		nodes, err := nci.watchFactory.GetNodes()
+		if err != nil {
+			return fmt.Errorf("failed to get nodes: %v", err)
 		}
-		switchNames = append(switchNames, switchName)
+
+		switchNames = make([]string, 0, len(nodes))
+		for _, n := range nodes {
+			// skip nodes that are not running ovnk (inferred from host subnets)
+			switchName := nci.GetPrefix() + n.Name
+			if nci.lsManager.IsNonHostSubnetSwitch(switchName) {
+				continue
+			}
+			switchNames = append(switchNames, switchName)
+		}
+	} else if topoType == ovntypes.Layer2AttachDefTopoType {
+		switchNames = []string{nci.GetPrefix() + ovntypes.OvnLayer2Switch}
+	} else if topoType == ovntypes.LocalnetAttachDefTopoType {
+		switchNames = []string{nci.GetPrefix() + ovntypes.OVNLocalnetSwitch}
+	} else {
+		return fmt.Errorf("topology type %s not supported", topoType)
 	}
 
 	return nci.deleteStaleLogicalSwitchPorts(switchNames, expectedLogicalPorts)
@@ -184,17 +201,12 @@ func (nci *NetworkControllerInfo) deletePodLogicalPort(pod *kapi.Pod, portInfo *
 	nsm *namespaceManager) (*lpInfo, error) {
 	var portUUID, switchName string
 	var podIfAddrs []*net.IPNet
-	var err error
 
-	expectedSwitchName := nci.GetPrefix() + pod.Spec.NodeName
-	if nci.IsSecondary() {
-		topoType := nci.GetTopologyType()
-		if topoType == ovntypes.Layer2AttachDefTopoType {
-			expectedSwitchName = nci.GetPrefix() + ovntypes.OvnLayer2Switch
-		} else if topoType == ovntypes.LocalnetAttachDefTopoType {
-			expectedSwitchName = nci.GetPrefix() + ovntypes.OVNLocalnetSwitch
-		}
+	expectedSwitchName, err := nci.getExpectedSwitchName(pod)
+	if err != nil {
+		return nil, err
 	}
+
 	podDesc := fmt.Sprintf("pod %s/%s/%s", nadName, pod.Namespace, pod.Name)
 	logicalPort := util.GetLogicalPortName(pod.Namespace, pod.Name)
 	if nci.IsSecondary() {
@@ -499,8 +511,27 @@ func (nci *NetworkControllerInfo) addRoutesGatewayIP(pod *kapi.Pod, network *net
 // For some pods, like hostNetwork pods, overlay node pods, or completed pods waiting for them to be added
 // to oc.logicalPortCache will never succeed.
 func (nci *NetworkControllerInfo) podExpectedInLogicalCache(pod *kapi.Pod) bool {
-	switchName := nci.GetPrefix() + pod.Spec.NodeName
+	switchName, _ := nci.getExpectedSwitchName(pod)
 	return util.PodWantsNetwork(pod) && !nci.lsManager.IsNonHostSubnetSwitch(switchName) && !util.PodCompleted(pod)
+}
+
+func (nci *NetworkControllerInfo) getExpectedSwitchName(pod *kapi.Pod) (string, error) {
+	switchName := pod.Spec.NodeName
+	if nci.IsSecondary() {
+		topoType := nci.GetTopologyType()
+		switch topoType {
+		case ovntypes.Layer3AttachDefTopoType:
+			switchName = nci.GetPrefix() + pod.Spec.NodeName
+		case ovntypes.Layer2AttachDefTopoType:
+			switchName = nci.GetPrefix() + ovntypes.OvnLayer2Switch
+		case ovntypes.LocalnetAttachDefTopoType:
+			switchName = nci.GetPrefix() + ovntypes.OVNLocalnetSwitch
+		default:
+			return "", fmt.Errorf("topology type %s not supported", topoType)
+		}
+	}
+	klog.Infof("Cathy getExpectedSwitchName network %s switchName %s", nci.GetNetworkName(), switchName)
+	return switchName, nil
 }
 
 func (nci *NetworkControllerInfo) addPodLogicalPort(pod *kapi.Pod, nadName string,
@@ -508,14 +539,9 @@ func (nci *NetworkControllerInfo) addPodLogicalPort(pod *kapi.Pod, nadName strin
 	lsp *nbdb.LogicalSwitchPort, podAnnotation *util.PodAnnotation, newlyCreatedPort bool, err error) {
 	var ls *nbdb.LogicalSwitch
 	podDesc := fmt.Sprintf("%s/%s/%s", nadName, pod.Namespace, pod.Name)
-	switchName := nci.GetPrefix() + pod.Spec.NodeName
-	if nci.IsSecondary() {
-		topoType := nci.GetTopologyType()
-		if topoType == ovntypes.Layer2AttachDefTopoType {
-			switchName = nci.GetPrefix() + ovntypes.OvnLayer2Switch
-		} else if topoType == ovntypes.LocalnetAttachDefTopoType {
-			switchName = nci.GetPrefix() + ovntypes.OVNLocalnetSwitch
-		}
+	switchName, err := nci.getExpectedSwitchName(pod)
+	if err != nil {
+		return nil, nil, nil, false, err
 	}
 	ls, err = nci.waitForNodeLogicalSwitch(switchName)
 	if err != nil {

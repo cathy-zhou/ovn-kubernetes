@@ -20,6 +20,7 @@ func (nci *NetworkControllerInfo) initRetryFramework() {
 		klog.Infof("Cathy nci create policy retryFramework")
 		nci.retryNetworkPolicies = nci.newRetryFrameworkWithParameters(factory.PolicyType, nil, nil)
 	} else {
+		klog.Infof("Cathy nci create multi-policy retryFramework")
 		nci.retryNetworkPolicies = nci.newRetryFrameworkWithParameters(factory.MultinetworkpolicyType, nil, nil)
 	}
 }

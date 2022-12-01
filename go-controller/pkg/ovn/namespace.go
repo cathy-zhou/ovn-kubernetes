@@ -655,6 +655,7 @@ func (nci *NetworkControllerInfo) getAllNamespacePodAddresses(ns string) []net.I
 			}
 		}
 	}
+	klog.Infof("Cathy get all pod addresses of namespace %s network %s: %v", ns, nci.GetNetworkName(), ips)
 	return ips
 }
 

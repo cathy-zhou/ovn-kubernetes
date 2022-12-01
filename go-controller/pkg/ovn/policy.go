@@ -312,10 +312,12 @@ func (nci *NetworkControllerInfo) syncNetworkPolicies(networkPolicies []interfac
 func (nci *NetworkControllerInfo) syncNetworkPoliciesCommon(expectedPolicies map[string]map[string]bool) error {
 	stalePGs := []string{}
 	err := nci.addressSetFactory.ProcessEachAddressSet(func(addrSetName, namespaceName, policyName string) error {
+		klog.Infof("Cathy syncNetworkPoliciesCommon addressSetName %s namespaceName %s policyName %s network %s", addrSetName, namespaceName, policyName, nci.GetNetworkName())
 		if policyName != "" && !expectedPolicies[namespaceName][policyName] {
 			// policy doesn't exist on k8s. Delete the port group
 			portGroupName := fmt.Sprintf("%s_%s", namespaceName, policyName)
 			hashedLocalPortGroup := hashedPortGroup(portGroupName)
+			klog.Infof("Cathy syncNetworkPoliciesCommon stale portgroup %s stale addressSetName %s", nci.GetPrefix()+hashedLocalPortGroup, addrSetName)
 			stalePGs = append(stalePGs, nci.GetPrefix()+hashedLocalPortGroup)
 			// delete the address sets for this old policy from OVN
 			if err := nci.addressSetFactory.DestroyAddressSetInBackingStore(addrSetName); err != nil {
@@ -682,15 +684,9 @@ func (nci *NetworkControllerInfo) getNewLocalPolicyPorts(np *networkPolicy,
 	policyPortUUIDs = make([]string, 0, len(objs))
 	policyPortsToUUIDs = map[string]string{}
 
+	logicalPortNames := map[string]*kapi.Pod{}
 	for _, obj := range objs {
 		pod := obj.(*kapi.Pod)
-
-		logicalPortName := util.GetLogicalPortName(pod.Namespace, pod.Name)
-		if _, ok := np.localPods.Load(logicalPortName); ok {
-			// port is already added for this policy
-			continue
-		}
-
 		if pod.Spec.NodeName == "" {
 			// pod is not yet scheduled, will receive update event for it
 			continue
@@ -699,6 +695,27 @@ func (nci *NetworkControllerInfo) getNewLocalPolicyPorts(np *networkPolicy,
 		// Skip pods that will never be present in logicalPortCache,
 		// e.g. hostNetwork pods, overlay node pods, or completed pods
 		if !nci.podExpectedInLogicalCache(pod) {
+			klog.Infof("Cathy policy %s/%s 1 pod %s/%s", np.namespace, np.name, pod.Namespace, pod.Name)
+			continue
+		}
+
+		if !nci.IsSecondary() {
+			klog.Infof("Cathy policy %s/%s 1 pod %s/%s logicalport %s", np.namespace, np.name, pod.Namespace, pod.Name, util.GetLogicalPortName(pod.Namespace, pod.Name))
+			logicalPortNames[util.GetLogicalPortName(pod.Namespace, pod.Name)] = pod
+			continue
+		}
+		on, network, err := util.IsNetworkOnPod(pod, nci.NetInfo)
+		if err != nil || !on {
+			continue
+		}
+		nadName := util.GetNadName(network.Namespace, network.Name)
+		klog.Infof("Cathy policy %s/%s 1 pod %s/%s logicalport %s", np.namespace, np.name, pod.Namespace, pod.Name, util.GetSecondaryNetworkLogicalPortName(pod.Namespace, pod.Name, nadName))
+		logicalPortNames[util.GetSecondaryNetworkLogicalPortName(pod.Namespace, pod.Name, nadName)] = pod
+	}
+
+	for logicalPortName, pod := range logicalPortNames {
+		if _, ok := np.localPods.Load(logicalPortName); ok {
+			// port is already added for this policy
 			continue
 		}
 
@@ -707,7 +724,7 @@ func (nci *NetworkControllerInfo) getNewLocalPolicyPorts(np *networkPolicy,
 		// 2. the gotten LSP is scheduled for removal (stateful-sets).
 		portInfo, err := nci.logicalPortCache.get(logicalPortName)
 		if err != nil {
-			klog.Warningf("Failed to get LSP for pod %s/%s for networkPolicy %s, err: %v",
+			klog.Warningf("Failed to get get LSP for pod %s/%s for networkPolicy %s, err: %v",
 				pod.Namespace, pod.Name, np.name, err)
 			errObjs = append(errObjs, pod)
 			continue
@@ -735,14 +752,29 @@ func (nci *NetworkControllerInfo) getNewLocalPolicyPorts(np *networkPolicy,
 // if there are problems with fetching port info from logicalPortCache, pod will be added to errObjs.
 func (nci *NetworkControllerInfo) getExistingLocalPolicyPorts(np *networkPolicy,
 	objs ...interface{}) (policyPortsToUUIDs map[string]string, policyPortUUIDs []string, errObjs []interface{}) {
+	var logicalPortName string
 	klog.Infof("Processing NetworkPolicy %s/%s to delete %d local pods...", np.namespace, np.name, len(objs))
 
 	policyPortUUIDs = make([]string, 0, len(objs))
+	logicalPortNames := make([]string, 0, len(objs))
 	policyPortsToUUIDs = map[string]string{}
 	for _, obj := range objs {
 		pod := obj.(*kapi.Pod)
 
-		logicalPortName := util.GetLogicalPortName(pod.Namespace, pod.Name)
+		if !nci.IsSecondary() {
+			logicalPortName = util.GetLogicalPortName(pod.Namespace, pod.Name)
+		} else {
+			on, network, err := util.IsNetworkOnPod(pod, nci.NetInfo)
+			if err != nil || !on {
+				continue
+			}
+			nadName := util.GetNadName(network.Namespace, network.Name)
+			logicalPortName = util.GetSecondaryNetworkLogicalPortName(pod.Namespace, pod.Name, nadName)
+		}
+		logicalPortNames = append(logicalPortNames, logicalPortName)
+	}
+
+	for _, logicalPortName = range logicalPortNames {
 		loadedPortUUID, ok := np.localPods.Load(logicalPortName)
 		if !ok {
 			// port is already deleted for this policy
@@ -784,14 +816,14 @@ func (nci *NetworkControllerInfo) denyPGAddPorts(np *networkPolicy, portNamesToU
 
 	if len(ingressDenyPorts) != 0 || len(egressDenyPorts) != 0 {
 		// db changes required
-		ops, err = libovsdbops.AddPortsToPortGroupOps(nci.nbClient, ops, ingressDenyPGName, ingressDenyPorts...)
+		ops, err = libovsdbops.AddPortsToPortGroupOps(nci.nbClient, ops, nci.GetPrefix()+ingressDenyPGName, ingressDenyPorts...)
 		if err != nil {
-			return fmt.Errorf("unable to get add ports to %s port group ops: %v", ingressDenyPGName, err)
+			return fmt.Errorf("unable to get add ports to %s port group ops: %v", nci.GetPrefix()+ingressDenyPGName, err)
 		}
 
-		ops, err = libovsdbops.AddPortsToPortGroupOps(nci.nbClient, ops, egressDenyPGName, egressDenyPorts...)
+		ops, err = libovsdbops.AddPortsToPortGroupOps(nci.nbClient, ops, nci.GetPrefix()+egressDenyPGName, egressDenyPorts...)
 		if err != nil {
-			return fmt.Errorf("unable to get add ports to %s port group ops: %v", egressDenyPGName, err)
+			return fmt.Errorf("unable to get add ports to %s port group ops: %v", nci.GetPrefix()+egressDenyPGName, err)
 		}
 	}
 	_, err = libovsdbops.TransactAndCheck(nci.nbClient, ops)
@@ -873,9 +905,9 @@ func (nci *NetworkControllerInfo) handleLocalPodSelectorAddFunc(np *networkPolic
 		var err error
 		// add pods to policy port group
 		var ops []ovsdb.Operation
-		ops, err = libovsdbops.AddPortsToPortGroupOps(nci.nbClient, nil, np.portGroupName, policyPortUUIDs...)
+		ops, err = libovsdbops.AddPortsToPortGroupOps(nci.nbClient, nil, nci.GetPrefix()+np.portGroupName, policyPortUUIDs...)
 		if err != nil {
-			return fmt.Errorf("unable to get ops to add new pod to policy port group: %v", err)
+			return fmt.Errorf("unable to get ops to add new pod to policy port group %s: %v", nci.GetPrefix()+np.portGroupName, err)
 		}
 		// add pods to default deny port group
 		// make sure to only pass newly added pods
@@ -914,7 +946,7 @@ func (nci *NetworkControllerInfo) handleLocalPodSelectorDelFunc(np *networkPolic
 		var err error
 		// del pods from policy port group
 		var ops []ovsdb.Operation
-		ops, err = libovsdbops.DeletePortsFromPortGroupOps(nci.nbClient, nil, np.portGroupName, policyPortUUIDs...)
+		ops, err = libovsdbops.DeletePortsFromPortGroupOps(nci.nbClient, nil, nci.GetPrefix()+np.portGroupName, policyPortUUIDs...)
 		if err != nil {
 			return fmt.Errorf("unable to get ops to add new pod to policy port group: %v", err)
 		}
@@ -1174,14 +1206,17 @@ func (nci *NetworkControllerInfo) createNetworkPolicy(policy *knet.NetworkPolicy
 				// For each rule that contains both peer namespace selector and
 				// peer pod selector, we create a watcher for each matching namespace
 				// that populates the addressSet
+				klog.Infof("Cathy addPeerNamespaceAndPodHandler for network policy %s/%s network %s", policy.Namespace, policy.Name, nci.GetNetworkName())
 				err = nci.addPeerNamespaceAndPodHandler(handler.namespaceSelector, handler.podSelector, handler.gress, np)
 			} else if handler.namespaceSelector != nil {
 				// For each peer namespace selector, we create a watcher that
 				// populates ingress.peerAddressSets
+				klog.Infof("Cathy addPeerNamespaceHandler for network policy %s/%s network %s", policy.Namespace, policy.Name, nci.GetNetworkName())
 				err = nci.addPeerNamespaceHandler(handler.namespaceSelector, handler.gress, np)
 			} else if handler.podSelector != nil {
 				// For each peer pod selector, we create a watcher that
 				// populates the addressSet
+				klog.Infof("Cathy addPeerPodHandler for network policy %s/%s network %s", policy.Namespace, policy.Name, nci.GetNetworkName())
 				err = nci.addPeerPodHandler(handler.podSelector, handler.gress, np)
 			}
 			if err != nil {
@@ -1190,6 +1225,7 @@ func (nci *NetworkControllerInfo) createNetworkPolicy(policy *knet.NetworkPolicy
 		}
 
 		// 7. Start local pod handlers, that will update networkPolicy and default deny port groups with selected pods.
+		klog.Infof("Cathy addLocalPodHandler for network policy %s/%s network %s", policy.Namespace, policy.Name, nci.GetNetworkName())
 		err = nci.addLocalPodHandler(policy, np)
 		if err != nil {
 			return fmt.Errorf("failed to start local pod handler: %v", err)
@@ -1204,7 +1240,7 @@ func (nci *NetworkControllerInfo) createNetworkPolicy(policy *knet.NetworkPolicy
 // ports from Kubernetes NetworkPolicy objects using OVN Port Groups
 // if addNetworkPolicy fails, create or delete operation can be retried
 func (nci *NetworkControllerInfo) addNetworkPolicy(policy *knet.NetworkPolicy) error {
-	klog.Infof("Adding network policy %s", getPolicyKey(policy))
+	klog.Infof("Adding network policy %s for network %s", getPolicyKey(policy), nci.GetNetworkName())
 
 	// To not hold nsLock for the whole process on network policy creation, we do the following:
 	// 1. save required namespace information to use for netpol create
@@ -1353,7 +1389,7 @@ func (nci *NetworkControllerInfo) cleanupNetworkPolicy(np *networkPolicy) error 
 	// Delete the port group, idempotent
 	ops, err := libovsdbops.DeletePortGroupsOps(nci.nbClient, nil, nci.GetPrefix()+np.portGroupName)
 	if err != nil {
-		return fmt.Errorf("failed to get delete network policy port group %s ops: %v", np.portGroupName, err)
+		return fmt.Errorf("failed to get delete network policy port group %s ops: %v", nci.GetPrefix()+np.portGroupName, err)
 	}
 	recordOps, txOkCallBack, _, err := metrics.GetConfigDurationRecorder().AddOVN(nci.nbClient, "networkpolicy",
 		np.namespace, np.name, nci.NetInfo)
@@ -1603,6 +1639,7 @@ func (nci *NetworkControllerInfo) addPeerNamespaceAndPodHandler(namespaceSelecto
 }
 
 func (nci *NetworkControllerInfo) handlePeerNamespaceSelectorAdd(np *networkPolicy, gp *gressPolicy, objs ...interface{}) error {
+	klog.Infof("Cathy handlePeerNamespaceSelectorAdd for policy %s/%s/%d network %s", np.namespace, np.name, gp.idx, nci.GetNetworkName())
 	np.RLock()
 	if np.deleted {
 		np.RUnlock()
@@ -1611,6 +1648,7 @@ func (nci *NetworkControllerInfo) handlePeerNamespaceSelectorAdd(np *networkPoli
 	updated := false
 	for _, obj := range objs {
 		namespace := obj.(*kapi.Namespace)
+		klog.Infof("Cathy handlePeerNamespaceSelectorAdd for policy %s/%s/%d network %s add namespace %s", np.namespace, np.name, gp.idx, nci.GetNetworkName(), namespace.Name)
 		// addNamespaceAddressSet is safe for concurrent use, doesn't require additional synchronization
 		if gp.addNamespaceAddressSet(namespace.Name) {
 			updated = true
@@ -1674,7 +1712,7 @@ func (nci *NetworkControllerInfo) peerNamespaceUpdate(np *networkPolicy, gp *gre
 	if err != nil {
 		return err
 	}
-	ops, err = libovsdbops.AddACLsToPortGroupOps(nci.nbClient, ops, np.portGroupName, acls...)
+	ops, err = libovsdbops.AddACLsToPortGroupOps(nci.nbClient, ops, nci.GetPrefix()+np.portGroupName, acls...)
 	if err != nil {
 		return err
 	}

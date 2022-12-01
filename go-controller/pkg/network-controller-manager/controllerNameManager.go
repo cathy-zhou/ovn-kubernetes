@@ -68,6 +68,7 @@ func (cnm *secondaryNetworkControllerNameManager) AddSecondaryNetworkNad(ncm Net
 			netName:     netName,
 		})
 		if !loaded {
+			klog.V(5).Infof("net-attach-def %s network %s first seen", nadName, netName)
 			// first time to process this nad
 			if err != nil {
 				// invalid nad, nothing to do
@@ -82,6 +83,7 @@ func (cnm *secondaryNetworkControllerNameManager) AddSecondaryNetworkNad(ncm Net
 				return err
 			}
 		} else {
+			klog.V(5).Infof("net-attach-def %s network %s already exists", nadName, netName)
 			nadUpdated := false
 			if nadNci.netName != netName {
 				// netconf network name changed
@@ -94,10 +96,19 @@ func (cnm *secondaryNetworkControllerNameManager) AddSecondaryNetworkNad(ncm Net
 			}
 
 			if err == nil && !nadUpdated {
-				// nothing changed
+				// nothing changed, may still need to start the controller
+				if !doStart {
+					return nil
+				}
+				err = cnm.addNadToController(ncm, nadName, nInfo, netConfInfo, doStart)
+				if err != nil {
+					klog.Errorf("Failed to add net-attach-def %s to network %s: %v", nadName, netName, err)
+					return err
+				}
 				return nil
 			}
 			if nadUpdated {
+				klog.V(5).Infof("net-attach-def %s network %s updated", nadName, netName)
 				// delete the nad from the old network first
 				err := cnm.deleteNadFromController(nadNci.netName, nadName)
 				if err != nil {
@@ -219,11 +230,6 @@ func (cnm *secondaryNetworkControllerNameManager) addNadToController(ncm Network
 		if err == nil {
 			nni.isStarted = true
 			return nil
-		}
-
-		// if controller failed to start, undo start which deletes all the logical entities of this network
-		if err := oc.Stop(true); err != nil {
-			klog.Warningf("Failed to delete logical entities for network %s: %v", networkName, err)
 		}
 
 		if !nadExists {

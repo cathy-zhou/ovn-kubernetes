@@ -96,6 +96,8 @@ rules:
   resources:
   - network-attachment-definitions
   verbs: ["list", "get", "watch"]
+  - multi-networkpolicies
+  verbs: ["list", "get", "watch"]
 
 
 ---
