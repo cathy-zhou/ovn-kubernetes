@@ -319,8 +319,8 @@ func SetNodePrimaryIfAddr(nodeAnnotator kube.Annotator, nodeIPNetv4, nodeIPNetv6
 	return nodeAnnotator.Set(ovnNodeIfAddr, primaryIfAddrAnnotation)
 }
 
-// CreateNodeGateRouterLRPAddrAnnotation sets the IPv4 / IPv6 values of the node's Gatewary Router LRP to join switch.
-func CreateNodeGateRouterLRPAddrAnnotation(nodeAnnotation map[string]string, nodeIPNetv4, nodeIPNetv6 *net.IPNet) (map[string]string, error) {
+// CreateNodeGatewayRouterLRPAddrAnnotation sets the IPv4 / IPv6 values of the node's Gatewary Router LRP to join switch.
+func CreateNodeGatewayRouterLRPAddrAnnotation(nodeAnnotation map[string]string, nodeIPNetv4, nodeIPNetv6 *net.IPNet) (map[string]string, error) {
 	if nodeAnnotation == nil {
 		nodeAnnotation = map[string]string{}
 	}

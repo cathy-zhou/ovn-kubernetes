@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	networkattachmentdefinitionapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	"github.com/ovn-org/libovsdb/ovsdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
@@ -497,15 +496,7 @@ func (nci *NetworkControllerInfo) ensurePod4SecondaryNetworkCommon(pod *kapi.Pod
 	}
 
 	nadName := util.GetNadName(network.Namespace, network.Name)
-	err = nci.addLogicalPort4SecondaryNetworkCommon(pod, nadName, network)
-	if err != nil {
-		return fmt.Errorf("failed to add port of nad %s for pod %s/%s", nadName, pod.Namespace, pod.Name)
-	}
-	return nil
-}
 
-func (nci *NetworkControllerInfo) addLogicalPort4SecondaryNetworkCommon(pod *kapi.Pod, nadName string,
-	network *networkattachmentdefinitionapi.NetworkSelectionElement) error {
 	var libovsdbExecuteTime time.Duration
 
 	switchName, err := nci.getExpectedSwitchName(pod)
@@ -523,6 +514,8 @@ func (nci *NetworkControllerInfo) addLogicalPort4SecondaryNetworkCommon(pod *kap
 	if err != nil {
 		return err
 	}
+
+	// TBD Cathy add the podIP to namespace addressSet when multi-network policy is supported
 
 	recordOps, txOkCallBack, _, err := metrics.GetConfigDurationRecorder().AddOVN(nci.nbClient, "pod", pod.Namespace,
 		pod.Name, nci.NetInfo)
@@ -677,7 +670,7 @@ func (oc *SecondaryLayer3NetworkController) addUpdateNodeEvent(node *kapi.Node, 
 }
 
 func (oc *SecondaryLayer3NetworkController) addNode(node *kapi.Node) ([]*net.IPNet, error) {
-	hostSubnets, err := oc.createNodeSubnetAnnotation(node, oc.masterSubnetAllocator)
+	hostSubnets, err := oc.allocateNodeSubnets(node, oc.masterSubnetAllocator)
 	if err != nil {
 		return nil, err
 	}
@@ -735,7 +728,7 @@ func (oc *SecondaryLayer3NetworkController) syncNodes(nodes []interface{}) error
 		if !ok {
 			return fmt.Errorf("spurious object in syncNodes: %v", tmp)
 		}
-		_ = oc.updateFoundNodes(node, oc.masterSubnetAllocator, foundNodes)
+		_ = oc.updateNodesManageHostSubnets(node, oc.masterSubnetAllocator, foundNodes)
 	}
 
 	p := func(item *nbdb.LogicalSwitch) bool {

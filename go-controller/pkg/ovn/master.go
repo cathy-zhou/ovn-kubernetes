@@ -602,7 +602,7 @@ func (oc *DefaultNetworkController) ensureNodeLogicalNetwork(node *kapi.Node, ho
 	return oc.lsManager.AddSwitch(logicalSwitch.Name, logicalSwitch.UUID, hostSubnets)
 }
 
-func (nci *NetworkControllerInfo) createNodeSubnetAnnotation(node *kapi.Node,
+func (nci *NetworkControllerInfo) allocateNodeSubnets(node *kapi.Node,
 	masterSubnetAllocator *subnetallocator.HostSubnetAllocator) ([]*net.IPNet, error) {
 	existingSubnets, err := util.ParseNodeHostSubnetAnnotation(node, nci.GetNetworkName())
 	if err != nil && !util.IsAnnotationNotSetError(err) {
@@ -672,13 +672,13 @@ func (oc *DefaultNetworkController) addNode(node *kapi.Node) ([]*net.IPNet, erro
 			v6Addr = ip
 		}
 	}
-	updatedNodeAnnotation, err := util.CreateNodeGateRouterLRPAddrAnnotation(nil, v4Addr, v6Addr)
+	updatedNodeAnnotation, err := util.CreateNodeGatewayRouterLRPAddrAnnotation(nil, v4Addr, v6Addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal node %q annotation for Gateway LRP IP %v",
 			node.Name, gwLRPIPs)
 	}
 
-	hostSubnets, err := oc.createNodeSubnetAnnotation(node, oc.masterSubnetAllocator)
+	hostSubnets, err := oc.allocateNodeSubnets(node, oc.masterSubnetAllocator)
 	if err != nil {
 		return nil, err
 	}
@@ -891,7 +891,7 @@ func (oc *DefaultNetworkController) syncNodesPeriodic() {
 	}
 }
 
-func (nci *NetworkControllerInfo) updateFoundNodes(node *kapi.Node,
+func (nci *NetworkControllerInfo) updateNodesManageHostSubnets(node *kapi.Node,
 	masterSubnetAllocator *subnetallocator.HostSubnetAllocator, foundNodes sets.String) []*net.IPNet {
 	if noHostSubnet(node) {
 		return []*net.IPNet{}
@@ -917,7 +917,7 @@ func (oc *DefaultNetworkController) syncNodes(nodes []interface{}) error {
 		if !ok {
 			return fmt.Errorf("spurious object in syncNodes: %v", tmp)
 		}
-		hostSubnets := oc.updateFoundNodes(node, oc.masterSubnetAllocator, foundNodes)
+		hostSubnets := oc.updateNodesManageHostSubnets(node, oc.masterSubnetAllocator, foundNodes)
 		if config.HybridOverlay.Enabled && len(hostSubnets) == 0 && houtil.IsHybridOverlayNode(node) {
 			// this is a hybrid overlay node so mark as allocated from the hybrid overlay subnet allocator
 			hostSubnet, err := houtil.ParseHybridOverlayHostSubnet(node)
