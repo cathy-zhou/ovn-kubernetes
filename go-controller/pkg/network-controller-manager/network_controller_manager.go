@@ -58,6 +58,8 @@ type networkControllerManager struct {
 	sbClient libovsdbclient.Client
 	// has SCTP support
 	SCTPSupport bool
+	// Enable ACL logging support?
+	aclLoggingEnabled bool
 	// Supports multicast?
 	multicastSupport bool
 
@@ -319,6 +321,7 @@ func (cm *networkControllerManager) Init() error {
 		return err
 	}
 
+	cm.configureAclLoggingSupport()
 	cm.configureMulticastSupport()
 
 	err = cm.enableOVNLogicalDataPathGroups()
@@ -342,6 +345,47 @@ func (cm *networkControllerManager) configureSCTPSupport() error {
 		klog.Info("SCTP support detected in OVN")
 	}
 	cm.SCTPSupport = hasSCTPSupport
+	return nil
+}
+
+func (cm *networkControllerManager) configureAclLoggingSupport() {
+	cm.aclLoggingEnabled = true
+	if cm.aclLoggingEnabled {
+		if err := cm.createACLLoggingMeter(); err != nil {
+			klog.Warningf("ACL logging support enabled, however acl-logging meter could not be created: %v. "+
+				"Disabling ACL logging support", err)
+			cm.aclLoggingEnabled = false
+		}
+	}
+}
+
+func (cm *networkControllerManager) createACLLoggingMeter() error {
+	band := &nbdb.MeterBand{
+		Action: ovntypes.MeterAction,
+		Rate:   config.Logging.ACLLoggingRateLimit,
+	}
+	ops, err := libovsdbops.CreateMeterBandOps(cm.nbClient, nil, band)
+	if err != nil {
+		return fmt.Errorf("can't create meter band %v: %v", band, err)
+	}
+
+	meterFairness := true
+	meter := &nbdb.Meter{
+		Name: ovntypes.OvnACLLoggingMeter,
+		Fair: &meterFairness,
+		Unit: ovntypes.PacketsPerSecond,
+	}
+	ops, err = libovsdbops.CreateOrUpdateMeterOps(cm.nbClient, ops, meter, []*nbdb.MeterBand{band},
+		&meter.Bands, &meter.Fair, &meter.Unit)
+	if err != nil {
+		return fmt.Errorf("can't create meter %v: %v", meter, err)
+	}
+
+	_, err = libovsdbops.TransactAndCheck(cm.nbClient, ops)
+	if err != nil {
+		return fmt.Errorf("can't transact ACL logging meter: %v", err)
+	}
+
 	return nil
 }
 
@@ -381,7 +425,7 @@ func (cm *networkControllerManager) configureMetrics(stopChan <-chan struct{}) {
 // newBaseNetworkController creates and returns the base controller
 func (cm *networkControllerManager) newCommonNetworkControllerInfo() *ovn.CommonNetworkControllerInfo {
 	return ovn.NewCommonNetworkControllerInfo(cm.client, cm.kube, cm.watchFactory, cm.recorder, cm.nbClient,
-		cm.sbClient, cm.podRecorder, cm.SCTPSupport, cm.multicastSupport)
+		cm.sbClient, cm.podRecorder, cm.SCTPSupport, cm.multicastSupport, cm.aclLoggingEnabled)
 }
 
 // NewDefaultNetworkController creates and returns the controller for default network

@@ -109,6 +109,10 @@ func (f *FakeAddressSetFactory) DestroyAddressSetInBackingStore(name string) err
 	return nil
 }
 
+func (f *FakeAddressSetFactory) NonDualStackAddressSetCleanup() error {
+	return nil
+}
+
 func (f *FakeAddressSetFactory) getAddressSet(name string) *fakeAddressSet {
 	f.Lock()
 	defer f.Unlock()

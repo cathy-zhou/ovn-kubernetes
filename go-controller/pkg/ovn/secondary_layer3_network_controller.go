@@ -13,9 +13,11 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
+	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/subnetallocator"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
@@ -168,6 +170,9 @@ func (h *secondaryLayer3NetworkControllerEventHandler) SyncFunc(objs []interface
 		case factory.NodeType:
 			syncFunc = h.oc.syncNodes
 
+		case factory.NamespaceType:
+			syncFunc = h.oc.syncNamespaces
+
 		default:
 			return fmt.Errorf("no sync function for object type %s", h.objType)
 		}
@@ -188,9 +193,6 @@ func (h *secondaryLayer3NetworkControllerEventHandler) IsObjectInTerminalState(o
 // for a secondary l3 network
 type SecondaryLayer3NetworkController struct {
 	BaseNetworkController
-
-	// waitGroup per-Controller
-	wg *sync.WaitGroup
 
 	// FIXME DUAL-STACK -  Make IP Allocators more dual-stack friendly
 	masterSubnetAllocator *subnetallocator.HostSubnetAllocator
@@ -213,10 +215,12 @@ func NewSecondaryLayer3NetworkController(cnci *CommonNetworkControllerInfo, netI
 			logicalPortCache:            newPortCache(stopChan),
 			namespaces:                  make(map[string]*namespaceInfo),
 			namespacesMutex:             sync.Mutex{},
-			addressSetFactory:           nil,
+			addressSetFactory:           addressset.NewOvnAddressSetFactory(cnci.nbClient, netInfo),
+			networkPolicies:             syncmap.NewSyncMap[*networkPolicy](),
+			sharedNetpolPortGroups:      syncmap.NewSyncMap[*defaultDenyPortGroups](),
 			stopChan:                    stopChan,
+			wg:                          &sync.WaitGroup{},
 		},
-		wg:                          &sync.WaitGroup{},
 		masterSubnetAllocator:       subnetallocator.NewHostSubnetAllocator(),
 		addNodeFailed:               sync.Map{},
 		nodeClusterRouterPortFailed: sync.Map{},
@@ -233,9 +237,12 @@ func (oc *SecondaryLayer3NetworkController) initRetryFramework() {
 	// Init the retry framework for pods, nodes
 	oc.retryPods = oc.newRetryFramework(factory.PodType)
 	oc.retryNodes = oc.newRetryFramework(factory.NodeType)
+	oc.retryNamespaces = oc.newRetryFramework(factory.NamespaceType)
+	oc.BaseNetworkController.initRetryFramework()
 }
 
-// newRetryFramework builds and returns a retry framework for the input resource type;
+// newRetryFramework builds and returns a retry framework for the input resource
+// type and assigns all ovnk-master-specific function attributes in the returned struct;
 func (oc *SecondaryLayer3NetworkController) newRetryFramework(
 	objectType reflect.Type) *retry.RetryFramework {
 	eventHandler := &secondaryLayer3NetworkControllerEventHandler{
@@ -277,12 +284,20 @@ func (oc *SecondaryLayer3NetworkController) Stop() {
 	close(oc.stopChan)
 	oc.wg.Wait()
 
+	if oc.policyHandler != nil {
+		oc.watchFactory.RemoveMultiNetworkPolicyHandler(oc.policyHandler)
+	}
+
 	if oc.podHandler != nil {
 		oc.watchFactory.RemovePodHandler(oc.podHandler)
 	}
 
 	if oc.nodeHandler != nil {
 		oc.watchFactory.RemoveNodeHandler(oc.nodeHandler)
+	}
+
+	if oc.namespaceHandler != nil {
+		oc.watchFactory.RemoveNamespaceHandler(oc.namespaceHandler)
 	}
 }
 
@@ -294,6 +309,7 @@ func (oc *SecondaryLayer3NetworkController) Cleanup(netName string) error {
 	var err error
 
 	klog.Infof("Delete OVN logical entities for %s network controller of network %s", types.Layer3AttachDefTopoType, netName)
+
 	// first delete node logical switches
 	ops, err = libovsdbops.DeleteLogicalSwitchesWithPredicateOps(oc.nbClient, ops,
 		func(item *nbdb.LogicalSwitch) bool {
@@ -312,9 +328,15 @@ func (oc *SecondaryLayer3NetworkController) Cleanup(netName string) error {
 		return fmt.Errorf("failed to get ops for deleting routers of network %s", netName)
 	}
 
+	policyOps, err := oc.CleanupNetworkPolicyLogicalEntities(netName)
+	if err != nil {
+		return err
+	}
+	ops = append(ops, policyOps...)
+
 	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
 	if err != nil {
-		return fmt.Errorf("failed to deleting routers/switches of network %s", netName)
+		return fmt.Errorf("failed to deleting logical entities for network %s", netName)
 	}
 
 	// remove hostsubnet annotation for this network
@@ -341,11 +363,22 @@ func (oc *SecondaryLayer3NetworkController) Run() error {
 	klog.Infof("Starting all the Watchers for network %s ...", oc.GetNetworkName())
 	start := time.Now()
 
+	// WatchNamespaces() should be started first because it has no other
+	// dependencies, and WatchNodes() depends on it
+	if err := oc.WatchNamespaces(); err != nil {
+		return err
+	}
+
 	if err := oc.WatchNodes(); err != nil {
 		return err
 	}
 
 	if err := oc.WatchPods(); err != nil {
+		return err
+	}
+
+	// WatchNetworkPolicy depends on WatchPods and WatchNamespaces
+	if err := oc.WatchNetworkPolicy(); err != nil {
 		return err
 	}
 
@@ -357,19 +390,6 @@ func (oc *SecondaryLayer3NetworkController) Run() error {
 	}
 
 	return nil
-}
-
-// WatchNodes starts the watching of node resource and calls
-// back the appropriate handler logic
-func (oc *SecondaryLayer3NetworkController) WatchNodes() error {
-	if oc.nodeHandler != nil {
-		return nil
-	}
-	handler, err := oc.retryNodes.WatchResource()
-	if err == nil {
-		oc.nodeHandler = handler
-	}
-	return err
 }
 
 func (oc *SecondaryLayer3NetworkController) Init() error {
@@ -455,7 +475,7 @@ func (oc *SecondaryLayer3NetworkController) deleteNodeEvent(node *kapi.Node) err
 		"various caches", node.Name, oc.GetNetworkName())
 
 	if err := oc.deleteNode(node.Name); err != nil {
-		return fmt.Errorf(err.Error())
+		return err
 	}
 
 	oc.lsManager.DeleteSwitch(oc.GetPrefix() + node.Name)

@@ -58,9 +58,17 @@ func hashedPortGroup(s string) string {
 // BuildACL should be used to build ACL instead of directly calling libovsdbops.BuildACL.
 // It can properly set and reset log settings for ACL based on ACLLoggingLevels
 func BuildACL(aclName string, priority int, match, action string,
-	logLevels *ACLLoggingLevels, aclT aclType, externalIDs map[string]string) *nbdb.ACL {
+	logLevels *ACLLoggingLevels, aclT aclType, externalIDs map[string]string, netInfo util.NetInfo) *nbdb.ACL {
 	var options map[string]string
 	var direction string
+
+	if netInfo.IsSecondary() {
+		if externalIDs == nil {
+			externalIDs = map[string]string{}
+		}
+		externalIDs[types.NetworkNameExternalID] = netInfo.GetNetworkName()
+		aclName = netInfo.GetPrefix() + aclName
+	}
 	switch aclT {
 	case lportEgressAfterLB:
 		direction = nbdb.ACLDirectionFromLport
@@ -88,8 +96,9 @@ func BuildACL(aclName string, priority int, match, action string,
 	return ACL
 }
 
-func getACLMatch(portGroupName, match string, aclT aclType) string {
+func getACLMatch(portGroupName, match string, aclT aclType, netNameInfo util.NetInfo) string {
 	var aclMatch string
+	portGroupName = netNameInfo.GetPrefix() + portGroupName
 	switch aclT {
 	case lportIngress:
 		aclMatch = "outport == @" + portGroupName
@@ -106,8 +115,8 @@ func getACLMatch(portGroupName, match string, aclT aclType) string {
 
 // GetNamespaceACLLogging retrieves ACLLoggingLevels for the Namespace.
 // nsInfo will be locked (and unlocked at the end) for given namespace if it exists.
-func (oc *DefaultNetworkController) GetNamespaceACLLogging(ns string) *ACLLoggingLevels {
-	nsInfo, nsUnlock := oc.getNamespaceLocked(ns, true)
+func (bnc *BaseNetworkController) GetNamespaceACLLogging(ns string) *ACLLoggingLevels {
+	nsInfo, nsUnlock := bnc.getNamespaceLocked(ns, true)
 	if nsInfo == nil {
 		return &ACLLoggingLevels{
 			Allow: "",

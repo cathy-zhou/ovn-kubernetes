@@ -52,11 +52,11 @@ type multicastPolicy struct{}
 
 func (p multicastPolicy) getMulticastPolicyExpectedData(ns string, ports []string) []libovsdb.TestData {
 	pg_hash := hashedPortGroup(ns)
-	egressMatch := getACLMatch(pg_hash, getMulticastACLEgrMatch(), lportEgressAfterLB)
+	egressMatch := getACLMatch(pg_hash, getMulticastACLEgrMatch(), lportEgressAfterLB, (*util.NetNameInfo)(nil))
 
 	ip4AddressSet, ip6AddressSet := addressset.MakeAddressSetHashNames(ns)
 	mcastMatch := getACLMatchAF(getMulticastACLIgrMatchV4(ip4AddressSet), getMulticastACLIgrMatchV6(ip6AddressSet))
-	ingressMatch := getACLMatch(pg_hash, mcastMatch, lportIngress)
+	ingressMatch := getACLMatch(pg_hash, mcastMatch, lportIngress, (*util.NetNameInfo)(nil))
 
 	egressACL := libovsdbops.BuildACL(
 		getMcastACLName(ns, "MulticastAllowEgress"),
@@ -97,11 +97,12 @@ func (p multicastPolicy) getMulticastPolicyExpectedData(ns string, ports []strin
 		lsps = append(lsps, &nbdb.LogicalSwitchPort{UUID: uuid})
 	}
 
-	pg := libovsdbops.BuildPortGroup(
+	pg := buildPortGroup(
 		hashedPortGroup(ns),
 		ns,
 		lsps,
 		[]*nbdb.ACL{egressACL, ingressACL},
+		(*util.NetNameInfo)(nil),
 	)
 	pg.UUID = pg.Name + "-UUID"
 

@@ -21,6 +21,7 @@ import (
 )
 
 type gressPolicy struct {
+	util.NetInfo
 	policyNamespace string
 	policyName      string
 	policyType      knet.PolicyType
@@ -75,8 +76,9 @@ func (pp *portPolicy) getL4Match() (string, error) {
 	return foundProtocol, nil
 }
 
-func newGressPolicy(policyType knet.PolicyType, idx int, namespace, name string) *gressPolicy {
+func newGressPolicy(policyType knet.PolicyType, idx int, namespace, name string, netInfo util.NetInfo) *gressPolicy {
 	return &gressPolicy{
+		NetInfo:           netInfo,
 		policyNamespace:   namespace,
 		policyName:        name,
 		policyType:        policyType,
@@ -151,7 +153,7 @@ func (gp *gressPolicy) addPeerPods(pods ...*v1.Pod) error {
 	}
 	ips := make([]net.IP, 0, len(pods)*podIPFactor)
 	for _, pod := range pods {
-		podIPs, err := util.GetAllPodIPs(pod, (*util.NetNameInfo)(nil))
+		podIPs, err := util.GetAllPodIPs(pod, gp.NetInfo)
 		if err != nil {
 			return err
 		}
@@ -163,7 +165,7 @@ func (gp *gressPolicy) addPeerPods(pods ...*v1.Pod) error {
 
 // must be called with network policy read lock
 func (gp *gressPolicy) deletePeerPod(pod *v1.Pod) error {
-	ips, err := util.GetAllPodIPs(pod, (*util.NetNameInfo)(nil))
+	ips, err := util.GetAllPodIPs(pod, gp.NetInfo)
 	if err != nil {
 		return err
 	}
@@ -268,8 +270,8 @@ func (gp *gressPolicy) getMatchFromIPBlock(lportMatch, l4Match string) []string 
 // This function is safe for concurrent use, doesn't require additional synchronization
 func (gp *gressPolicy) addNamespaceAddressSet(name string) bool {
 	v4HashName, v6HashName := addressset.MakeAddressSetHashNames(name)
-	v4HashName = "$" + v4HashName
-	v6HashName = "$" + v6HashName
+	v4HashName = "$" + gp.GetPrefix() + v4HashName
+	v6HashName = "$" + gp.GetPrefix() + v6HashName
 
 	v4NoUpdate := true
 	v6NoUpdate := true
@@ -292,8 +294,8 @@ func (gp *gressPolicy) addNamespaceAddressSet(name string) bool {
 // This function is safe for concurrent use, doesn't require additional synchronization
 func (gp *gressPolicy) delNamespaceAddressSet(name string) bool {
 	v4HashName, v6HashName := addressset.MakeAddressSetHashNames(name)
-	v4HashName = "$" + v4HashName
-	v6HashName = "$" + v6HashName
+	v4HashName = "$" + gp.GetPrefix() + v4HashName
+	v6HashName = "$" + gp.GetPrefix() + v6HashName
 
 	v4Update := false
 	v6Update := false
@@ -320,6 +322,7 @@ func (gp *gressPolicy) buildLocalPodACLs(portGroupName string, aclLogging *ACLLo
 	l3Match := gp.getL3MatchFromAddressSet()
 	var lportMatch string
 	var cidrMatches []string
+	portGroupName = gp.GetPrefix() + portGroupName
 	if gp.policyType == knet.PolicyTypeIngress {
 		lportMatch = fmt.Sprintf("outport == @%s", portGroupName)
 	} else {
@@ -404,7 +407,7 @@ func (gp *gressPolicy) buildACLAllow(match, l4Match string, ipBlockCIDR int, acl
 		policyTypeACLExtIdKey:  string(gp.policyType),
 		policyTypeNum:          policyTypeIndex,
 	}
-	acl := BuildACL(aclName, priority, match, action, aclLogging, aclT, externalIds)
+	acl := BuildACL(aclName, priority, match, action, aclLogging, aclT, externalIds, gp.NetInfo)
 	return acl
 }
 

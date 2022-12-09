@@ -1,6 +1,7 @@
 package ovn
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"strings"
@@ -220,9 +221,16 @@ func NewNetworkPolicy(policy *knet.NetworkPolicy) *networkPolicy {
 // updateStaleDefaultDenyACLNames updates the naming of the default ingress and egress deny ACLs per namespace
 // oldName: <namespace>_<policyname> (lucky winner will be first policy created in the namespace)
 // newName: <namespace>_egressDefaultDeny OR <namespace>_ingressDefaultDeny
-func (oc *DefaultNetworkController) updateStaleDefaultDenyACLNames(npType knet.PolicyType, gressSuffix string) error {
+func (bnc *BaseNetworkController) updateStaleDefaultDenyACLNames(npType knet.PolicyType, gressSuffix string) error {
+	// should only call from default network controller
+	if bnc.IsSecondary() {
+		return nil
+	}
 	cleanUpDefaultDeny := make(map[string][]*nbdb.ACL)
 	p := func(item *nbdb.ACL) bool {
+		if _, ok := item.ExternalIDs[types.NetworkNameExternalID]; ok {
+			return false
+		}
 		if item.Name != nil { // we don't care about node ACLs
 			aclNameSuffix := strings.Split(*item.Name, "_")
 			if len(aclNameSuffix) == 1 {
@@ -236,7 +244,7 @@ func (oc *DefaultNetworkController) updateStaleDefaultDenyACLNames(npType knet.P
 		}
 		return false
 	}
-	gressACLs, err := libovsdbops.FindACLsWithPredicate(oc.nbClient, p)
+	gressACLs, err := libovsdbops.FindACLsWithPredicate(bnc.nbClient, p)
 	if err != nil {
 		return fmt.Errorf("cannot find NetworkPolicy default deny ACLs: %v", err)
 	}
@@ -259,7 +267,7 @@ func (oc *DefaultNetworkController) updateStaleDefaultDenyACLNames(npType knet.P
 			// this should never be the case but delete everything except 1st ACL
 			ingressPGName := defaultDenyPortGroupName(namespace, ingressDefaultDenySuffix)
 			egressPGName := defaultDenyPortGroupName(namespace, egressDefaultDenySuffix)
-			err := libovsdbops.DeleteACLsFromPortGroups(oc.nbClient, []string{ingressPGName, egressPGName}, aclList[1:]...)
+			err := libovsdbops.DeleteACLsFromPortGroups(bnc.nbClient, []string{ingressPGName, egressPGName}, aclList[1:]...)
 			if err != nil {
 				return err
 			}
@@ -269,12 +277,13 @@ func (oc *DefaultNetworkController) updateStaleDefaultDenyACLNames(npType knet.P
 			aclList[0].Priority,
 			aclList[0].Match,
 			aclList[0].Action,
-			oc.GetNamespaceACLLogging(namespace),
+			bnc.GetNamespaceACLLogging(namespace),
 			aclT,
 			aclList[0].ExternalIDs,
+			bnc.NetInfo,
 		)
 		newACL.UUID = aclList[0].UUID // for performance
-		err := libovsdbops.CreateOrUpdateACLs(oc.nbClient, newACL)
+		err := libovsdbops.CreateOrUpdateACLs(bnc.nbClient, newACL)
 		if err != nil {
 			return fmt.Errorf("cannot update old NetworkPolicy ACLs for namespace %s: %v", namespace, err)
 		}
@@ -282,7 +291,7 @@ func (oc *DefaultNetworkController) updateStaleDefaultDenyACLNames(npType knet.P
 	return nil
 }
 
-func (oc *DefaultNetworkController) syncNetworkPolicies(networkPolicies []interface{}) error {
+func (bnc *BaseNetworkController) syncNetworkPolicies(networkPolicies []interface{}) error {
 	expectedPolicies := make(map[string]map[string]bool)
 	for _, npInterface := range networkPolicies {
 		policy, ok := npInterface.(*knet.NetworkPolicy)
@@ -298,31 +307,9 @@ func (oc *DefaultNetworkController) syncNetworkPolicies(networkPolicies []interf
 			}
 		}
 	}
-
-	stalePGs := []string{}
-	err := oc.addressSetFactory.ProcessEachAddressSet(func(addrSetName, namespaceName, policyName string) error {
-		if policyName != "" && !expectedPolicies[namespaceName][policyName] {
-			// policy doesn't exist on k8s. Delete the port group
-			portGroupName := fmt.Sprintf("%s_%s", namespaceName, policyName)
-			hashedLocalPortGroup := hashedPortGroup(portGroupName)
-			stalePGs = append(stalePGs, hashedLocalPortGroup)
-			// delete the address sets for this old policy from OVN
-			if err := oc.addressSetFactory.DestroyAddressSetInBackingStore(addrSetName); err != nil {
-				klog.Errorf(err.Error())
-				return err
-			}
-		}
-		return nil
-	})
+	err := bnc.syncNetworkPoliciesCommon(expectedPolicies)
 	if err != nil {
-		return fmt.Errorf("error in syncing network policies: %v", err)
-	}
-
-	if len(stalePGs) > 0 {
-		err = libovsdbops.DeletePortGroups(oc.nbClient, stalePGs...)
-		if err != nil {
-			return fmt.Errorf("error removing stale port groups %v: %v", stalePGs, err)
-		}
+		return err
 	}
 
 	// Update existing egress network policies to use the updated ACLs
@@ -330,11 +317,12 @@ func (oc *DefaultNetworkController) syncNetworkPolicies(networkPolicies []interf
 	// we'd still need to update its apply-after-lb=true option, so that the ACL priorities can apply properly;
 	// If acl's option["apply-after-lb"] is already set to true, then its direction should be also correct.
 	p := func(item *nbdb.ACL) bool {
+		_, ok := item.ExternalIDs[types.NetworkNameExternalID]
 		return (item.ExternalIDs[policyTypeACLExtIdKey] == string(knet.PolicyTypeEgress) ||
 			item.ExternalIDs[defaultDenyPolicyTypeACLExtIdKey] == string(knet.PolicyTypeEgress)) &&
-			item.Options["apply-after-lb"] != "true"
+			item.Options["apply-after-lb"] != "true" && !ok
 	}
-	egressACLs, err := libovsdbops.FindACLsWithPredicate(oc.nbClient, p)
+	egressACLs, err := libovsdbops.FindACLsWithPredicate(bnc.nbClient, p)
 	if err != nil {
 		return fmt.Errorf("cannot find NetworkPolicy Egress ACLs: %v", err)
 	}
@@ -348,11 +336,11 @@ func (oc *DefaultNetworkController) syncNetworkPolicies(networkPolicies []interf
 				acl.Options["apply-after-lb"] = "true"
 			}
 		}
-		ops, err := libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, nil, egressACLs...)
+		ops, err := libovsdbops.CreateOrUpdateACLsOps(bnc.nbClient, nil, egressACLs...)
 		if err != nil {
 			return fmt.Errorf("cannot create ops to update old Egress NetworkPolicy ACLs: %v", err)
 		}
-		_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
+		_, err = libovsdbops.TransactAndCheck(bnc.nbClient, ops)
 		if err != nil {
 			return fmt.Errorf("cannot update old Egress NetworkPolicy ACLs: %v", err)
 		}
@@ -366,7 +354,7 @@ func (oc *DefaultNetworkController) syncNetworkPolicies(networkPolicies []interf
 			(item.ExternalIDs[defaultDenyPolicyTypeACLExtIdKey] == string(knet.PolicyTypeEgress) ||
 				item.ExternalIDs[defaultDenyPolicyTypeACLExtIdKey] == string(knet.PolicyTypeIngress))
 	}
-	gressACLs, err := libovsdbops.FindACLsWithPredicate(oc.nbClient, p)
+	gressACLs, err := libovsdbops.FindACLsWithPredicate(bnc.nbClient, p)
 	if err != nil {
 		return fmt.Errorf("cannot find stale arp allow ACLs: %v", err)
 	}
@@ -383,21 +371,50 @@ func (oc *DefaultNetworkController) syncNetworkPolicies(networkPolicies []interf
 			pgName = strings.TrimPrefix(gressACL.Match, "outport == @")
 		}
 		pgName = strings.TrimSuffix(pgName, " && "+staleArpAllowPolicyMatch)
-		ops, err = libovsdbops.DeleteACLsFromPortGroupOps(oc.nbClient, ops, pgName, gressACL)
+		ops, err = libovsdbops.DeleteACLsFromPortGroupOps(bnc.nbClient, ops, pgName, gressACL)
 		if err != nil {
 			return fmt.Errorf("failed getting delete acl ops: %v", err)
 		}
 	}
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
+	_, err = libovsdbops.TransactAndCheck(bnc.nbClient, ops)
 	if err != nil {
 		return fmt.Errorf("cannot delete stale arp allow ACLs: %v", err)
 	}
 
-	if err := oc.updateStaleDefaultDenyACLNames(knet.PolicyTypeEgress, egressDefaultDenySuffix); err != nil {
+	if err := bnc.updateStaleDefaultDenyACLNames(knet.PolicyTypeEgress, egressDefaultDenySuffix); err != nil {
 		return fmt.Errorf("cannot clean up egress default deny ACL name: %v", err)
 	}
-	if err := oc.updateStaleDefaultDenyACLNames(knet.PolicyTypeIngress, ingressDefaultDenySuffix); err != nil {
+	if err := bnc.updateStaleDefaultDenyACLNames(knet.PolicyTypeIngress, ingressDefaultDenySuffix); err != nil {
 		return fmt.Errorf("cannot clean up ingress default deny ACL name: %v", err)
+	}
+	return nil
+}
+
+func (bnc *BaseNetworkController) syncNetworkPoliciesCommon(expectedPolicies map[string]map[string]bool) error {
+	stalePGs := []string{}
+	err := bnc.addressSetFactory.ProcessEachAddressSet(func(addrSetName, namespaceName, policyName string) error {
+		if policyName != "" && !expectedPolicies[namespaceName][policyName] {
+			// policy doesn't exist on k8s. Delete the port group
+			portGroupName := fmt.Sprintf("%s_%s", namespaceName, policyName)
+			hashedLocalPortGroup := hashedPortGroup(portGroupName)
+			stalePGs = append(stalePGs, bnc.GetPrefix()+hashedLocalPortGroup)
+			// delete the address sets for this old policy from OVN
+			if err := bnc.addressSetFactory.DestroyAddressSetInBackingStore(addrSetName); err != nil {
+				klog.Errorf(err.Error())
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("error in syncing network policies: %v", err)
+	}
+
+	if len(stalePGs) > 0 {
+		err = libovsdbops.DeletePortGroups(bnc.nbClient, stalePGs...)
+		if err != nil {
+			return fmt.Errorf("error removing stale port groups %v: %v", stalePGs, err)
+		}
 	}
 
 	return nil
@@ -415,7 +432,7 @@ func addAllowACLFromNode(nodeName string, mgmtPortIP net.IP, nbClient libovsdbcl
 	match := fmt.Sprintf("%s.src==%s", ipFamily, mgmtPortIP.String())
 
 	nodeACL := BuildACL(getAllowFromNodeACLName(), types.DefaultAllowPriority, match,
-		nbdb.ACLActionAllowRelated, nil, lportIngress, nil)
+		nbdb.ACLActionAllowRelated, nil, lportIngress, nil, (*util.NetNameInfo)(nil))
 
 	ops, err := libovsdbops.CreateOrUpdateACLsOps(nbClient, nil, nodeACL)
 	if err != nil {
@@ -456,32 +473,43 @@ func getARPAllowACLName(ns string) string {
 	return joinACLName(ns, arpAllowPolicySuffix)
 }
 
+func buildPortGroup(hashName, name string, ports []*nbdb.LogicalSwitchPort, acls []*nbdb.ACL, netInfo util.NetInfo) *nbdb.PortGroup {
+	var externalIds map[string]string
+	pgName := hashName
+	externalIds = map[string]string{"name": name}
+	if netInfo.IsSecondary() {
+		externalIds[types.NetworkNameExternalID] = netInfo.GetNetworkName()
+		pgName = netInfo.GetPrefix() + hashName
+	}
+	return libovsdbops.BuildPortGroup(pgName, name, ports, acls, externalIds)
+}
+
 func defaultDenyPortGroupName(namespace, gressSuffix string) string {
 	return hashedPortGroup(namespace) + "_" + gressSuffix
 }
 
-func buildDenyACLs(namespace, pg string, aclLogging *ACLLoggingLevels, aclT aclType) (denyACL, allowACL *nbdb.ACL) {
-	denyMatch := getACLMatch(pg, "", aclT)
-	allowMatch := getACLMatch(pg, arpAllowPolicyMatch, aclT)
+func buildDenyACLs(namespace, pg string, aclLogging *ACLLoggingLevels, aclT aclType, netInfo util.NetInfo) (denyACL, allowACL *nbdb.ACL) {
+	denyMatch := getACLMatch(pg, "", aclT, netInfo)
+	allowMatch := getACLMatch(pg, arpAllowPolicyMatch, aclT, netInfo)
 	denyACL = BuildACL(getDefaultDenyPolicyACLName(namespace, aclT), types.DefaultDenyPriority, denyMatch,
-		nbdb.ACLActionDrop, aclLogging, aclT, getDefaultDenyPolicyExternalIDs(aclT))
+		nbdb.ACLActionDrop, aclLogging, aclT, getDefaultDenyPolicyExternalIDs(aclT), netInfo)
 	allowACL = BuildACL(getARPAllowACLName(namespace), types.DefaultAllowPriority, allowMatch,
-		nbdb.ACLActionAllow, nil, aclT, getDefaultDenyPolicyExternalIDs(aclT))
+		nbdb.ACLActionAllow, nil, aclT, getDefaultDenyPolicyExternalIDs(aclT), netInfo)
 	return
 }
 
-func (oc *DefaultNetworkController) addPolicyToDefaultPortGroups(np *networkPolicy, aclLogging *ACLLoggingLevels) error {
-	return oc.sharedNetpolPortGroups.DoWithLock(np.namespace, func(pgKey string) error {
-		sharedPGs, loaded := oc.sharedNetpolPortGroups.LoadOrStore(pgKey, &defaultDenyPortGroups{
+func (bnc *BaseNetworkController) addPolicyToDefaultPortGroups(np *networkPolicy, aclLogging *ACLLoggingLevels) error {
+	return bnc.sharedNetpolPortGroups.DoWithLock(np.namespace, func(pgKey string) error {
+		sharedPGs, loaded := bnc.sharedNetpolPortGroups.LoadOrStore(pgKey, &defaultDenyPortGroups{
 			ingressPortToPolicies: map[string]sets.String{},
 			egressPortToPolicies:  map[string]sets.String{},
 			policies:              map[string]bool{},
 		})
 		if !loaded {
 			// create port groups with acls
-			err := oc.createDefaultDenyPGAndACLs(np.namespace, np.name, aclLogging)
+			err := bnc.createDefaultDenyPGAndACLs(np.namespace, np.name, aclLogging)
 			if err != nil {
-				oc.sharedNetpolPortGroups.Delete(pgKey)
+				bnc.sharedNetpolPortGroups.Delete(pgKey)
 				return fmt.Errorf("failed to create default deny port groups: %v", err)
 			}
 		}
@@ -490,20 +518,20 @@ func (oc *DefaultNetworkController) addPolicyToDefaultPortGroups(np *networkPoli
 	})
 }
 
-func (oc *DefaultNetworkController) delPolicyFromDefaultPortGroups(np *networkPolicy) error {
-	return oc.sharedNetpolPortGroups.DoWithLock(np.namespace, func(pgKey string) error {
-		sharedPGs, found := oc.sharedNetpolPortGroups.Load(pgKey)
+func (bnc *BaseNetworkController) delPolicyFromDefaultPortGroups(np *networkPolicy) error {
+	return bnc.sharedNetpolPortGroups.DoWithLock(np.namespace, func(pgKey string) error {
+		sharedPGs, found := bnc.sharedNetpolPortGroups.Load(pgKey)
 		if !found {
 			return nil
 		}
 		delete(sharedPGs.policies, np.getKey())
 		if len(sharedPGs.policies) == 0 {
 			// last policy was deleted, delete port group
-			err := oc.deleteDefaultDenyPGAndACLs(np.namespace, np.name)
+			err := bnc.deleteDefaultDenyPGAndACLs(np.namespace, np.name)
 			if err != nil {
 				return fmt.Errorf("failed to delete defaul deny port group: %v", err)
 			}
-			oc.sharedNetpolPortGroups.Delete(pgKey)
+			bnc.sharedNetpolPortGroups.Delete(pgKey)
 		}
 		return nil
 	})
@@ -511,30 +539,30 @@ func (oc *DefaultNetworkController) delPolicyFromDefaultPortGroups(np *networkPo
 
 // createDefaultDenyPGAndACLs creates the default port groups and acls for a namespace
 // must be called with defaultDenyPortGroups lock
-func (oc *DefaultNetworkController) createDefaultDenyPGAndACLs(namespace, policy string, aclLogging *ACLLoggingLevels) error {
+func (bnc *BaseNetworkController) createDefaultDenyPGAndACLs(namespace, policy string, aclLogging *ACLLoggingLevels) error {
 	ingressPGName := defaultDenyPortGroupName(namespace, ingressDefaultDenySuffix)
-	ingressDenyACL, ingressAllowACL := buildDenyACLs(namespace, ingressPGName, aclLogging, lportIngress)
+	ingressDenyACL, ingressAllowACL := buildDenyACLs(namespace, ingressPGName, aclLogging, lportIngress, bnc.NetInfo)
 	egressPGName := defaultDenyPortGroupName(namespace, egressDefaultDenySuffix)
-	egressDenyACL, egressAllowACL := buildDenyACLs(namespace, egressPGName, aclLogging, lportEgressAfterLB)
-	ops, err := libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, nil, ingressDenyACL, ingressAllowACL, egressDenyACL, egressAllowACL)
+	egressDenyACL, egressAllowACL := buildDenyACLs(namespace, egressPGName, aclLogging, lportEgressAfterLB, bnc.NetInfo)
+	ops, err := libovsdbops.CreateOrUpdateACLsOps(bnc.nbClient, nil, ingressDenyACL, ingressAllowACL, egressDenyACL, egressAllowACL)
 	if err != nil {
 		return err
 	}
 
-	ingressPG := libovsdbops.BuildPortGroup(ingressPGName, ingressPGName, nil, []*nbdb.ACL{ingressDenyACL, ingressAllowACL})
-	egressPG := libovsdbops.BuildPortGroup(egressPGName, egressPGName, nil, []*nbdb.ACL{egressDenyACL, egressAllowACL})
-	ops, err = libovsdbops.CreateOrUpdatePortGroupsOps(oc.nbClient, ops, ingressPG, egressPG)
+	ingressPG := buildPortGroup(ingressPGName, ingressPGName, nil, []*nbdb.ACL{ingressDenyACL, ingressAllowACL}, bnc.NetInfo)
+	egressPG := buildPortGroup(egressPGName, egressPGName, nil, []*nbdb.ACL{egressDenyACL, egressAllowACL}, bnc.NetInfo)
+	ops, err = libovsdbops.CreateOrUpdatePortGroupsOps(bnc.nbClient, ops, ingressPG, egressPG)
 	if err != nil {
 		return err
 	}
 
-	recordOps, txOkCallBack, _, err := metrics.GetConfigDurationRecorder().AddOVN(oc.nbClient, "networkpolicy",
-		namespace, policy, oc.NetInfo)
+	recordOps, txOkCallBack, _, err := metrics.GetConfigDurationRecorder().AddOVN(bnc.nbClient, "networkpolicy",
+		namespace, policy, bnc.NetInfo)
 	if err != nil {
 		klog.Errorf("Failed to record config duration: %v", err)
 	}
 	ops = append(ops, recordOps...)
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
+	_, err = libovsdbops.TransactAndCheck(bnc.nbClient, ops)
 	if err != nil {
 		return err
 	}
@@ -545,16 +573,16 @@ func (oc *DefaultNetworkController) createDefaultDenyPGAndACLs(namespace, policy
 
 // deleteDefaultDenyPGAndACLs deletes the default port groups and acls for a namespace
 // must be called with defaultDenyPortGroups lock
-func (oc *DefaultNetworkController) deleteDefaultDenyPGAndACLs(namespace, policy string) error {
+func (bnc *BaseNetworkController) deleteDefaultDenyPGAndACLs(namespace, policy string) error {
 	ingressPGName := defaultDenyPortGroupName(namespace, ingressDefaultDenySuffix)
 	egressPGName := defaultDenyPortGroupName(namespace, egressDefaultDenySuffix)
 
-	ops, err := libovsdbops.DeletePortGroupsOps(oc.nbClient, nil, ingressPGName, egressPGName)
+	ops, err := libovsdbops.DeletePortGroupsOps(bnc.nbClient, nil, bnc.GetPrefix()+ingressPGName, bnc.GetPrefix()+egressPGName)
 	if err != nil {
 		return err
 	}
 	// No need to delete ACLs, since they will be garbage collected with deleted port groups
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
+	_, err = libovsdbops.TransactAndCheck(bnc.nbClient, ops)
 	if err != nil {
 		return fmt.Errorf("failed to transact deleteDefaultDenyPGAndACLs: %v", err)
 	}
@@ -563,7 +591,7 @@ func (oc *DefaultNetworkController) deleteDefaultDenyPGAndACLs(namespace, policy
 }
 
 // must be called with namespace lock
-func (oc *DefaultNetworkController) updateACLLoggingForPolicy(np *networkPolicy, aclLogging *ACLLoggingLevels) error {
+func (bnc *BaseNetworkController) updateACLLoggingForPolicy(np *networkPolicy, aclLogging *ACLLoggingLevels) error {
 	np.RLock()
 	defer np.RUnlock()
 	if np.deleted {
@@ -574,21 +602,21 @@ func (oc *DefaultNetworkController) updateACLLoggingForPolicy(np *networkPolicy,
 	p := func(item *nbdb.ACL) bool {
 		return item.ExternalIDs[namespaceACLExtIdKey] == np.namespace && item.ExternalIDs[policyACLExtIdKey] == np.name
 	}
-	return UpdateACLLoggingWithPredicate(oc.nbClient, p, aclLogging)
+	return UpdateACLLoggingWithPredicate(bnc.nbClient, p, aclLogging)
 }
 
-func (oc *DefaultNetworkController) updateACLLoggingForDefaultACLs(ns string, nsInfo *namespaceInfo) error {
-	return oc.sharedNetpolPortGroups.DoWithLock(ns, func(pgKey string) error {
-		_, loaded := oc.sharedNetpolPortGroups.Load(pgKey)
+func (bnc *BaseNetworkController) updateACLLoggingForDefaultACLs(ns string, nsInfo *namespaceInfo) error {
+	return bnc.sharedNetpolPortGroups.DoWithLock(ns, func(pgKey string) error {
+		_, loaded := bnc.sharedNetpolPortGroups.Load(pgKey)
 		if !loaded {
 			// shared port group doesn't exist, nothing to update
 			return nil
 		}
 		denyEgressACL, _ := buildDenyACLs(ns, defaultDenyPortGroupName(ns, egressDefaultDenySuffix),
-			&nsInfo.aclLogging, lportEgressAfterLB)
+			&nsInfo.aclLogging, lportEgressAfterLB, bnc.NetInfo)
 		denyIngressACL, _ := buildDenyACLs(ns, defaultDenyPortGroupName(ns, ingressDefaultDenySuffix),
-			&nsInfo.aclLogging, lportIngress)
-		if err := UpdateACLLogging(oc.nbClient, []*nbdb.ACL{denyIngressACL, denyEgressACL}, &nsInfo.aclLogging); err != nil {
+			&nsInfo.aclLogging, lportIngress, bnc.NetInfo)
+		if err := UpdateACLLogging(bnc.nbClient, []*nbdb.ACL{denyIngressACL, denyEgressACL}, &nsInfo.aclLogging); err != nil {
 			return fmt.Errorf("unable to update ACL logging for namespace %s: %w", ns, err)
 		}
 		return nil
@@ -597,21 +625,21 @@ func (oc *DefaultNetworkController) updateACLLoggingForDefaultACLs(ns string, ns
 
 // handleNetPolNamespaceUpdate should update all network policies related to given namespace.
 // Must be called with namespace Lock, should be retriable
-func (oc *DefaultNetworkController) handleNetPolNamespaceUpdate(namespace string, nsInfo *namespaceInfo) error {
+func (bnc *BaseNetworkController) handleNetPolNamespaceUpdate(namespace string, nsInfo *namespaceInfo) error {
 	// update shared port group ACLs
-	if err := oc.updateACLLoggingForDefaultACLs(namespace, nsInfo); err != nil {
+	if err := bnc.updateACLLoggingForDefaultACLs(namespace, nsInfo); err != nil {
 		return fmt.Errorf("failed to update default deny ACLs for namespace %s: %v", namespace, err)
 	}
 	// now update network policy specific ACLs
 	klog.V(5).Infof("Setting network policy ACLs for ns: %s", namespace)
 	for npKey := range nsInfo.relatedNetworkPolicies {
-		err := oc.networkPolicies.DoWithLock(npKey, func(key string) error {
-			np, found := oc.networkPolicies.Load(npKey)
+		err := bnc.networkPolicies.DoWithLock(npKey, func(key string) error {
+			np, found := bnc.networkPolicies.Load(npKey)
 			if !found {
 				klog.Errorf("Netpol was deleted from cache, but not from namespace related objects")
 				return nil
 			}
-			return oc.updateACLLoggingForPolicy(np, &nsInfo.aclLogging)
+			return bnc.updateACLLoggingForPolicy(np, &nsInfo.aclLogging)
 		})
 		if err != nil {
 			return fmt.Errorf("unable to update ACL for network policy %s: %v", npKey, err)
@@ -640,22 +668,16 @@ func getPolicyType(policy *knet.NetworkPolicy) (bool, bool) {
 // getNewLocalPolicyPorts will find and return port info for every given pod obj, that is not found in
 // np.localPods.
 // if there are problems with fetching port info from logicalPortCache, pod will be added to errObjs.
-func (oc *DefaultNetworkController) getNewLocalPolicyPorts(np *networkPolicy,
+func (bnc *BaseNetworkController) getNewLocalPolicyPorts(np *networkPolicy,
 	objs ...interface{}) (policyPortsToUUIDs map[string]string, policyPortUUIDs []string, errObjs []interface{}) {
 
 	klog.Infof("Processing NetworkPolicy %s/%s to have %d local pods...", np.namespace, np.name, len(objs))
 	policyPortUUIDs = make([]string, 0, len(objs))
 	policyPortsToUUIDs = map[string]string{}
 
+	logicalPortNames := map[string]*kapi.Pod{}
 	for _, obj := range objs {
 		pod := obj.(*kapi.Pod)
-
-		logicalPortName := util.GetLogicalPortName(pod.Namespace, pod.Name)
-		if _, ok := np.localPods.Load(logicalPortName); ok {
-			// port is already added for this policy
-			continue
-		}
-
 		if pod.Spec.NodeName == "" {
 			// pod is not yet scheduled, will receive update event for it
 			continue
@@ -663,14 +685,32 @@ func (oc *DefaultNetworkController) getNewLocalPolicyPorts(np *networkPolicy,
 
 		// Skip pods that will never be present in logicalPortCache,
 		// e.g. hostNetwork pods, overlay node pods, or completed pods
-		if !oc.podExpectedInLogicalCache(pod) {
+		if !bnc.podExpectedInLogicalCache(pod) {
+			continue
+		}
+
+		if !bnc.IsSecondary() {
+			logicalPortNames[util.GetLogicalPortName(pod.Namespace, pod.Name)] = pod
+			continue
+		}
+		on, network, err := util.IsNetworkOnPod(pod, bnc.NetInfo)
+		if err != nil || !on {
+			continue
+		}
+		nadName := util.GetNadName(network.Namespace, network.Name)
+		logicalPortNames[util.GetSecondaryNetworkLogicalPortName(pod.Namespace, pod.Name, nadName)] = pod
+	}
+
+	for logicalPortName, pod := range logicalPortNames {
+		if _, ok := np.localPods.Load(logicalPortName); ok {
+			// port is already added for this policy
 			continue
 		}
 
 		// Add pod to errObjs for retry if
 		// 1. getting pod LSP from the cache fails,
 		// 2. the gotten LSP is scheduled for removal (stateful-sets).
-		portInfo, err := oc.logicalPortCache.get(logicalPortName)
+		portInfo, err := bnc.logicalPortCache.get(logicalPortName)
 		if err != nil {
 			klog.Warningf("Failed to get LSP for pod %s/%s for networkPolicy %s, err: %v",
 				pod.Namespace, pod.Name, np.name, err)
@@ -698,16 +738,31 @@ func (oc *DefaultNetworkController) getNewLocalPolicyPorts(np *networkPolicy,
 
 // getExistingLocalPolicyPorts will find and return port info for every given pod obj, that is present in np.localPods.
 // if there are problems with fetching port info from logicalPortCache, pod will be added to errObjs.
-func (oc *DefaultNetworkController) getExistingLocalPolicyPorts(np *networkPolicy,
+func (bnc *BaseNetworkController) getExistingLocalPolicyPorts(np *networkPolicy,
 	objs ...interface{}) (policyPortsToUUIDs map[string]string, policyPortUUIDs []string, errObjs []interface{}) {
+	var logicalPortName string
 	klog.Infof("Processing NetworkPolicy %s/%s to delete %d local pods...", np.namespace, np.name, len(objs))
 
 	policyPortUUIDs = make([]string, 0, len(objs))
+	logicalPortNames := make([]string, 0, len(objs))
 	policyPortsToUUIDs = map[string]string{}
 	for _, obj := range objs {
 		pod := obj.(*kapi.Pod)
 
-		logicalPortName := util.GetLogicalPortName(pod.Namespace, pod.Name)
+		if !bnc.IsSecondary() {
+			logicalPortName = util.GetLogicalPortName(pod.Namespace, pod.Name)
+		} else {
+			on, network, err := util.IsNetworkOnPod(pod, bnc.NetInfo)
+			if err != nil || !on {
+				continue
+			}
+			nadName := util.GetNadName(network.Namespace, network.Name)
+			logicalPortName = util.GetSecondaryNetworkLogicalPortName(pod.Namespace, pod.Name, nadName)
+		}
+		logicalPortNames = append(logicalPortNames, logicalPortName)
+	}
+
+	for _, logicalPortName = range logicalPortNames {
 		loadedPortUUID, ok := np.localPods.Load(logicalPortName)
 		if !ok {
 			// port is already deleted for this policy
@@ -723,7 +778,7 @@ func (oc *DefaultNetworkController) getExistingLocalPolicyPorts(np *networkPolic
 
 // denyPGAddPorts adds ports to default deny port groups.
 // It also can take existing ops e.g. to add port to network policy port group and transact it.
-func (oc *DefaultNetworkController) denyPGAddPorts(np *networkPolicy, portNamesToUUIDs map[string]string, ops []ovsdb.Operation) error {
+func (bnc *BaseNetworkController) denyPGAddPorts(np *networkPolicy, portNamesToUUIDs map[string]string, ops []ovsdb.Operation) error {
 	var err error
 	ingressDenyPGName := defaultDenyPortGroupName(np.namespace, ingressDefaultDenySuffix)
 	egressDenyPGName := defaultDenyPortGroupName(np.namespace, egressDefaultDenySuffix)
@@ -731,9 +786,9 @@ func (oc *DefaultNetworkController) denyPGAddPorts(np *networkPolicy, portNamesT
 	pgKey := np.namespace
 	// this lock guarantees that sharedPortGroup counters will be updated atomically
 	// with adding port to port group in db.
-	oc.sharedNetpolPortGroups.LockKey(pgKey)
-	defer oc.sharedNetpolPortGroups.UnlockKey(pgKey)
-	sharedPGs, ok := oc.sharedNetpolPortGroups.Load(pgKey)
+	bnc.sharedNetpolPortGroups.LockKey(pgKey)
+	defer bnc.sharedNetpolPortGroups.UnlockKey(pgKey)
+	sharedPGs, ok := bnc.sharedNetpolPortGroups.Load(pgKey)
 	if !ok {
 		// Port group doesn't exist
 		return fmt.Errorf("port groups for ns %s don't exist", np.namespace)
@@ -749,17 +804,17 @@ func (oc *DefaultNetworkController) denyPGAddPorts(np *networkPolicy, portNamesT
 
 	if len(ingressDenyPorts) != 0 || len(egressDenyPorts) != 0 {
 		// db changes required
-		ops, err = libovsdbops.AddPortsToPortGroupOps(oc.nbClient, ops, ingressDenyPGName, ingressDenyPorts...)
+		ops, err = libovsdbops.AddPortsToPortGroupOps(bnc.nbClient, ops, bnc.GetPrefix()+ingressDenyPGName, ingressDenyPorts...)
 		if err != nil {
-			return fmt.Errorf("unable to get add ports to %s port group ops: %v", ingressDenyPGName, err)
+			return fmt.Errorf("unable to get add ports to %s port group ops: %v", bnc.GetPrefix()+ingressDenyPGName, err)
 		}
 
-		ops, err = libovsdbops.AddPortsToPortGroupOps(oc.nbClient, ops, egressDenyPGName, egressDenyPorts...)
+		ops, err = libovsdbops.AddPortsToPortGroupOps(bnc.nbClient, ops, bnc.GetPrefix()+egressDenyPGName, egressDenyPorts...)
 		if err != nil {
-			return fmt.Errorf("unable to get add ports to %s port group ops: %v", egressDenyPGName, err)
+			return fmt.Errorf("unable to get add ports to %s port group ops: %v", bnc.GetPrefix()+egressDenyPGName, err)
 		}
 	}
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
+	_, err = libovsdbops.TransactAndCheck(bnc.nbClient, ops)
 	if err != nil {
 		return fmt.Errorf("unable to transact add ports to default deny port groups: %v", err)
 	}
@@ -769,7 +824,7 @@ func (oc *DefaultNetworkController) denyPGAddPorts(np *networkPolicy, portNamesT
 // denyPGDeletePorts deletes ports from default deny port groups.
 // Set useLocalPods = true, when deleting networkPolicy to remove all its ports from defaultDeny port groups.
 // It also can take existing ops e.g. to delete ports from network policy port group and transact it.
-func (oc *DefaultNetworkController) denyPGDeletePorts(np *networkPolicy, portNamesToUUIDs map[string]string, useLocalPods bool,
+func (bnc *BaseNetworkController) denyPGDeletePorts(np *networkPolicy, portNamesToUUIDs map[string]string, useLocalPods bool,
 	ops []ovsdb.Operation) error {
 	var err error
 	if useLocalPods {
@@ -786,9 +841,9 @@ func (oc *DefaultNetworkController) denyPGDeletePorts(np *networkPolicy, portNam
 		pgKey := np.namespace
 		// this lock guarantees that sharedPortGroup counters will be updated atomically
 		// with adding port to port group in db.
-		oc.sharedNetpolPortGroups.LockKey(pgKey)
-		defer oc.sharedNetpolPortGroups.UnlockKey(pgKey)
-		sharedPGs, ok := oc.sharedNetpolPortGroups.Load(pgKey)
+		bnc.sharedNetpolPortGroups.LockKey(pgKey)
+		defer bnc.sharedNetpolPortGroups.UnlockKey(pgKey)
+		sharedPGs, ok := bnc.sharedNetpolPortGroups.Load(pgKey)
 		if !ok {
 			// Port group doesn't exist, nothing to clean up
 			klog.Infof("Skip delete ports from default deny port group: port group doesn't exist")
@@ -803,19 +858,19 @@ func (oc *DefaultNetworkController) denyPGDeletePorts(np *networkPolicy, portNam
 
 			if len(ingressDenyPorts) != 0 || len(egressDenyPorts) != 0 {
 				// db changes required
-				ops, err = libovsdbops.DeletePortsFromPortGroupOps(oc.nbClient, ops, ingressDenyPGName, ingressDenyPorts...)
+				ops, err = libovsdbops.DeletePortsFromPortGroupOps(bnc.nbClient, ops, bnc.GetPrefix()+ingressDenyPGName, ingressDenyPorts...)
 				if err != nil {
-					return fmt.Errorf("unable to get del ports from %s port group ops: %v", ingressDenyPGName, err)
+					return fmt.Errorf("unable to get del ports from %s port group ops: %v", bnc.GetPrefix()+ingressDenyPGName, err)
 				}
 
-				ops, err = libovsdbops.DeletePortsFromPortGroupOps(oc.nbClient, ops, egressDenyPGName, egressDenyPorts...)
+				ops, err = libovsdbops.DeletePortsFromPortGroupOps(bnc.nbClient, ops, bnc.GetPrefix()+egressDenyPGName, egressDenyPorts...)
 				if err != nil {
-					return fmt.Errorf("unable to get del ports from %s port group ops: %v", egressDenyPGName, err)
+					return fmt.Errorf("unable to get del ports from %s port group ops: %v", bnc.GetPrefix()+egressDenyPGName, err)
 				}
 			}
 		}
 	}
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
+	_, err = libovsdbops.TransactAndCheck(bnc.nbClient, ops)
 	if err != nil {
 		return fmt.Errorf("unable to transact del ports from default deny port groups: %v", err)
 	}
@@ -824,28 +879,28 @@ func (oc *DefaultNetworkController) denyPGDeletePorts(np *networkPolicy, portNam
 }
 
 // handleLocalPodSelectorAddFunc adds a new pod to an existing NetworkPolicy, should be retriable.
-func (oc *DefaultNetworkController) handleLocalPodSelectorAddFunc(np *networkPolicy, objs ...interface{}) error {
+func (bnc *BaseNetworkController) handleLocalPodSelectorAddFunc(np *networkPolicy, objs ...interface{}) error {
 	np.RLock()
 	defer np.RUnlock()
 	if np.deleted {
 		return nil
 	}
 	// get info for new pods that are not listed in np.localPods
-	portNamesToUUIDs, policyPortUUIDs, errPods := oc.getNewLocalPolicyPorts(np, objs...)
+	portNamesToUUIDs, policyPortUUIDs, errPods := bnc.getNewLocalPolicyPorts(np, objs...)
 	// for multiple objects, try to update the ones that were fetched successfully
 	// return error for errPods in the end
 	if len(portNamesToUUIDs) > 0 {
 		var err error
 		// add pods to policy port group
 		var ops []ovsdb.Operation
-		ops, err = libovsdbops.AddPortsToPortGroupOps(oc.nbClient, nil, np.portGroupName, policyPortUUIDs...)
+		ops, err = libovsdbops.AddPortsToPortGroupOps(bnc.nbClient, nil, bnc.GetPrefix()+np.portGroupName, policyPortUUIDs...)
 		if err != nil {
-			return fmt.Errorf("unable to get ops to add new pod to policy port group: %v", err)
+			return fmt.Errorf("unable to get ops to add new pod to policy port group %s: %v", bnc.GetPrefix()+np.portGroupName, err)
 		}
 		// add pods to default deny port group
 		// make sure to only pass newly added pods
 		// ops will be transacted by denyPGAddPorts
-		if err = oc.denyPGAddPorts(np, portNamesToUUIDs, ops); err != nil {
+		if err = bnc.denyPGAddPorts(np, portNamesToUUIDs, ops); err != nil {
 			return fmt.Errorf("unable to add new pod to default deny port group: %v", err)
 		}
 		// all operations were successful, update np.localPods
@@ -866,25 +921,25 @@ func (oc *DefaultNetworkController) handleLocalPodSelectorAddFunc(np *networkPol
 }
 
 // handleLocalPodSelectorDelFunc handles delete event for local pod, should be retriable
-func (oc *DefaultNetworkController) handleLocalPodSelectorDelFunc(np *networkPolicy, objs ...interface{}) error {
+func (bnc *BaseNetworkController) handleLocalPodSelectorDelFunc(np *networkPolicy, objs ...interface{}) error {
 	np.RLock()
 	defer np.RUnlock()
 	if np.deleted {
 		return nil
 	}
 
-	portNamesToUUIDs, policyPortUUIDs, errPods := oc.getExistingLocalPolicyPorts(np, objs...)
+	portNamesToUUIDs, policyPortUUIDs, errPods := bnc.getExistingLocalPolicyPorts(np, objs...)
 
 	if len(portNamesToUUIDs) > 0 {
 		var err error
 		// del pods from policy port group
 		var ops []ovsdb.Operation
-		ops, err = libovsdbops.DeletePortsFromPortGroupOps(oc.nbClient, nil, np.portGroupName, policyPortUUIDs...)
+		ops, err = libovsdbops.DeletePortsFromPortGroupOps(bnc.nbClient, nil, bnc.GetPrefix()+np.portGroupName, policyPortUUIDs...)
 		if err != nil {
 			return fmt.Errorf("unable to get ops to add new pod to policy port group: %v", err)
 		}
 		// delete pods from default deny port group
-		if err = oc.denyPGDeletePorts(np, portNamesToUUIDs, false, ops); err != nil {
+		if err = bnc.denyPGDeletePorts(np, portNamesToUUIDs, false, ops); err != nil {
 			return fmt.Errorf("unable to add new pod to default deny port group: %v", err)
 		}
 		// all operations were successful, update np.localPods
@@ -904,7 +959,7 @@ func (oc *DefaultNetworkController) handleLocalPodSelectorDelFunc(np *networkPol
 // will be executed sequentially first, and an error will be returned if something fails.
 // LocalPodSelectorType uses handleLocalPodSelectorAddFunc on Add and Update,
 // and handleLocalPodSelectorDelFunc on Delete.
-func (oc *DefaultNetworkController) addLocalPodHandler(policy *knet.NetworkPolicy, np *networkPolicy) error {
+func (bnc *BaseNetworkController) addLocalPodHandler(policy *knet.NetworkPolicy, np *networkPolicy) error {
 	// NetworkPolicy is validated by the apiserver
 	sel, err := metav1.LabelSelectorAsSelector(&policy.Spec.PodSelector)
 	if err != nil {
@@ -915,10 +970,10 @@ func (oc *DefaultNetworkController) addLocalPodHandler(policy *knet.NetworkPolic
 	// Add all local pods in a syncFunction to minimize db ops.
 	syncFunc := func(objs []interface{}) error {
 		// ignore returned error, since any pod that wasn't properly handled will be retried individually.
-		_ = oc.handleLocalPodSelectorAddFunc(np, objs...)
+		_ = bnc.handleLocalPodSelectorAddFunc(np, objs...)
 		return nil
 	}
-	retryLocalPods := oc.newRetryFrameworkWithParameters(
+	retryLocalPods := bnc.newRetryFrameworkWithParameters(
 		factory.LocalPodSelectorType,
 		syncFunc,
 		&NetworkPolicyExtraParameters{
@@ -960,7 +1015,7 @@ type policyHandler struct {
 // If network policy with given key exists, it will try to clean it up first, and return an error if it fails.
 // No need to log network policy key here, because caller of createNetworkPolicy should prepend error message with
 // that information.
-func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPolicy, aclLogging *ACLLoggingLevels) (*networkPolicy, error) {
+func (bnc *BaseNetworkController) createNetworkPolicy(policy *knet.NetworkPolicy, aclLogging *ACLLoggingLevels) (*networkPolicy, error) {
 	// To avoid existing connections disruption, make sure to apply allow ACLs before applying deny ACLs.
 	// This requires to start peer handlers before local pod handlers.
 	// 1. Cleanup old policy if it failed to be created
@@ -978,15 +1033,15 @@ func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPoli
 	var np *networkPolicy
 	var policyHandlers []policyHandler
 
-	err := oc.networkPolicies.DoWithLock(npKey, func(npKey string) error {
-		oldNP, found := oc.networkPolicies.Load(npKey)
+	err := bnc.networkPolicies.DoWithLock(npKey, func(npKey string) error {
+		oldNP, found := bnc.networkPolicies.Load(npKey)
 		if found {
 			// 1. Cleanup old policy if it failed to be created
-			if cleanupErr := oc.cleanupNetworkPolicy(oldNP); cleanupErr != nil {
+			if cleanupErr := bnc.cleanupNetworkPolicy(oldNP); cleanupErr != nil {
 				return fmt.Errorf("cleanup for retrying network policy create failed: %v", cleanupErr)
 			}
 		}
-		np, found = oc.networkPolicies.LoadOrStore(npKey, NewNetworkPolicy(policy))
+		np, found = bnc.networkPolicies.LoadOrStore(npKey, NewNetworkPolicy(policy))
 		if found {
 			// that should never happen, because successful cleanup will delete np from oc.networkPolicies
 			return fmt.Errorf("network policy is found in the system, "+
@@ -1024,7 +1079,7 @@ func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPoli
 		for i, ingressJSON := range policy.Spec.Ingress {
 			klog.V(5).Infof("Network policy ingress is %+v", ingressJSON)
 
-			ingress := newGressPolicy(knet.PolicyTypeIngress, i, policy.Namespace, policy.Name)
+			ingress := newGressPolicy(knet.PolicyTypeIngress, i, policy.Namespace, policy.Name, bnc.NetInfo)
 			// append ingress policy to be able to cleanup created address set
 			// see cleanupNetworkPolicy for details
 			np.ingressPolicies = append(np.ingressPolicies, ingress)
@@ -1035,7 +1090,7 @@ func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPoli
 			}
 			if hasAnyLabelSelector(ingressJSON.From) {
 				klog.V(5).Infof("Network policy %s with ingress rule %s has a selector", npKey, ingress.policyName)
-				if err = ingress.ensurePeerAddressSet(oc.addressSetFactory); err != nil {
+				if err = ingress.ensurePeerAddressSet(bnc.addressSetFactory); err != nil {
 					return err
 				}
 			}
@@ -1058,7 +1113,7 @@ func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPoli
 		for i, egressJSON := range policy.Spec.Egress {
 			klog.V(5).Infof("Network policy egress is %+v", egressJSON)
 
-			egress := newGressPolicy(knet.PolicyTypeEgress, i, policy.Namespace, policy.Name)
+			egress := newGressPolicy(knet.PolicyTypeEgress, i, policy.Namespace, policy.Name, bnc.NetInfo)
 			// append ingress policy to be able to cleanup created address set
 			// see cleanupNetworkPolicy for details
 			np.egressPolicies = append(np.egressPolicies, egress)
@@ -1070,7 +1125,7 @@ func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPoli
 
 			if hasAnyLabelSelector(egressJSON.To) {
 				klog.V(5).Infof("Network policy %s with egress rule %s has a selector", npKey, egress.policyName)
-				if err = egress.ensurePeerAddressSet(oc.addressSetFactory); err != nil {
+				if err = egress.ensurePeerAddressSet(bnc.addressSetFactory); err != nil {
 					return err
 				}
 			}
@@ -1090,7 +1145,7 @@ func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPoli
 
 		// 3. Add policy to default deny port group
 		// Pods are not added to default deny port groups yet, this is just a preparation step
-		err = oc.addPolicyToDefaultPortGroups(np, aclLogging)
+		err = bnc.addPolicyToDefaultPortGroups(np, aclLogging)
 		if err != nil {
 			return err
 		}
@@ -1101,28 +1156,28 @@ func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPoli
 		np.portGroupName = portGroupName
 		ops := []ovsdb.Operation{}
 
-		acls := oc.buildNetworkPolicyACLs(np, aclLogging)
-		ops, err = libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, ops, acls...)
+		acls := bnc.buildNetworkPolicyACLs(np, aclLogging)
+		ops, err = libovsdbops.CreateOrUpdateACLsOps(bnc.nbClient, ops, acls...)
 		if err != nil {
 			return fmt.Errorf("failed to create ACL ops: %v", err)
 		}
 
-		pg := libovsdbops.BuildPortGroup(np.portGroupName, readableGroupName, nil, acls)
-		ops, err = libovsdbops.CreateOrUpdatePortGroupsOps(oc.nbClient, ops, pg)
+		pg := buildPortGroup(np.portGroupName, readableGroupName, nil, acls, bnc.NetInfo)
+		ops, err = libovsdbops.CreateOrUpdatePortGroupsOps(bnc.nbClient, ops, pg)
 		if err != nil {
 			return fmt.Errorf("failed to create ops to add port to a port group: %v", err)
 		}
 
 		var recordOps []ovsdb.Operation
 		var txOkCallBack func()
-		recordOps, txOkCallBack, _, err = metrics.GetConfigDurationRecorder().AddOVN(oc.nbClient, "networkpolicy",
-			policy.Namespace, policy.Name, oc.NetInfo)
+		recordOps, txOkCallBack, _, err = metrics.GetConfigDurationRecorder().AddOVN(bnc.nbClient, "networkpolicy",
+			policy.Namespace, policy.Name, bnc.NetInfo)
 		if err != nil {
 			klog.Errorf("Failed to record config duration: %v", err)
 		}
 		ops = append(ops, recordOps...)
 
-		_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
+		_, err = libovsdbops.TransactAndCheck(bnc.nbClient, ops)
 		if err != nil {
 			return fmt.Errorf("failed to run ovsdb txn to add ports to port group: %v", err)
 		}
@@ -1139,15 +1194,15 @@ func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPoli
 				// For each rule that contains both peer namespace selector and
 				// peer pod selector, we create a watcher for each matching namespace
 				// that populates the addressSet
-				err = oc.addPeerNamespaceAndPodHandler(handler.namespaceSelector, handler.podSelector, handler.gress, np)
+				err = bnc.addPeerNamespaceAndPodHandler(handler.namespaceSelector, handler.podSelector, handler.gress, np)
 			} else if handler.namespaceSelector != nil {
 				// For each peer namespace selector, we create a watcher that
 				// populates ingress.peerAddressSets
-				err = oc.addPeerNamespaceHandler(handler.namespaceSelector, handler.gress, np)
+				err = bnc.addPeerNamespaceHandler(handler.namespaceSelector, handler.gress, np)
 			} else if handler.podSelector != nil {
 				// For each peer pod selector, we create a watcher that
 				// populates the addressSet
-				err = oc.addPeerPodHandler(handler.podSelector, handler.gress, np)
+				err = bnc.addPeerPodHandler(handler.podSelector, handler.gress, np)
 			}
 			if err != nil {
 				return fmt.Errorf("failed to start peer handler: %v", err)
@@ -1155,7 +1210,7 @@ func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPoli
 		}
 
 		// 7. Start local pod handlers, that will update networkPolicy and default deny port groups with selected pods.
-		err = oc.addLocalPodHandler(policy, np)
+		err = bnc.addLocalPodHandler(policy, np)
 		if err != nil {
 			return fmt.Errorf("failed to start local pod handler: %v", err)
 		}
@@ -1168,8 +1223,8 @@ func (oc *DefaultNetworkController) createNetworkPolicy(policy *knet.NetworkPoli
 // addNetworkPolicy creates and applies OVN ACLs to pod logical switch
 // ports from Kubernetes NetworkPolicy objects using OVN Port Groups
 // if addNetworkPolicy fails, create or delete operation can be retried
-func (oc *DefaultNetworkController) addNetworkPolicy(policy *knet.NetworkPolicy) error {
-	klog.Infof("Adding network policy %s", getPolicyKey(policy))
+func (bnc *BaseNetworkController) addNetworkPolicy(policy *knet.NetworkPolicy) error {
+	klog.Infof("Adding network policy %s for network %s", getPolicyKey(policy), bnc.GetNetworkName())
 
 	// To not hold nsLock for the whole process on network policy creation, we do the following:
 	// 1. save required namespace information to use for netpol create
@@ -1181,7 +1236,7 @@ func (oc *DefaultNetworkController) addNetworkPolicy(policy *knet.NetworkPolicy)
 
 	// 1. save required namespace information to use for netpol create,
 	npKey := getPolicyKey(policy)
-	nsInfo, nsUnlock := oc.getNamespaceLocked(policy.Namespace, true)
+	nsInfo, nsUnlock := bnc.getNamespaceLocked(policy.Namespace, true)
 	if nsInfo == nil {
 		return fmt.Errorf("unable to get namespace for network policy %s: namespace doesn't exist", npKey)
 	}
@@ -1192,19 +1247,19 @@ func (oc *DefaultNetworkController) addNetworkPolicy(policy *knet.NetworkPolicy)
 	var np *networkPolicy
 	var err error
 
-	np, err = oc.createNetworkPolicy(policy, &aclLogging)
+	np, err = bnc.createNetworkPolicy(policy, &aclLogging)
 	defer func() {
 		if err != nil {
 			klog.Infof("Create network policy %s failed, try to cleanup", npKey)
 			// try to cleanup network policy straight away
 			// it will be retried later with add/delete network policy handlers if it fails
-			cleanupErr := oc.networkPolicies.DoWithLock(npKey, func(npKey string) error {
-				np, ok := oc.networkPolicies.Load(npKey)
+			cleanupErr := bnc.networkPolicies.DoWithLock(npKey, func(npKey string) error {
+				np, ok := bnc.networkPolicies.Load(npKey)
 				if !ok {
 					klog.Infof("Deleting policy %s that is already deleted", npKey)
 					return nil
 				}
-				return oc.cleanupNetworkPolicy(np)
+				return bnc.cleanupNetworkPolicy(np)
 			})
 			if cleanupErr != nil {
 				klog.Infof("Cleanup for failed create network policy %s returned an error: %v",
@@ -1218,7 +1273,7 @@ func (oc *DefaultNetworkController) addNetworkPolicy(policy *knet.NetworkPolicy)
 	klog.Infof("Create network policy %s resources completed, update namespace loglevel", npKey)
 
 	// 3. lock namespace
-	nsInfo, nsUnlock = oc.getNamespaceLocked(policy.Namespace, false)
+	nsInfo, nsUnlock = bnc.getNamespaceLocked(policy.Namespace, false)
 	if nsInfo == nil {
 		// namespace was deleted while we were adding network policy,
 		// try to cleanup network policy
@@ -1233,7 +1288,7 @@ func (oc *DefaultNetworkController) addNetworkPolicy(policy *knet.NetworkPolicy)
 	// network policy only reacts to namespace update ACL log level.
 	// Run handleNetPolNamespaceUpdate sequence, but only for 1 newly added policy.
 	if nsInfo.aclLogging.Deny != aclLogging.Deny {
-		if err := oc.updateACLLoggingForDefaultACLs(policy.Namespace, nsInfo); err != nil {
+		if err := bnc.updateACLLoggingForDefaultACLs(policy.Namespace, nsInfo); err != nil {
 			return fmt.Errorf("network policy %s failed to be created: update default deny ACLs failed: %v", npKey, err)
 		} else {
 			klog.Infof("Policy %s: ACL logging setting updated to deny=%s allow=%s",
@@ -1241,7 +1296,7 @@ func (oc *DefaultNetworkController) addNetworkPolicy(policy *knet.NetworkPolicy)
 		}
 	}
 	if nsInfo.aclLogging.Allow != aclLogging.Allow {
-		if err := oc.updateACLLoggingForPolicy(np, &nsInfo.aclLogging); err != nil {
+		if err := bnc.updateACLLoggingForPolicy(np, &nsInfo.aclLogging); err != nil {
 			return fmt.Errorf("network policy %s failed to be created: update policy ACLs failed: %v", npKey, err)
 		} else {
 			klog.Infof("Policy %s: ACL logging setting updated to deny=%s allow=%s",
@@ -1256,7 +1311,7 @@ func (oc *DefaultNetworkController) addNetworkPolicy(policy *knet.NetworkPolicy)
 
 // buildNetworkPolicyACLs builds the ACLS associated with the 'gress policies
 // of the provided network policy.
-func (oc *DefaultNetworkController) buildNetworkPolicyACLs(np *networkPolicy, aclLogging *ACLLoggingLevels) []*nbdb.ACL {
+func (bnc *BaseNetworkController) buildNetworkPolicyACLs(np *networkPolicy, aclLogging *ACLLoggingLevels) []*nbdb.ACL {
 	acls := []*nbdb.ACL{}
 	for _, gp := range np.ingressPolicies {
 		acl := gp.buildLocalPodACLs(np.portGroupName, aclLogging)
@@ -1272,25 +1327,25 @@ func (oc *DefaultNetworkController) buildNetworkPolicyACLs(np *networkPolicy, ac
 
 // deleteNetworkPolicy removes a network policy
 // It only uses Namespace and Name from given network policy
-func (oc *DefaultNetworkController) deleteNetworkPolicy(policy *knet.NetworkPolicy) error {
+func (bnc *BaseNetworkController) deleteNetworkPolicy(policy *knet.NetworkPolicy) error {
 	npKey := getPolicyKey(policy)
 	klog.Infof("Deleting network policy %s", npKey)
 
 	// First lock and update namespace
-	nsInfo, nsUnlock := oc.getNamespaceLocked(policy.Namespace, false)
+	nsInfo, nsUnlock := bnc.getNamespaceLocked(policy.Namespace, false)
 	if nsInfo != nil {
 		// unsubscribe from namespace events
 		delete(nsInfo.relatedNetworkPolicies, npKey)
 		nsUnlock()
 	}
 	// Next cleanup network policy
-	err := oc.networkPolicies.DoWithLock(npKey, func(npKey string) error {
-		np, ok := oc.networkPolicies.Load(npKey)
+	err := bnc.networkPolicies.DoWithLock(npKey, func(npKey string) error {
+		np, ok := bnc.networkPolicies.Load(npKey)
 		if !ok {
 			klog.Infof("Deleting policy %s that is already deleted", npKey)
 			return nil
 		}
-		if err := oc.cleanupNetworkPolicy(np); err != nil {
+		if err := bnc.cleanupNetworkPolicy(np); err != nil {
 			return fmt.Errorf("deleting policy %s failed: %v", npKey, err)
 		}
 		return nil
@@ -1303,7 +1358,7 @@ func (oc *DefaultNetworkController) deleteNetworkPolicy(policy *knet.NetworkPoli
 // It updates oc.networkPolicies on success, should be called with oc.networkPolicies key locked.
 // No need to log network policy key here, because caller of cleanupNetworkPolicy should prepend error message with
 // that information.
-func (oc *DefaultNetworkController) cleanupNetworkPolicy(np *networkPolicy) error {
+func (bnc *BaseNetworkController) cleanupNetworkPolicy(np *networkPolicy) error {
 	klog.Infof("Cleanup network policy %s", np.getKey())
 	np.Lock()
 	defer np.Unlock()
@@ -1312,22 +1367,22 @@ func (oc *DefaultNetworkController) cleanupNetworkPolicy(np *networkPolicy) erro
 	np.deleted = true
 
 	// stop handlers, retriable
-	oc.shutdownHandlers(np)
+	bnc.shutdownHandlers(np)
 	var err error
 
 	// Delete the port group, idempotent
-	ops, err := libovsdbops.DeletePortGroupsOps(oc.nbClient, nil, np.portGroupName)
+	ops, err := libovsdbops.DeletePortGroupsOps(bnc.nbClient, nil, bnc.GetPrefix()+np.portGroupName)
 	if err != nil {
-		return fmt.Errorf("failed to get delete network policy port group %s ops: %v", np.portGroupName, err)
+		return fmt.Errorf("failed to get delete network policy port group %s ops: %v", bnc.GetPrefix()+np.portGroupName, err)
 	}
-	recordOps, txOkCallBack, _, err := metrics.GetConfigDurationRecorder().AddOVN(oc.nbClient, "networkpolicy",
-		np.namespace, np.name, oc.NetInfo)
+	recordOps, txOkCallBack, _, err := metrics.GetConfigDurationRecorder().AddOVN(bnc.nbClient, "networkpolicy",
+		np.namespace, np.name, bnc.NetInfo)
 	if err != nil {
 		klog.Errorf("Failed to record config duration: %v", err)
 	}
 	ops = append(ops, recordOps...)
 
-	err = oc.denyPGDeletePorts(np, nil, true, ops)
+	err = bnc.denyPGDeletePorts(np, nil, true, ops)
 	if err != nil {
 		return fmt.Errorf("unable to delete ports from defaultDeny port group: %v", err)
 	}
@@ -1336,7 +1391,7 @@ func (oc *DefaultNetworkController) cleanupNetworkPolicy(np *networkPolicy) erro
 	// cleanup local pods, since they were deleted from port groups
 	np.localPods = sync.Map{}
 
-	err = oc.delPolicyFromDefaultPortGroups(np)
+	err = bnc.delPolicyFromDefaultPortGroups(np)
 	if err != nil {
 		return fmt.Errorf("unable to delete policy from default deny port groups: %v", err)
 	}
@@ -1363,14 +1418,14 @@ func (oc *DefaultNetworkController) cleanupNetworkPolicy(np *networkPolicy) erro
 
 	// finally, delete netpol from existing networkPolicies
 	// this is the signal that cleanup was successful
-	oc.networkPolicies.Delete(np.getKey())
+	bnc.networkPolicies.Delete(np.getKey())
 	return nil
 }
 
 // handlePeerPodSelectorAddUpdate adds the IP address of a pod that has been
 // selected as a peer by a NetworkPolicy's ingress/egress section to that
 // ingress/egress address set
-func (oc *DefaultNetworkController) handlePeerPodSelectorAddUpdate(np *networkPolicy, gp *gressPolicy, objs ...interface{}) error {
+func (bnc *BaseNetworkController) handlePeerPodSelectorAddUpdate(np *networkPolicy, gp *gressPolicy, objs ...interface{}) error {
 	np.RLock()
 	defer np.RUnlock()
 	if np.deleted {
@@ -1392,7 +1447,7 @@ func (oc *DefaultNetworkController) handlePeerPodSelectorAddUpdate(np *networkPo
 // handlePeerPodSelectorDelete removes the IP address of a pod that no longer
 // matches a NetworkPolicy ingress/egress section's selectors from that
 // ingress/egress address set
-func (oc *DefaultNetworkController) handlePeerPodSelectorDelete(np *networkPolicy, gp *gressPolicy, obj interface{}) error {
+func (bnc *BaseNetworkController) handlePeerPodSelectorDelete(np *networkPolicy, gp *gressPolicy, obj interface{}) error {
 	np.RLock()
 	defer np.RUnlock()
 	if np.deleted {
@@ -1421,7 +1476,7 @@ type NetworkPolicyExtraParameters struct {
 // returned if something fails.
 // PeerPodSelectorType uses handlePeerPodSelectorAddUpdate on Add and Update,
 // and handlePeerPodSelectorDelete on Delete.
-func (oc *DefaultNetworkController) addPeerPodHandler(podSelector *metav1.LabelSelector,
+func (bnc *BaseNetworkController) addPeerPodHandler(podSelector *metav1.LabelSelector,
 	gp *gressPolicy, np *networkPolicy) error {
 
 	// NetworkPolicy is validated by the apiserver; this can't fail.
@@ -1431,10 +1486,11 @@ func (oc *DefaultNetworkController) addPeerPodHandler(podSelector *metav1.LabelS
 	// label selector
 	syncFunc := func(objs []interface{}) error {
 		// ignore returned error, since any pod that wasn't properly handled will be retried individually.
-		_ = oc.handlePeerPodSelectorAddUpdate(np, gp, objs...)
+		_ = bnc.handlePeerPodSelectorAddUpdate(np, gp, objs...)
 		return nil
 	}
-	retryPeerPods := oc.newRetryFrameworkWithParameters(
+	// TBD cathy could to nci's retryFrame
+	retryPeerPods := bnc.newRetryFrameworkWithParameters(
 		factory.PeerPodSelectorType,
 		syncFunc,
 		&NetworkPolicyExtraParameters{
@@ -1452,7 +1508,7 @@ func (oc *DefaultNetworkController) addPeerPodHandler(podSelector *metav1.LabelS
 	return nil
 }
 
-func (oc *DefaultNetworkController) handlePeerNamespaceAndPodAdd(np *networkPolicy, gp *gressPolicy,
+func (bnc *BaseNetworkController) handlePeerNamespaceAndPodAdd(np *networkPolicy, gp *gressPolicy,
 	podSelector labels.Selector, obj interface{}) error {
 	namespace := obj.(*kapi.Namespace)
 	np.RLock()
@@ -1469,10 +1525,10 @@ func (oc *DefaultNetworkController) handlePeerNamespaceAndPodAdd(np *networkPoli
 	// start watching pods in this namespace and selected by the label selector in extraParameters.podSelector
 	syncFunc := func(objs []interface{}) error {
 		// ignore returned error, since any pod that wasn't properly handled will be retried individually.
-		_ = oc.handlePeerPodSelectorAddUpdate(np, gp, objs...)
+		_ = bnc.handlePeerPodSelectorAddUpdate(np, gp, objs...)
 		return nil
 	}
-	retryPeerPods := oc.newRetryFrameworkWithParameters(
+	retryPeerPods := bnc.newRetryFrameworkWithParameters(
 		factory.PeerPodForNamespaceAndPodSelectorType,
 		syncFunc,
 		&NetworkPolicyExtraParameters{
@@ -1494,14 +1550,14 @@ func (oc *DefaultNetworkController) handlePeerNamespaceAndPodAdd(np *networkPoli
 	np.RLock()
 	locked = true
 	if np.deleted {
-		oc.watchFactory.RemovePodHandler(podHandler)
+		bnc.watchFactory.RemovePodHandler(podHandler)
 		return nil
 	}
 	np.namespacedPodHandlers.Store(namespace.Name, podHandler)
 	return nil
 }
 
-func (oc *DefaultNetworkController) handlePeerNamespaceAndPodDel(np *networkPolicy, gp *gressPolicy, obj interface{}) error {
+func (bnc *BaseNetworkController) handlePeerNamespaceAndPodDel(np *networkPolicy, gp *gressPolicy, obj interface{}) error {
 	np.RLock()
 	defer np.RUnlock()
 	if np.deleted {
@@ -1515,11 +1571,11 @@ func (oc *DefaultNetworkController) handlePeerNamespaceAndPodDel(np *networkPoli
 	namespace := obj.(*kapi.Namespace)
 
 	if handler, ok := np.namespacedPodHandlers.Load(namespace.Name); ok {
-		oc.watchFactory.RemovePodHandler(handler.(*factory.Handler))
+		bnc.watchFactory.RemovePodHandler(handler.(*factory.Handler))
 		np.namespacedPodHandlers.Delete(namespace.Name)
 	}
 
-	pods, err := oc.watchFactory.GetPods(namespace.Name)
+	pods, err := bnc.watchFactory.GetPods(namespace.Name)
 	if err != nil {
 		return fmt.Errorf("failed to get namespace %s pods: %v", namespace.Namespace, err)
 	}
@@ -1538,7 +1594,7 @@ func (oc *DefaultNetworkController) handlePeerNamespaceAndPodDel(np *networkPoli
 // returned if something fails.
 // PeerNamespaceAndPodSelectorType uses handlePeerNamespaceAndPodAdd on Add,
 // and handlePeerNamespaceAndPodDel on Delete.
-func (oc *DefaultNetworkController) addPeerNamespaceAndPodHandler(namespaceSelector *metav1.LabelSelector,
+func (bnc *BaseNetworkController) addPeerNamespaceAndPodHandler(namespaceSelector *metav1.LabelSelector,
 	podSelector *metav1.LabelSelector, gp *gressPolicy, np *networkPolicy) error {
 	// NetworkPolicy is validated by the apiserver; this can't fail.
 	nsSel, _ := metav1.LabelSelectorAsSelector(namespaceSelector)
@@ -1547,7 +1603,7 @@ func (oc *DefaultNetworkController) addPeerNamespaceAndPodHandler(namespaceSelec
 	// start watching namespaces selected by the namespace selector nsSel;
 	// upon namespace add event, start watching pods in that namespace selected
 	// by the label selector podSel
-	retryPeerNamespaces := oc.newRetryFrameworkWithParameters(
+	retryPeerNamespaces := bnc.newRetryFrameworkWithParameters(
 		factory.PeerNamespaceAndPodSelectorType,
 		nil,
 		&NetworkPolicyExtraParameters{
@@ -1566,7 +1622,7 @@ func (oc *DefaultNetworkController) addPeerNamespaceAndPodHandler(namespaceSelec
 	return nil
 }
 
-func (oc *DefaultNetworkController) handlePeerNamespaceSelectorAdd(np *networkPolicy, gp *gressPolicy, objs ...interface{}) error {
+func (bnc *BaseNetworkController) handlePeerNamespaceSelectorAdd(np *networkPolicy, gp *gressPolicy, objs ...interface{}) error {
 	np.RLock()
 	if np.deleted {
 		np.RUnlock()
@@ -1583,12 +1639,12 @@ func (oc *DefaultNetworkController) handlePeerNamespaceSelectorAdd(np *networkPo
 	np.RUnlock()
 	// unlock networkPolicy, before calling peerNamespaceUpdate
 	if updated {
-		return oc.peerNamespaceUpdate(np, gp)
+		return bnc.peerNamespaceUpdate(np, gp)
 	}
 	return nil
 }
 
-func (oc *DefaultNetworkController) handlePeerNamespaceSelectorDel(np *networkPolicy, gp *gressPolicy, objs ...interface{}) error {
+func (bnc *BaseNetworkController) handlePeerNamespaceSelectorDel(np *networkPolicy, gp *gressPolicy, objs ...interface{}) error {
 	np.RLock()
 	if np.deleted {
 		np.RUnlock()
@@ -1605,18 +1661,18 @@ func (oc *DefaultNetworkController) handlePeerNamespaceSelectorDel(np *networkPo
 	np.RUnlock()
 	// unlock networkPolicy, before calling peerNamespaceUpdate
 	if updated {
-		return oc.peerNamespaceUpdate(np, gp)
+		return bnc.peerNamespaceUpdate(np, gp)
 	}
 	return nil
 }
 
 // peerNamespaceUpdate updates gress ACLs, for this purpose it need to take nsInfo lock and np.RLock
 // make sure to pass unlocked networkPolicy
-func (oc *DefaultNetworkController) peerNamespaceUpdate(np *networkPolicy, gp *gressPolicy) error {
+func (bnc *BaseNetworkController) peerNamespaceUpdate(np *networkPolicy, gp *gressPolicy) error {
 	// Lock namespace before locking np
 	// this is to make sure we don't miss update acl loglevel event for namespace.
 	// The order of locking is strict: namespace first, then network policy, otherwise deadlock may happen
-	nsInfo, nsUnlock := oc.getNamespaceLocked(np.namespace, true)
+	nsInfo, nsUnlock := bnc.getNamespaceLocked(np.namespace, true)
 	var aclLogging *ACLLoggingLevels
 	if nsInfo == nil {
 		aclLogging = &ACLLoggingLevels{
@@ -1634,15 +1690,15 @@ func (oc *DefaultNetworkController) peerNamespaceUpdate(np *networkPolicy, gp *g
 	}
 	// buildLocalPodACLs is safe for concurrent use, see function comment for details
 	acls := gp.buildLocalPodACLs(np.portGroupName, aclLogging)
-	ops, err := libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, nil, acls...)
+	ops, err := libovsdbops.CreateOrUpdateACLsOps(bnc.nbClient, nil, acls...)
 	if err != nil {
 		return err
 	}
-	ops, err = libovsdbops.AddACLsToPortGroupOps(oc.nbClient, ops, np.portGroupName, acls...)
+	ops, err = libovsdbops.AddACLsToPortGroupOps(bnc.nbClient, ops, bnc.GetPrefix()+np.portGroupName, acls...)
 	if err != nil {
 		return err
 	}
-	_, err = libovsdbops.TransactAndCheck(oc.nbClient, ops)
+	_, err = libovsdbops.TransactAndCheck(bnc.nbClient, ops)
 	return err
 }
 
@@ -1651,7 +1707,7 @@ func (oc *DefaultNetworkController) peerNamespaceUpdate(np *networkPolicy, gp *g
 // returned if something fails.
 // PeerNamespaceSelectorType uses handlePeerNamespaceSelectorAdd on Add,
 // and handlePeerNamespaceSelectorDel on Delete.
-func (oc *DefaultNetworkController) addPeerNamespaceHandler(
+func (bnc *BaseNetworkController) addPeerNamespaceHandler(
 	namespaceSelector *metav1.LabelSelector,
 	gress *gressPolicy, np *networkPolicy) error {
 
@@ -1661,10 +1717,10 @@ func (oc *DefaultNetworkController) addPeerNamespaceHandler(
 	// start watching namespaces selected by the namespace selector
 	syncFunc := func(objs []interface{}) error {
 		// ignore returned error, since any namespace that wasn't properly handled will be retried individually.
-		_ = oc.handlePeerNamespaceSelectorAdd(np, gress, objs...)
+		_ = bnc.handlePeerNamespaceSelectorAdd(np, gress, objs...)
 		return nil
 	}
-	retryPeerNamespaces := oc.newRetryFrameworkWithParameters(
+	retryPeerNamespaces := bnc.newRetryFrameworkWithParameters(
 		factory.PeerNamespaceSelectorType,
 		syncFunc,
 		&NetworkPolicyExtraParameters{gp: gress, np: np},
@@ -1680,17 +1736,17 @@ func (oc *DefaultNetworkController) addPeerNamespaceHandler(
 	return nil
 }
 
-func (oc *DefaultNetworkController) shutdownHandlers(np *networkPolicy) {
+func (bnc *BaseNetworkController) shutdownHandlers(np *networkPolicy) {
 	for _, handler := range np.podHandlerList {
-		oc.watchFactory.RemovePodHandler(handler)
+		bnc.watchFactory.RemovePodHandler(handler)
 	}
 	np.podHandlerList = make([]*factory.Handler, 0)
 	for _, handler := range np.nsHandlerList {
-		oc.watchFactory.RemoveNamespaceHandler(handler)
+		bnc.watchFactory.RemoveNamespaceHandler(handler)
 	}
 	np.nsHandlerList = make([]*factory.Handler, 0)
 	np.namespacedPodHandlers.Range(func(_, value interface{}) bool {
-		oc.watchFactory.RemovePodHandler(value.(*factory.Handler))
+		bnc.watchFactory.RemovePodHandler(value.(*factory.Handler))
 		return true
 	})
 	np.namespacedPodHandlers = sync.Map{}
@@ -1703,4 +1759,133 @@ func getPolicyKey(policy *knet.NetworkPolicy) string {
 
 func (np *networkPolicy) getKey() string {
 	return fmt.Sprintf("%v/%v", np.namespace, np.name)
+}
+
+// aclLoggingUpdateNsInfo parses the provided annotation values and sets nsInfo.aclLogging.Deny and
+// nsInfo.aclLogging.Allow. If errors are encountered parsing the annotation, disable logging completely. If either
+// value contains invalid input, disable logging for the respective key. This is needed to ensure idempotency.
+// More details:
+// *) If the provided annotation cannot be unmarshaled: Disable both Deny and Allow logging. Return an error.
+// *) Valid values for "allow" and "deny" are  "alert", "warning", "notice", "info", "debug", "".
+// *) Invalid values will return an error, and logging will be disabled for the respective key.
+// *) In the following special cases, nsInfo.aclLogging.Deny and nsInfo.aclLogging.Allow. will both be reset to ""
+//
+//	without logging an error, meaning that logging will be switched off:
+//	i) oc.aclLoggingEnabled == false
+//	ii) annotation == ""
+//	iii) annotation == "{}"
+//
+// *) If one of "allow" or "deny" can be parsed and has a valid value, but the other key is not present in the
+//
+//	annotation, then assume that this key should be disabled by setting its nsInfo value to "".
+func (bnc *BaseNetworkController) aclLoggingUpdateNsInfo(annotation string, nsInfo *namespaceInfo) error {
+	var aclLevels ACLLoggingLevels
+	var errors []error
+
+	// If logging is disabled or if the annotation is "" or "{}", use empty strings. Otherwise, parse the annotation.
+	if bnc.aclLoggingEnabled && annotation != "" && annotation != "{}" {
+		err := json.Unmarshal([]byte(annotation), &aclLevels)
+		if err != nil {
+			// Disable Allow and Deny logging to ensure idempotency.
+			nsInfo.aclLogging.Allow = ""
+			nsInfo.aclLogging.Deny = ""
+			return fmt.Errorf("could not unmarshal namespace ACL annotation '%s', disabling logging, err: %q",
+				annotation, err)
+		}
+	}
+
+	// Valid log levels are the various preestablished levels or the empty string.
+	validLogLevels := sets.NewString(nbdb.ACLSeverityAlert, nbdb.ACLSeverityWarning, nbdb.ACLSeverityNotice,
+		nbdb.ACLSeverityInfo, nbdb.ACLSeverityDebug, "")
+
+	// Set Deny logging.
+	if validLogLevels.Has(aclLevels.Deny) {
+		nsInfo.aclLogging.Deny = aclLevels.Deny
+	} else {
+		errors = append(errors, fmt.Errorf("disabling deny logging due to invalid deny annotation. "+
+			"%q is not a valid log severity", aclLevels.Deny))
+		nsInfo.aclLogging.Deny = ""
+	}
+
+	// Set Allow logging.
+	if validLogLevels.Has(aclLevels.Allow) {
+		nsInfo.aclLogging.Allow = aclLevels.Allow
+	} else {
+		errors = append(errors, fmt.Errorf("disabling allow logging due to an invalid allow annotation. "+
+			"%q is not a valid log severity", aclLevels.Allow))
+		nsInfo.aclLogging.Allow = ""
+	}
+
+	return kerrorsutil.NewAggregate(errors)
+}
+
+// Creates a policy to allow multicast traffic within 'ns':
+// - a port group containing all logical ports associated with 'ns'
+// - one "from-lport" ACL allowing egress multicast traffic from the pods
+//   in 'ns'
+// - one "to-lport" ACL allowing ingress multicast traffic to pods in 'ns'.
+//   This matches only traffic originated by pods in 'ns' (based on the
+//   namespace address set).
+func (bnc *BaseNetworkController) createMulticastAllowPolicy(ns string, nsInfo *namespaceInfo) error {
+	portGroupName := hashedPortGroup(ns)
+
+	aclT := lportEgressAfterLB
+	egressMatch := getACLMatch(portGroupName, getMulticastACLEgrMatch(), aclT, bnc.NetInfo)
+	egressACL := BuildACL(getMcastACLName(ns, "MulticastAllowEgress"),
+		types.DefaultMcastAllowPriority, egressMatch, nbdb.ACLActionAllow, nil, aclT,
+		getDefaultDenyPolicyExternalIDs(aclT), bnc.NetInfo)
+
+	aclT = lportIngress
+	ingressMatch := getACLMatch(portGroupName, getMulticastACLIgrMatch(nsInfo), aclT, bnc.NetInfo)
+	ingressACL := BuildACL(getMcastACLName(ns, "MulticastAllowIngress"),
+		types.DefaultMcastAllowPriority, ingressMatch, nbdb.ACLActionAllow, nil, aclT,
+		getDefaultDenyPolicyExternalIDs(aclT), bnc.NetInfo)
+
+	acls := []*nbdb.ACL{egressACL, ingressACL}
+	ops, err := libovsdbops.CreateOrUpdateACLsOps(bnc.nbClient, nil, acls...)
+	if err != nil {
+		return err
+	}
+
+	// Add all ports from this namespace to the multicast allow group.
+	ports := []*nbdb.LogicalSwitchPort{}
+	pods, err := bnc.watchFactory.GetPods(ns)
+	if err != nil {
+		klog.Warningf("Failed to get pods for namespace %q: %v", ns, err)
+	}
+	for _, pod := range pods {
+		if util.PodCompleted(pod) {
+			continue
+		}
+		portName := util.GetLogicalPortName(pod.Namespace, pod.Name)
+		if portInfo, err := bnc.logicalPortCache.get(portName); err != nil {
+			klog.Errorf(err.Error())
+		} else {
+			ports = append(ports, &nbdb.LogicalSwitchPort{UUID: portInfo.uuid})
+		}
+	}
+
+	pg := buildPortGroup(portGroupName, ns, ports, acls, bnc.NetInfo)
+	ops, err = libovsdbops.CreateOrUpdatePortGroupsOps(bnc.nbClient, ops, pg)
+	if err != nil {
+		return err
+	}
+
+	_, err = libovsdbops.TransactAndCheck(bnc.nbClient, ops)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func deleteMulticastAllowPolicy(nbClient libovsdbclient.Client, ns string) error {
+	portGroupName := hashedPortGroup(ns)
+	// ACLs referenced by the port group wil be deleted by db if there are no other references
+	err := libovsdbops.DeletePortGroups(nbClient, portGroupName)
+	if err != nil {
+		return fmt.Errorf("failed deleting port group %s: %v", portGroupName, err)
+	}
+
+	return nil
 }

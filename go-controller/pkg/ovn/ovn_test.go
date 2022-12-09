@@ -148,7 +148,7 @@ func NewOvnController(ovnClient *util.OVNClientset, wf *factory.WatchFactory, st
 	addressSetFactory addressset.AddressSetFactory, libovsdbOvnNBClient libovsdbclient.Client,
 	libovsdbOvnSBClient libovsdbclient.Client, recorder record.EventRecorder, wg *sync.WaitGroup) *DefaultNetworkController {
 	if addressSetFactory == nil {
-		addressSetFactory = addressset.NewOvnAddressSetFactory(libovsdbOvnNBClient)
+		addressSetFactory = addressset.NewOvnAddressSetFactory(libovsdbOvnNBClient, (*util.NetNameInfo)(nil))
 	}
 
 	podRecorder := metrics.NewPodRecorder()
@@ -167,6 +167,7 @@ func NewOvnController(ovnClient *util.OVNClientset, wf *factory.WatchFactory, st
 		&podRecorder,
 		false,
 		false,
+		true,
 	)
 
 	return newDefaultNetworkControllerCommon(cnci, stopChan, wg, addressSetFactory)

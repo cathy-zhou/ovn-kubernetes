@@ -1,16 +1,23 @@
 package ovn
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"reflect"
 	"time"
 
+	"github.com/ovn-org/libovsdb/ovsdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	kapi "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/klog/v2"
 )
 
@@ -51,6 +58,13 @@ func (bnc *BaseNetworkController) AddSecondaryNetworkResourceCommon(objType refl
 		}
 		return bnc.ensurePod4SecondaryNetwork(pod, true)
 
+	case factory.NamespaceType:
+		ns, ok := obj.(*kapi.Namespace)
+		if !ok {
+			return fmt.Errorf("could not cast %T object to *kapi.Namespace", obj)
+		}
+		return bnc.AddNamespace4SecondaryNetwork(ns)
+
 	default:
 		return fmt.Errorf("object type %s not supported", objType)
 	}
@@ -63,6 +77,10 @@ func (bnc *BaseNetworkController) UpdateSecondaryNetworkResourceCommon(objType r
 		newPod := newObj.(*kapi.Pod)
 
 		return bnc.ensurePod4SecondaryNetwork(newPod, inRetryCache || util.PodScheduled(oldPod) != util.PodScheduled(newPod))
+
+	case factory.NamespaceType:
+		oldNs, newNs := oldObj.(*kapi.Namespace), newObj.(*kapi.Namespace)
+		return bnc.updateNamespace4SecondaryNetwork(oldNs, newNs)
 
 	default:
 		return fmt.Errorf("object type %s not supported", objType)
@@ -79,6 +97,10 @@ func (bnc *BaseNetworkController) DeleteSecondaryNetworkResourceCommon(objType r
 			portInfo = cachedObj.(*lpInfo)
 		}
 		return bnc.removePod4SecondaryNetwork(pod, portInfo)
+
+	case factory.NamespaceType:
+		ns := obj.(*kapi.Namespace)
+		return bnc.deleteNamespace4SecondaryNetwork(ns)
 
 	default:
 		return fmt.Errorf("object type %s not supported", objType)
@@ -138,6 +160,12 @@ func (bnc *BaseNetworkController) ensurePod4SecondaryNetwork(pod *kapi.Pod, addP
 	if err != nil {
 		return err
 	}
+
+	addOps, err := bnc.addPodToNamespace4SecondaryNetwork(pod.Namespace, podAnnotation.IPs)
+	if err != nil {
+		return err
+	}
+	ops = append(ops, addOps...)
 
 	recordOps, txOkCallBack, _, err := metrics.GetConfigDurationRecorder().AddOVN(bnc.nbClient, "pod", pod.Namespace,
 		pod.Name, bnc.NetInfo)
@@ -246,4 +274,165 @@ func (bnc *BaseNetworkController) syncPods4SecondaryNetwork(pods []interface{}) 
 		}
 	}
 	return bnc.deleteStaleLogicalSwitchPorts(expectedLogicalPorts)
+}
+
+// AddNamespace creates corresponding addressset in ovn db
+func (bnc *BaseNetworkController) AddNamespace4SecondaryNetwork(ns *kapi.Namespace) error {
+	klog.Infof("[%s] adding namespace for network %s", ns.Name, bnc.GetNetworkName())
+	// Keep track of how long syncs take.
+	start := time.Now()
+	defer func() {
+		klog.Infof("[%s] adding namespace took %v for network %s", ns.Name, time.Since(start), bnc.GetNetworkName())
+	}()
+
+	_, nsUnlock, err := bnc.ensureNamespaceLocked4SecondaryNetwork(ns.Name, false, ns)
+	if err != nil {
+		return fmt.Errorf("failed to ensure namespace locked: %v", err)
+	}
+	defer nsUnlock()
+	return nil
+}
+
+// ensureNamespaceLocked locks namespacesMutex, gets/creates an entry for ns, configures OVN nsInfo, and returns it
+// with its mutex locked.
+// ns is the name of the namespace, while namespace is the optional k8s namespace object
+// if no k8s namespace object is provided, this function will attempt to find it via informer cache
+func (bnc *BaseNetworkController) ensureNamespaceLocked4SecondaryNetwork(ns string, readOnly bool, namespace *kapi.Namespace) (*namespaceInfo, func(), error) {
+	ips := bnc.getAllNamespacePodAddresses(ns)
+
+	bnc.namespacesMutex.Lock()
+	nsInfo := bnc.namespaces[ns]
+	nsInfoExisted := false
+	if nsInfo == nil {
+		nsInfo = &namespaceInfo{
+			relatedNetworkPolicies: map[string]bool{},
+			multicastEnabled:       false,
+		}
+		// we are creating nsInfo and going to set it in namespaces map
+		// so safe to hold the lock while we create and add it
+		defer bnc.namespacesMutex.Unlock()
+		// create the adddress set for the new namespace
+		var err error
+		nsInfo.addressSet, err = bnc.createNamespaceAddrSetAllPods(ns, ips)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create address set for namespace: %s, error: %v", ns, err)
+		}
+		bnc.namespaces[ns] = nsInfo
+	} else {
+		nsInfoExisted = true
+		// if we found an existing nsInfo, do not hold the namespaces lock
+		// while waiting for nsInfo to Lock
+		bnc.namespacesMutex.Unlock()
+	}
+
+	var unlockFunc func()
+	if readOnly {
+		unlockFunc = func() { nsInfo.RUnlock() }
+		nsInfo.RLock()
+	} else {
+		unlockFunc = func() { nsInfo.Unlock() }
+		nsInfo.Lock()
+	}
+
+	if nsInfoExisted {
+		// Check that the namespace wasn't deleted while we were waiting for the lock
+		bnc.namespacesMutex.Lock()
+		defer bnc.namespacesMutex.Unlock()
+		if nsInfo != bnc.namespaces[ns] {
+			unlockFunc()
+			return nil, nil, fmt.Errorf("namespace %s, was removed during ensure", ns)
+		}
+	}
+
+	// nsInfo and namespace didn't exist, get it from lister
+	if namespace == nil {
+		var err error
+		namespace, err = bnc.watchFactory.GetNamespace(ns)
+		if err != nil {
+			namespace, err = bnc.client.CoreV1().Namespaces().Get(context.TODO(), ns, metav1.GetOptions{})
+			if err != nil {
+				klog.Warningf("Unable to find namespace during ensure in informer cache or kube api server. " +
+					"Will defer configuring namespace.")
+			}
+		}
+	}
+
+	if namespace != nil {
+		// if we have the namespace, attempt to configure nsInfo with it
+		if err := bnc.configureNamespaceCommon(nsInfo, namespace); err != nil {
+			unlockFunc()
+			return nil, nil, fmt.Errorf("failed to configure namespace %s: %v", ns, err)
+		}
+	}
+
+	return nsInfo, unlockFunc, nil
+}
+
+func (bnc *BaseNetworkController) updateNamespace4SecondaryNetwork(old, newer *kapi.Namespace) error {
+	var errors []error
+	klog.Infof("[%s] updating namespace for network %s", old.Name, bnc.GetNetworkName())
+
+	nsInfo, nsUnlock := bnc.getNamespaceLocked(old.Name, false)
+	if nsInfo == nil {
+		klog.Warningf("Update event for unknown namespace %q", old.Name)
+		return nil
+	}
+	defer nsUnlock()
+
+	aclAnnotation := newer.Annotations[util.AclLoggingAnnotation]
+	oldACLAnnotation := old.Annotations[util.AclLoggingAnnotation]
+	// support for ACL logging update, if new annotation is empty, make sure we propagate new setting
+	if aclAnnotation != oldACLAnnotation {
+		if err := bnc.updateNamespaceAclLogging(old.Name, aclAnnotation, nsInfo); err != nil {
+			errors = append(errors, err)
+		}
+	}
+
+	return kerrors.NewAggregate(errors)
+}
+
+func (bnc *BaseNetworkController) deleteNamespace4SecondaryNetwork(ns *kapi.Namespace) error {
+	klog.Infof("[%s] deleting namespace for network %s", ns.Name, bnc.GetNetworkName())
+
+	nsInfo := bnc.deleteNamespaceLocked(ns.Name)
+	if nsInfo == nil {
+		return nil
+	}
+	defer nsInfo.Unlock()
+	return nil
+}
+
+func (bnc *BaseNetworkController) addPodToNamespace4SecondaryNetwork(ns string, ips []*net.IPNet) ([]ovsdb.Operation, error) {
+	var ops []ovsdb.Operation
+	var err error
+	nsInfo, nsUnlock, err := bnc.ensureNamespaceLocked4SecondaryNetwork(ns, true, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to ensure namespace locked: %v", err)
+	}
+
+	defer nsUnlock()
+
+	if ops, err = nsInfo.addressSet.AddIPsReturnOps(createIPAddressSlice(ips)); err != nil {
+		return nil, err
+	}
+
+	return ops, nil
+}
+
+func (bnc *BaseNetworkController) CleanupNetworkPolicyLogicalEntities(netName string) ([]ovsdb.Operation, error) {
+	asPred := func(item *nbdb.AddressSet) bool {
+		return item.ExternalIDs[types.NetworkNameExternalID] == netName
+	}
+	ops, err := libovsdbops.DeleteAddressSetsWithPredicateOps(bnc.nbClient, nil, asPred)
+	if err != nil {
+		return ops, fmt.Errorf("failed to get ops of remove address sets of network %s: %v", netName, err)
+	}
+	pgPred := func(item *nbdb.PortGroup) bool {
+		return item.ExternalIDs[types.NetworkNameExternalID] == netName
+	}
+	ops, err = libovsdbops.DeletePortGroupsWithPredicateOps(bnc.nbClient, ops, pgPred)
+	if err != nil {
+		return ops, fmt.Errorf("failed to get ops of remove port groups of network %s: %v", netName, err)
+	}
+	return ops, nil
 }
