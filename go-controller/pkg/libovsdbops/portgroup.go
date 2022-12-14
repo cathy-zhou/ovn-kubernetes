@@ -75,6 +75,25 @@ func CreateOrUpdatePortGroups(nbClient libovsdbclient.Client, pgs ...*nbdb.PortG
 	return err
 }
 
+// GetPortGroup looks up a port group from the cache
+func GetPortGroup(nbClient libovsdbclient.Client, pg *nbdb.PortGroup) (*nbdb.PortGroup, error) {
+	found := []*nbdb.PortGroup{}
+	opModel := operationModel{
+		Model:          pg,
+		ExistingResult: &found,
+		ErrNotFound:    true,
+		BulkOp:         false,
+	}
+
+	m := newModelClient(nbClient)
+	err := m.Lookup(opModel)
+	if err != nil {
+		return nil, err
+	}
+
+	return found[0], nil
+}
+
 func AddPortsToPortGroupOps(nbClient libovsdbclient.Client, ops []libovsdb.Operation, name string, ports ...string) ([]libovsdb.Operation, error) {
 	if len(ports) == 0 {
 		return ops, nil
@@ -194,6 +213,19 @@ func DeleteACLsFromPortGroupOps(nbClient libovsdbclient.Client, ops []libovsdb.O
 
 	m := newModelClient(nbClient)
 	return m.DeleteOps(ops, opModel)
+}
+
+func DeleteACLsFromPortGroups(nbClient libovsdbclient.Client, names []string, acls ...*nbdb.ACL) error {
+	var err error
+	var ops []libovsdb.Operation
+	for _, pgName := range names {
+		ops, err = DeleteACLsFromPortGroupOps(nbClient, ops, pgName, acls...)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = TransactAndCheck(nbClient, ops)
+	return err
 }
 
 // DeletePortGroupsOps deletes the provided port groups and returns the

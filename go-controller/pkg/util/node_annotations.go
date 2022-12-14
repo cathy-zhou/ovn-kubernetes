@@ -45,6 +45,9 @@ const (
 	// ovnNodeL3GatewayConfig is the constant string representing the l3 gateway annotation key
 	ovnNodeL3GatewayConfig = "k8s.ovn.org/l3-gateway-config"
 
+	// ovnNodeGatewayMtuSupport determines if option:gateway_mtu shall be set for GR router ports.
+	ovnNodeGatewayMtuSupport = "k8s.ovn.org/gateway-mtu-support"
+
 	// OvnDefaultNetworkGateway captures L3 gateway config for default OVN network interface
 	ovnDefaultNetworkGateway = "default"
 
@@ -249,6 +252,22 @@ func SetL3GatewayConfig(nodeAnnotator kube.Annotator, cfg *L3GatewayConfig) erro
 	return nil
 }
 
+// SetGatewayMTUSupport sets annotation "k8s.ovn.org/gateway-mtu-support" to "false" or removes the annotation from
+// this node.
+func SetGatewayMTUSupport(nodeAnnotator kube.Annotator, set bool) error {
+	if set {
+		nodeAnnotator.Delete(ovnNodeGatewayMtuSupport)
+		return nil
+	}
+	return nodeAnnotator.Set(ovnNodeGatewayMtuSupport, "false")
+}
+
+// ParseNodeGatewayMTUSupport parses annotation "k8s.ovn.org/gateway-mtu-support". The default behavior should be true,
+// therefore only an explicit string of "false" will make this function return false.
+func ParseNodeGatewayMTUSupport(node *kapi.Node) bool {
+	return node.Annotations[ovnNodeGatewayMtuSupport] != "false"
+}
+
 // ParseNodeL3GatewayAnnotation returns the parsed l3-gateway-config annotation
 func ParseNodeL3GatewayAnnotation(node *kapi.Node) (*L3GatewayConfig, error) {
 	l3GatewayAnnotation, ok := node.Annotations[ovnNodeL3GatewayConfig]
@@ -319,8 +338,9 @@ func SetNodePrimaryIfAddr(nodeAnnotator kube.Annotator, nodeIPNetv4, nodeIPNetv6
 	return nodeAnnotator.Set(ovnNodeIfAddr, primaryIfAddrAnnotation)
 }
 
-// CreateNodeGateRouterLRPAddrAnnotation sets the IPv4 / IPv6 values of the node's Gatewary Router LRP to join switch.
-func CreateNodeGateRouterLRPAddrAnnotation(nodeAnnotation map[string]string, nodeIPNetv4, nodeIPNetv6 *net.IPNet) (map[string]string, error) {
+// CreateNodeGatewayRouterLRPAddrAnnotation sets the IPv4 / IPv6 values of the node's Gatewary Router LRP to join switch.
+func CreateNodeGatewayRouterLRPAddrAnnotation(nodeAnnotation map[string]string, nodeIPNetv4,
+	nodeIPNetv6 *net.IPNet) (map[string]string, error) {
 	if nodeAnnotation == nil {
 		nodeAnnotation = map[string]string{}
 	}

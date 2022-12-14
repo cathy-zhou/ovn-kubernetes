@@ -9,6 +9,7 @@ import (
 	utilnet "k8s.io/utils/net"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	util "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -246,7 +247,7 @@ func configureSvcRouteViaInterface(iface string, gwIPs []net.IP) error {
 			mtu = config.Default.RoutableMTU
 		}
 
-		err = util.LinkRoutesAddOrUpdateSourceOrMTU(link, gwIP[0], []*net.IPNet{subnet}, mtu, nil)
+		err = util.LinkRoutesApply(link, gwIP[0], []*net.IPNet{subnet}, mtu, nil)
 		if err != nil {
 			return fmt.Errorf("unable to add/update route for service via %s for gwIP %s, error: %v", iface, gwIP[0].String(), err)
 		}
@@ -316,8 +317,9 @@ func (n *OvnNode) initGateway(subnets []*net.IPNet, nodeAnnotator kube.Annotator
 		var chassisID string
 		klog.Info("Gateway Mode is disabled")
 		gw = &gateway{
-			initFunc:  func() error { return nil },
-			readyFunc: func() (bool, error) { return true, nil },
+			initFunc:     func() error { return nil },
+			readyFunc:    func() (bool, error) { return true, nil },
+			watchFactory: n.watchFactory.(*factory.WatchFactory),
 		}
 		chassisID, err = util.GetNodeChassisID()
 		if err != nil {
@@ -344,7 +346,7 @@ func (n *OvnNode) initGateway(subnets []*net.IPNet, nodeAnnotator kube.Annotator
 	}
 
 	initGwFunc := func() error {
-		return gw.Init(n.watchFactory)
+		return gw.Init(n.watchFactory, n.stopChan, n.wg)
 	}
 
 	readyGwFunc := func() (bool, error) {
@@ -414,8 +416,9 @@ func (n *OvnNode) initGatewayDPUHost(kubeNodeIP net.IP) error {
 	}
 
 	gw := &gateway{
-		initFunc:  func() error { return nil },
-		readyFunc: func() (bool, error) { return true, nil },
+		initFunc:     func() error { return nil },
+		readyFunc:    func() (bool, error) { return true, nil },
+		watchFactory: n.watchFactory.(*factory.WatchFactory),
 	}
 
 	// TODO(adrianc): revisit if support for nodeIPManager is needed.
@@ -437,7 +440,7 @@ func (n *OvnNode) initGatewayDPUHost(kubeNodeIP net.IP) error {
 		return fmt.Errorf("failed to add MAC bindings for service routing")
 	}
 
-	err = gw.Init(n.watchFactory)
+	err = gw.Init(n.watchFactory, n.stopChan, n.wg)
 	n.gateway = gw
 	return err
 }

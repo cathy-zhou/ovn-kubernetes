@@ -317,7 +317,6 @@ func addNodeLogicalFlows(testData []libovsdbtest.TestData, expectedOVNClusterRou
 		Addresses: []string{"router"},
 	})
 	expectedNodeSwitch.Ports = append(expectedNodeSwitch.Ports, types.SwitchToRouterPrefix+node.Name+"-UUID")
-	expectedClusterRouterPortGroup.Ports = []string{types.SwitchToRouterPrefix + node.Name + "-UUID"}
 
 	testData = append(testData, &nbdb.LogicalSwitchPort{
 		Name:      types.K8sPrefix + node.Name,
@@ -871,7 +870,7 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 		testNode          v1.Node
 		fakeClient        *util.OVNClientset
 		kubeFakeClient    *fake.Clientset
-		clusterController *Controller
+		clusterController *DefaultNetworkController
 		nodeAnnotator     kube.Annotator
 		events            []string
 		eventsLock        sync.Mutex
@@ -973,7 +972,8 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 
 		recorder = record.NewFakeRecorder(10)
 		clusterController = NewOvnController(fakeClient, f, stopChan, addressset.NewFakeAddressSetFactory(),
-			libovsdbOvnNBClient, libovsdbOvnSBClient, recorder)
+			libovsdbOvnNBClient, libovsdbOvnSBClient,
+			recorder, wg)
 		clusterController.loadBalancerGroupUUID = expectedClusterLBGroup.UUID
 		gomega.Expect(clusterController).NotTo(gomega.BeNil())
 		clusterController.defaultCOPPUUID, err = EnsureDefaultCOPP(libovsdbOvnNBClient)
@@ -1060,7 +1060,10 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 			}
 
 			skipSnat := false
-			expectedDatabaseState = generateGatewayInitExpectedNB(expectedDatabaseState, expectedOVNClusterRouter, expectedNodeSwitch, node1.Name, clusterSubnets, []*net.IPNet{subnet}, l3GatewayConfig, []*net.IPNet{classBIPAddress(node1.LrpIP)}, []*net.IPNet{classBIPAddress(node1.DrLrpIP)}, skipSnat, node1.NodeMgmtPortIP)
+			expectedDatabaseState = generateGatewayInitExpectedNB(expectedDatabaseState, expectedOVNClusterRouter,
+				expectedNodeSwitch, node1.Name, clusterSubnets, []*net.IPNet{subnet}, l3GatewayConfig,
+				[]*net.IPNet{classBIPAddress(node1.LrpIP)}, []*net.IPNet{classBIPAddress(node1.DrLrpIP)},
+				skipSnat, node1.NodeMgmtPortIP, "1400")
 			gomega.Eventually(clusterController.nbClient).Should(libovsdbtest.HaveData(expectedDatabaseState))
 
 			return nil
@@ -1115,7 +1118,10 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 			}
 
 			skipSnat := false
-			expectedDatabaseState = generateGatewayInitExpectedNB(expectedDatabaseState, expectedOVNClusterRouter, expectedNodeSwitch, node1.Name, clusterSubnets, []*net.IPNet{subnet}, l3GatewayConfig, []*net.IPNet{classBIPAddress(node1.LrpIP)}, []*net.IPNet{classBIPAddress(node1.DrLrpIP)}, skipSnat, node1.NodeMgmtPortIP)
+			expectedDatabaseState = generateGatewayInitExpectedNB(expectedDatabaseState, expectedOVNClusterRouter,
+				expectedNodeSwitch, node1.Name, clusterSubnets, []*net.IPNet{subnet}, l3GatewayConfig,
+				[]*net.IPNet{classBIPAddress(node1.LrpIP)}, []*net.IPNet{classBIPAddress(node1.DrLrpIP)},
+				skipSnat, node1.NodeMgmtPortIP, "1400")
 			gomega.Eventually(clusterController.nbClient).Should(libovsdbtest.HaveData(expectedDatabaseState))
 
 			return nil
@@ -1172,7 +1178,10 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 			skipSnat := config.Gateway.DisableSNATMultipleGWs
 			subnet := ovntest.MustParseIPNet(node1.NodeSubnet)
 
-			expectedDatabaseState = generateGatewayInitExpectedNB(expectedDatabaseState, expectedOVNClusterRouter, expectedNodeSwitch, node1.Name, clusterSubnets, []*net.IPNet{subnet}, l3GatewayConfig, []*net.IPNet{classBIPAddress(node1.LrpIP)}, []*net.IPNet{classBIPAddress(node1.DrLrpIP)}, skipSnat, node1.NodeMgmtPortIP)
+			expectedDatabaseState = generateGatewayInitExpectedNB(expectedDatabaseState, expectedOVNClusterRouter,
+				expectedNodeSwitch, node1.Name, clusterSubnets, []*net.IPNet{subnet}, l3GatewayConfig,
+				[]*net.IPNet{classBIPAddress(node1.LrpIP)}, []*net.IPNet{classBIPAddress(node1.DrLrpIP)},
+				skipSnat, node1.NodeMgmtPortIP, "1400")
 
 			// add stale SNATs from pods to nodes on wrong node
 			staleNats := []*nbdb.NAT{
@@ -1244,7 +1253,10 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 
 			skipSnat := false
 			l3Config := node1.gatewayConfig(config.GatewayModeShared, uint(vlanID))
-			expectedDatabaseState = generateGatewayInitExpectedNB(expectedDatabaseState, expectedOVNClusterRouter, expectedNodeSwitch, node1.Name, clusterSubnets, []*net.IPNet{subnet}, l3Config, []*net.IPNet{classBIPAddress(node1.LrpIP)}, []*net.IPNet{classBIPAddress(node1.DrLrpIP)}, skipSnat, node1.NodeMgmtPortIP)
+			expectedDatabaseState = generateGatewayInitExpectedNB(expectedDatabaseState, expectedOVNClusterRouter,
+				expectedNodeSwitch, node1.Name, clusterSubnets, []*net.IPNet{subnet}, l3Config,
+				[]*net.IPNet{classBIPAddress(node1.LrpIP)}, []*net.IPNet{classBIPAddress(node1.DrLrpIP)},
+				skipSnat, node1.NodeMgmtPortIP, "1400")
 			gomega.Eventually(clusterController.nbClient).Should(libovsdbtest.HaveData(expectedDatabaseState))
 
 			ginkgo.By("modifying the node and triggering an update")
@@ -1306,7 +1318,10 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 
 			skipSnat := false
 			l3Config := node1.gatewayConfig(config.GatewayModeLocal, uint(vlanID))
-			expectedDatabaseState = generateGatewayInitExpectedNB(expectedDatabaseState, expectedOVNClusterRouter, expectedNodeSwitch, node1.Name, clusterSubnets, []*net.IPNet{subnet}, l3Config, []*net.IPNet{classBIPAddress(node1.LrpIP)}, []*net.IPNet{classBIPAddress(node1.DrLrpIP)}, skipSnat, node1.NodeMgmtPortIP)
+			expectedDatabaseState = generateGatewayInitExpectedNB(expectedDatabaseState, expectedOVNClusterRouter,
+				expectedNodeSwitch, node1.Name, clusterSubnets, []*net.IPNet{subnet}, l3Config,
+				[]*net.IPNet{classBIPAddress(node1.LrpIP)}, []*net.IPNet{classBIPAddress(node1.DrLrpIP)},
+				skipSnat, node1.NodeMgmtPortIP, "1400")
 			gomega.Eventually(clusterController.nbClient).Should(libovsdbtest.HaveData(expectedDatabaseState))
 			ginkgo.By("Bringing down NBDB")
 			// inject transient problem, nbdb is down
@@ -1426,8 +1441,8 @@ var _ = ginkgo.Describe("Gateway Init Operations", func() {
 			)
 
 			// Add the LRP back to allow the delete the continue
-			err = libovsdbops.CreateOrUpdateLogicalRouterPorts(libovsdbOvnNBClient,
-				lr, []*nbdb.LogicalRouterPort{lrp}, &lrp.MAC, &lrp.Networks, &lrp.ExternalIDs)
+			err = libovsdbops.CreateOrUpdateLogicalRouterPort(libovsdbOvnNBClient,
+				lr, lrp, nil, &lrp.MAC, &lrp.Networks, &lrp.ExternalIDs)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			retry.SetRetryObjWithNoBackoff(node1.Name, clusterController.retryNodes)
 			clusterController.retryNodes.RequestRetryObjs() // retry the failed entry
@@ -1582,7 +1597,11 @@ func TestController_syncNodes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stopChan := make(chan struct{})
-			defer close(stopChan)
+			wg := &sync.WaitGroup{}
+			defer func() {
+				close(stopChan)
+				wg.Wait()
+			}()
 
 			testNode := v1.Node{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1619,8 +1638,8 @@ func TestController_syncNodes(t *testing.T) {
 				addressset.NewFakeAddressSetFactory(),
 				nbClient,
 				sbClient,
-				record.NewFakeRecorder(0))
-
+				record.NewFakeRecorder(0),
+				wg)
 			controller.joinSwIPManager, err = lsm.NewJoinLogicalSwitchIPManager(nbClient, "", []string{})
 			if err != nil {
 				t.Fatalf("%s: Error creating joinSwIPManager: %v", tt.name, err)
@@ -1675,7 +1694,11 @@ func TestController_deleteStaleNodeChassis(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stopChan := make(chan struct{})
-			defer close(stopChan)
+			wg := &sync.WaitGroup{}
+			defer func() {
+				close(stopChan)
+				wg.Wait()
+			}()
 
 			kubeFakeClient := fake.NewSimpleClientset()
 			egressFirewallFakeClient := &egressfirewallfake.Clientset{}
@@ -1706,8 +1729,8 @@ func TestController_deleteStaleNodeChassis(t *testing.T) {
 				addressset.NewFakeAddressSetFactory(),
 				nbClient,
 				sbClient,
-				record.NewFakeRecorder(0))
-
+				record.NewFakeRecorder(0),
+				wg)
 			controller.joinSwIPManager, err = lsm.NewJoinLogicalSwitchIPManager(nbClient, "", []string{})
 			if err != nil {
 				t.Fatalf("%s: Error creating joinSwIPManager: %v", tt.name, err)

@@ -3591,7 +3591,7 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 				)
 				// we don't know the real switch UUID in the db, but it can be found by name
 				swUUID := getLogicalSwitchUUID(fakeOvn.controller.nbClient, node1.Name)
-				fakeOvn.controller.lsManager.AddNode(node1.Name, swUUID, []*net.IPNet{ovntest.MustParseIPNet(v4NodeSubnet)})
+				fakeOvn.controller.lsManager.AddSwitch(node1.Name, swUUID, []*net.IPNet{ovntest.MustParseIPNet(v4NodeSubnet)})
 
 				err := fakeOvn.controller.WatchPods()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -3778,7 +3778,7 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 				node1IPv4 := "192.168.126.12/24"
 
 				oldEgressPodIP := "10.128.0.50"
-				egressPod1 := *newPodWithLabels(namespace, podName, node1Name, "", egressPodLabel)
+				egressPod1 := newPodWithLabels(namespace, podName, node1Name, "", egressPodLabel)
 				oldAnnotation := map[string]string{"k8s.ovn.org/pod-networks": `{"default":{"ip_addresses":["10.128.0.50/24"],"mac_address":"0a:58:0a:80:00:05","gateway_ips":["10.128.0.1"],"routes":[{"dest":"10.128.0.0/24","nextHop":"10.128.0.1"}],"ip_address":"10.128.0.50/24","gateway_ip":"10.128.0.1"}}`}
 				egressPod1.Annotations = oldAnnotation
 				egressNamespace := newNamespace(namespace)
@@ -3870,13 +3870,13 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 						Items: []v1.Namespace{*egressNamespace},
 					},
 					&v1.PodList{
-						Items: []v1.Pod{egressPod1},
+						Items: []v1.Pod{*egressPod1},
 					},
 				)
 
 				// we don't know the real switch UUID in the db, but it can be found by name
 				swUUID := getLogicalSwitchUUID(fakeOvn.controller.nbClient, node1.Name)
-				fakeOvn.controller.lsManager.AddNode(node1.Name, swUUID, []*net.IPNet{ovntest.MustParseIPNet(v4NodeSubnet)})
+				fakeOvn.controller.lsManager.AddSwitch(node1.Name, swUUID, []*net.IPNet{ovntest.MustParseIPNet(v4NodeSubnet)})
 				fakeOvn.controller.WatchPods()
 				fakeOvn.controller.WatchEgressIPNamespaces()
 				fakeOvn.controller.WatchEgressIPPods()
@@ -3988,9 +3988,15 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 				// 3) check to make sure the logicalPortCache is used always even if podAssignment already has the podKey
 				ginkgo.By("delete the egress IP pod and force the deletion to fail")
 				egressPod1.Annotations = map[string]string{}
-				_, err = fakeOvn.fakeClient.KubeClient.CoreV1().Pods(egressPod1.Namespace).Update(context.TODO(), &egressPod1, metav1.UpdateOptions{})
+				_, err = fakeOvn.fakeClient.KubeClient.CoreV1().Pods(egressPod1.Namespace).Update(context.TODO(), egressPod1, metav1.UpdateOptions{})
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				gomega.Expect(egressPod1.Annotations).To(gomega.Equal(map[string]string{}))
+				// Wait for the cleared annotations to show up client-side
+				gomega.Eventually(func() int {
+					egressPod1, _ = fakeOvn.watcher.GetPod(egressPod1.Namespace, egressPod1.Name)
+					return len(egressPod1.Annotations)
+				}, 5).Should(gomega.Equal(0))
+
+				// Delete the pod to trigger the cleanup failure
 				err = fakeOvn.fakeClient.KubeClient.CoreV1().Pods(egressPod1.Namespace).Delete(context.TODO(),
 					egressPod1.Name, metav1.DeleteOptions{})
 				// internally we have an error:
@@ -4000,7 +4006,7 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 				// even the LSP sticks around for 60 seconds
 				gomega.Eventually(fakeOvn.nbClient).Should(libovsdbtest.HaveData(finalDatabaseStatewithPod))
 				// egressIP cache is stale in the sense the podKey has not been deleted since deletion failed
-				pas := getPodAssignmentState(&egressPod1)
+				pas := getPodAssignmentState(egressPod1)
 				gomega.Expect(pas).NotTo(gomega.BeNil())
 				gomega.Expect(pas.egressStatuses).To(gomega.Equal(map[egressipv1.EgressIPStatusItem]string{
 					{
@@ -4011,9 +4017,9 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 				// recreate pod with same name immediately;
 				ginkgo.By("should add egress IP setup for the NEW pod which exists in logicalPortCache")
 				newEgressPodIP := "10.128.0.60"
-				egressPod1 = *newPodWithLabels(namespace, podName, node1Name, newEgressPodIP, egressPodLabel)
+				egressPod1 = newPodWithLabels(namespace, podName, node1Name, newEgressPodIP, egressPodLabel)
 				egressPod1.Annotations = map[string]string{"k8s.ovn.org/pod-networks": `{"default":{"ip_addresses":["10.128.0.60/24"],"mac_address":"0a:58:0a:80:00:06","gateway_ips":["10.128.0.1"],"routes":[{"dest":"10.128.0.0/24","nextHop":"10.128.0.1"}],"ip_address":"10.128.0.60/24","gateway_ip":"10.128.0.1"}}`}
-				_, err = fakeOvn.fakeClient.KubeClient.CoreV1().Pods(egressPod1.Namespace).Create(context.TODO(), &egressPod1, metav1.CreateOptions{})
+				_, err = fakeOvn.fakeClient.KubeClient.CoreV1().Pods(egressPod1.Namespace).Create(context.TODO(), egressPod1, metav1.CreateOptions{})
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 				// wait for the logical port cache to get updated with the new pod's IP
@@ -4053,7 +4059,7 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 
 				ginkgo.By("trigger a forced retry and ensure deletion of oldPod and creation of newPod are successful")
 				// let us add back the annotation to the oldPod which is being retried to make deletion a success
-				podKey, err := retry.GetResourceKey(&egressPod1)
+				podKey, err := retry.GetResourceKey(egressPod1)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				retry.CheckRetryObjectEventually(podKey, true, fakeOvn.controller.retryEgressIPPods)
 				retryOldObj := retry.GetOldObjFromRetryObj(podKey, fakeOvn.controller.retryEgressIPPods)
@@ -4243,8 +4249,8 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 				// we don't know the real switch UUID in the db, but it can be found by name
 				sw1UUID := getLogicalSwitchUUID(fakeOvn.controller.nbClient, node1.Name)
 				sw2UUID := getLogicalSwitchUUID(fakeOvn.controller.nbClient, node2.Name)
-				fakeOvn.controller.lsManager.AddNode(node1.Name, sw1UUID, []*net.IPNet{ovntest.MustParseIPNet(v4NodeSubnet)})
-				fakeOvn.controller.lsManager.AddNode(node2.Name, sw2UUID, []*net.IPNet{ovntest.MustParseIPNet(v4NodeSubnet)})
+				fakeOvn.controller.lsManager.AddSwitch(node1.Name, sw1UUID, []*net.IPNet{ovntest.MustParseIPNet(v4NodeSubnet)})
+				fakeOvn.controller.lsManager.AddSwitch(node2.Name, sw2UUID, []*net.IPNet{ovntest.MustParseIPNet(v4NodeSubnet)})
 				err := fakeOvn.controller.WatchPods()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				err = fakeOvn.controller.WatchEgressIPNamespaces()
@@ -7432,6 +7438,112 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		})
 
+		ginkgo.It("egress node update should not mark the node as reachable if there was no label/readiness change", func() {
+			// When an egress node becomes reachable during a node update event and there is no changes to node labels/readiness
+			// unassigned egress IP should be eventually added by the periodic reachability check.
+			// Test steps:
+			//  - disable periodic check from running in background, so it can be called directly from the test
+			//  - assign egress IP to an available node
+			//  - make the node unreachable and verify that the egress IP was unassigned
+			//  - make the node reachable and update a node
+			//  - verify that the egress IP was assigned by calling the periodic reachability check
+			app.Action = func(ctx *cli.Context) error {
+				egressIP := "192.168.126.101"
+				nodeIPv4 := "192.168.126.51/24"
+				node := v1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: node1Name,
+						Annotations: map[string]string{
+							"k8s.ovn.org/node-primary-ifaddr": fmt.Sprintf("{\"ipv4\": \"%s\"}", nodeIPv4),
+							"k8s.ovn.org/node-subnets":        fmt.Sprintf("{\"default\":[\"%s\"]}", v4NodeSubnet),
+						},
+						Labels: map[string]string{
+							"k8s.ovn.org/egress-assignable": "",
+						},
+					},
+					Status: v1.NodeStatus{
+						Conditions: []v1.NodeCondition{
+							{
+								Type:   v1.NodeReady,
+								Status: v1.ConditionTrue,
+							},
+						},
+					},
+				}
+				eIP1 := egressipv1.EgressIP{
+					ObjectMeta: newEgressIPMeta(egressIPName),
+					Spec: egressipv1.EgressIPSpec{
+						EgressIPs: []string{egressIP},
+					},
+				}
+				fakeOvn.startWithDBSetup(
+					libovsdbtest.TestSetup{
+						NBData: []libovsdbtest.TestData{
+							&nbdb.LogicalRouter{
+								Name: ovntypes.OVNClusterRouter,
+								UUID: ovntypes.OVNClusterRouter + "-UUID",
+							},
+							&nbdb.LogicalRouter{
+								Name: ovntypes.GWRouterPrefix + node.Name,
+								UUID: ovntypes.GWRouterPrefix + node.Name + "-UUID",
+							},
+							&nbdb.LogicalRouterPort{
+								UUID:     ovntypes.GWRouterToJoinSwitchPrefix + ovntypes.GWRouterPrefix + node.Name + "-UUID",
+								Name:     ovntypes.GWRouterToJoinSwitchPrefix + ovntypes.GWRouterPrefix + node.Name,
+								Networks: []string{nodeLogicalRouterIfAddrV4},
+							},
+							&nbdb.LogicalSwitchPort{
+								UUID: types.EXTSwitchToGWRouterPrefix + types.GWRouterPrefix + node.Name + "UUID",
+								Name: types.EXTSwitchToGWRouterPrefix + types.GWRouterPrefix + node.Name,
+								Type: "router",
+								Options: map[string]string{
+									"router-port": types.GWRouterToExtSwitchPrefix + "GR_" + node.Name,
+								},
+							},
+						},
+					},
+					&egressipv1.EgressIPList{
+						Items: []egressipv1.EgressIP{eIP1},
+					},
+					&v1.NodeList{
+						Items: []v1.Node{node},
+					},
+				)
+
+				// Virtually disable background reachability check by using a huge interval
+				fakeOvn.controller.eIPC.reachabilityCheckInterval = time.Hour
+
+				err := fakeOvn.controller.WatchEgressNodes()
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+				gomega.Eventually(getEgressIPStatusLen(eIP1.Name)).Should(gomega.Equal(1))
+				egressIPs, _ := getEgressIPStatus(eIP1.Name)
+				gomega.Expect(egressIPs[0]).To(gomega.Equal(egressIP))
+
+				hcClient := fakeOvn.controller.eIPC.allocator.cache[node.Name].healthClient.(*fakeEgressIPHealthClient)
+				hcClient.FakeProbeFailure = true
+				// explicitly call check reachability, periodic checker is not active
+				checkEgressNodesReachabilityIterate(fakeOvn.controller)
+				gomega.Eventually(getEgressIPStatusLen(eIP1.Name)).Should(gomega.Equal(0))
+
+				hcClient.FakeProbeFailure = false
+				node.Annotations["test"] = "dummy"
+				_, err = fakeOvn.fakeClient.KubeClient.CoreV1().Nodes().Update(context.TODO(), &node, metav1.UpdateOptions{})
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				gomega.Eventually(hcClient.IsConnected()).Should(gomega.Equal(true))
+				// the node should not be marked as reachable in the update handler as it is not getting added
+				gomega.Consistently(func() bool { return fakeOvn.controller.eIPC.allocator.cache[node.Name].isReachable }).Should(gomega.Equal(false))
+
+				// egress IP should get assigned on the next checkEgressNodesReachabilityIterate call
+				// explicitly call check reachability, periodic checker is not active
+				checkEgressNodesReachabilityIterate(fakeOvn.controller)
+				gomega.Eventually(getEgressIPStatusLen(eIP1.Name)).Should(gomega.Equal(1))
+
+				return nil
+			}
+			err := app.Run([]string{app.Name})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		})
 	})
 
 	ginkgo.Context("Dual-stack assignment", func() {

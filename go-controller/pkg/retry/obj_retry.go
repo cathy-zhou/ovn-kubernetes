@@ -56,7 +56,7 @@ type EventHandler interface {
 	RecordUpdateEvent(obj interface{})
 	RecordDeleteEvent(obj interface{})
 	RecordSuccessEvent(obj interface{})
-	RecordErrorEvent(obj interface{}, err error)
+	RecordErrorEvent(obj interface{}, reason string, err error)
 }
 
 type ResourceHandler struct {
@@ -75,6 +75,9 @@ type RetryFramework struct {
 	// channel to indicate we need to retry objs immediately
 	retryChan chan struct{}
 
+	stopChan <-chan struct{}
+	doneWg   *sync.WaitGroup
+
 	watchFactory    *factory.WatchFactory
 	ResourceHandler *ResourceHandler
 }
@@ -85,12 +88,15 @@ type RetryFramework struct {
 // ovnk node) will have to override the functions in the returned struct with the desired
 // per-resource logic.
 func NewRetryFramework(
+	stopChan <-chan struct{}, doneWg *sync.WaitGroup,
 	watchFactory *factory.WatchFactory,
 	resourceHandler *ResourceHandler) *RetryFramework {
 	return &RetryFramework{
 		retryEntries:    syncmap.NewSyncMap[*retryObjEntry](),
 		retryChan:       make(chan struct{}, 1),
 		watchFactory:    watchFactory,
+		stopChan:        stopChan,
+		doneWg:          doneWg,
 		ResourceHandler: resourceHandler,
 	}
 }
@@ -285,7 +291,7 @@ func (r *RetryFramework) resourceRetry(objKey string, now time.Time) {
 		} else {
 			// delete old object if needed
 			if entry.oldObj != nil {
-				klog.Infof("Removing old object: %s %s (failed: %s)",
+				klog.Infof("Removing old object: %s %s (failed: %v)",
 					r.ResourceHandler.ObjType, objKey, entry.failedAttempts)
 				if !r.ResourceHandler.IsResourceScheduled(entry.oldObj) {
 					klog.V(5).Infof("Retry: %s %s not scheduled", r.ResourceHandler.ObjType, objKey)
@@ -338,10 +344,13 @@ func (r *RetryFramework) resourceRetry(objKey string, now time.Time) {
 // Deleted entries will be ignored, and all the updates will be reflected with key Lock.
 // Keys added after the snapshot was done won't be retried during this run.
 func (r *RetryFramework) iterateRetryResources() {
+	entriesKeys := r.retryEntries.GetKeys()
+	if len(entriesKeys) == 0 {
+		return
+	}
 	now := time.Now()
 	wg := &sync.WaitGroup{}
 
-	entriesKeys := r.retryEntries.GetKeys()
 	// Process the above list of objects that need retry by holding the lock for each one of them.
 	klog.V(5).Infof("Going to retry %v resource setup for %d objects: %s", r.ResourceHandler.ObjType, len(entriesKeys), entriesKeys)
 
@@ -360,12 +369,7 @@ func (r *RetryFramework) iterateRetryResources() {
 // periodicallyRetryResources tracks RetryFramework and checks if any object needs to be retried for add or delete every
 // RetryObjInterval seconds or when requested through retryChan.
 func (r *RetryFramework) periodicallyRetryResources() {
-	defer r.watchFactory.Wg.Done()
 	timer := time.NewTicker(RetryObjInterval)
-	waitCh := make(chan struct{})
-	go func() {
-		r.watchFactory.WaitForWatchFactoryStopChannel(waitCh)
-	}()
 	defer timer.Stop()
 	for {
 		select {
@@ -377,7 +381,7 @@ func (r *RetryFramework) periodicallyRetryResources() {
 			r.iterateRetryResources()
 			timer.Reset(RetryObjInterval)
 
-		case <-waitCh:
+		case <-r.stopChan:
 			klog.V(5).Infof("Stop channel got triggered: will stop retrying failed objects of type %s", r.ResourceHandler.ObjType)
 			return
 		}
@@ -405,7 +409,7 @@ func (r *RetryFramework) processObjectInTerminalState(obj interface{}, lockedKey
 	if err := r.ResourceHandler.DeleteResource(obj, internalCacheEntry); err != nil {
 		klog.Errorf("Failed to delete object %s of type %s in terminal state, during %s event: %v",
 			lockedKey, r.ResourceHandler.ObjType, event, err)
-		r.ResourceHandler.RecordErrorEvent(obj, err)
+		r.ResourceHandler.RecordErrorEvent(obj, "ErrorDeletingResource", err)
 		r.increaseFailedAttemptsCounter(retryEntry)
 		return
 	}
@@ -463,7 +467,7 @@ func (r *RetryFramework) WatchResourceFiltered(namespaceForFilteredHandler strin
 						if err := r.ResourceHandler.DeleteResource(retryObj.oldObj, internalCacheEntry); err != nil {
 							klog.Errorf("Failed to delete old object %s of type %s,"+
 								" during add event: %v", key, r.ResourceHandler.ObjType, err)
-							r.ResourceHandler.RecordErrorEvent(obj, err)
+							r.ResourceHandler.RecordErrorEvent(obj, "ErrorDeletingResource", err)
 							r.increaseFailedAttemptsCounter(retryObj)
 							return
 						}
@@ -472,7 +476,7 @@ func (r *RetryFramework) WatchResourceFiltered(namespaceForFilteredHandler strin
 					start := time.Now()
 					if err := r.ResourceHandler.AddResource(obj, false); err != nil {
 						klog.Errorf("Failed to create %s %s, error: %v", r.ResourceHandler.ObjType, key, err)
-						r.ResourceHandler.RecordErrorEvent(obj, err)
+						r.ResourceHandler.RecordErrorEvent(obj, "ErrorAddingResource", err)
 						r.increaseFailedAttemptsCounter(retryObj)
 						return
 					}
@@ -525,7 +529,9 @@ func (r *RetryFramework) WatchResourceFiltered(namespaceForFilteredHandler strin
 					if kerrors.IsNotFound(err) && r.ResourceHandler.IsObjectInTerminalState(newer) {
 						klog.Warningf("%s %s is in terminal state but no longer exists in informer cache, removing",
 							r.ResourceHandler.ObjType, newKey)
-						r.processObjectInTerminalState(newer, newKey, resourceEventUpdate)
+						r.DoWithLock(newKey, func(key string) {
+							r.processObjectInTerminalState(newer, newKey, resourceEventUpdate)
+						})
 					} else {
 						klog.Warningf("Unable to get %s %s from informer cache (perhaps it was already"+
 							" deleted?), skipping update: %v", r.ResourceHandler.ObjType, newKey, err)
@@ -552,7 +558,7 @@ func (r *RetryFramework) WatchResourceFiltered(namespaceForFilteredHandler strin
 						if err := r.ResourceHandler.DeleteResource(retryEntryOrNil.oldObj,
 							retryEntryOrNil.config); err != nil {
 							klog.Errorf("Failed to delete stale object %s, during update: %v", oldKey, err)
-							r.ResourceHandler.RecordErrorEvent(retryEntryOrNil.oldObj, err)
+							r.ResourceHandler.RecordErrorEvent(retryEntryOrNil.oldObj, "ErrorDeletingResource", err)
 							retryEntry := r.initRetryObjWithAdd(latest, key)
 							r.increaseFailedAttemptsCounter(retryEntry)
 							return
@@ -579,7 +585,7 @@ func (r *RetryFramework) WatchResourceFiltered(namespaceForFilteredHandler strin
 						if err := r.ResourceHandler.DeleteResource(old, existingCacheEntry); err != nil {
 							klog.Errorf("Failed to delete %s %s, during update: %v",
 								r.ResourceHandler.ObjType, oldKey, err)
-							r.ResourceHandler.RecordErrorEvent(old, err)
+							r.ResourceHandler.RecordErrorEvent(old, "ErrorDeletingResource", err)
 							retryEntry := r.InitRetryObjWithDelete(old, key, nil, false)
 							r.initRetryObjWithAdd(latest, key)
 							r.increaseFailedAttemptsCounter(retryEntry)
@@ -598,7 +604,7 @@ func (r *RetryFramework) WatchResourceFiltered(namespaceForFilteredHandler strin
 						if err := r.ResourceHandler.UpdateResource(old, latest, found); err != nil {
 							klog.Errorf("Failed to update %s, old=%s, new=%s, error: %v",
 								r.ResourceHandler.ObjType, oldKey, newKey, err)
-							r.ResourceHandler.RecordErrorEvent(latest, err)
+							r.ResourceHandler.RecordErrorEvent(latest, "ErrorUpdatingResource", err)
 							var retryEntry *retryObjEntry
 							if r.ResourceHandler.NeedsUpdateDuringRetry {
 								retryEntry = r.initRetryObjWithUpdate(old, latest, key)
@@ -610,7 +616,7 @@ func (r *RetryFramework) WatchResourceFiltered(namespaceForFilteredHandler strin
 						}
 					} else { // we previously deleted old object, now let's add the new one
 						if err := r.ResourceHandler.AddResource(latest, false); err != nil {
-							r.ResourceHandler.RecordErrorEvent(latest, err)
+							r.ResourceHandler.RecordErrorEvent(latest, "ErrorAddingResource", err)
 							retryEntry := r.initRetryObjWithAdd(latest, key)
 							r.increaseFailedAttemptsCounter(retryEntry)
 							klog.Errorf("Failed to add %s %s, during update: %v",
@@ -659,8 +665,11 @@ func (r *RetryFramework) WatchResourceFiltered(namespaceForFilteredHandler strin
 
 	// track the retry entries and every 30 seconds (or upon explicit request) check if any objects
 	// need to be retried
-	r.watchFactory.Wg.Add(1) //add to the watchFactory waitgroup, the waitgroup done is inside the periodicRetryResources
-	go r.periodicallyRetryResources()
+	r.doneWg.Add(1)
+	go func() {
+		defer r.doneWg.Done()
+		r.periodicallyRetryResources()
+	}()
 
 	return handler, nil
 }

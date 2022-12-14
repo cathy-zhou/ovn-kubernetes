@@ -13,6 +13,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	"k8s.io/klog/v2"
@@ -252,26 +253,23 @@ func buildLB(lb *LB) *nbdb.LoadBalancer {
 	}
 
 	options := map[string]string{
-		"reject":    reject,
-		"event":     event,
-		"skip_snat": skipSNAT,
+		"reject":          reject,
+		"event":           event,
+		"skip_snat":       skipSNAT,
+		"hairpin_snat_ip": fmt.Sprintf("%s %s", types.V4OVNServiceHairpinMasqueradeIP, types.V6OVNServiceHairpinMasqueradeIP),
 	}
 
 	// Session affinity
-	// If enabled, then bucket flows by 3-tuple (proto, srcip, dstip)
+	// If enabled, then bucket flows by 3-tuple (proto, srcip, dstip) for the specific timeout value
 	// otherwise, use default ovn value
-	selectionFields := []nbdb.LoadBalancerSelectionFields{}
-	if lb.Opts.Affinity {
-		selectionFields = []string{
-			nbdb.LoadBalancerSelectionFieldsIPSrc,
-			nbdb.LoadBalancerSelectionFieldsIPDst,
-		}
+	if lb.Opts.AffinityTimeOut > 0 {
+		options["affinity_timeout"] = fmt.Sprintf("%d", lb.Opts.AffinityTimeOut)
 	}
 
 	// vipMap
 	vips := buildVipMap(lb.Rules)
 
-	return libovsdbops.BuildLoadBalancer(lb.Name, strings.ToLower(lb.Protocol), selectionFields, vips, options, lb.ExternalIDs)
+	return libovsdbops.BuildLoadBalancer(lb.Name, strings.ToLower(lb.Protocol), vips, options, lb.ExternalIDs)
 }
 
 // buildVipMap returns a viups map from a set of rules

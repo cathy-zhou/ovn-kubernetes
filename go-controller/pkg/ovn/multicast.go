@@ -87,20 +87,20 @@ func getMcastACLName(nsORpg, mcastSuffix string) string {
 // - one "to-lport" ACL allowing ingress multicast traffic to pods in 'ns'.
 //   This matches only traffic originated by pods in 'ns' (based on the
 //   namespace address set).
-func (oc *Controller) createMulticastAllowPolicy(ns string, nsInfo *namespaceInfo) error {
+func (oc *DefaultNetworkController) createMulticastAllowPolicy(ns string, nsInfo *namespaceInfo) error {
 	portGroupName := hashedPortGroup(ns)
 
 	aclT := lportEgressAfterLB
 	egressMatch := getACLMatch(portGroupName, getMulticastACLEgrMatch(), aclT)
 	egressACL := BuildACL(getMcastACLName(ns, "MulticastAllowEgress"),
 		types.DefaultMcastAllowPriority, egressMatch, nbdb.ACLActionAllow, nil, aclT,
-		getDefaultDenyPolicyExternalIDs(aclT))
+		getDefaultDenyPolicyExternalIDs(aclT, ""))
 
 	aclT = lportIngress
 	ingressMatch := getACLMatch(portGroupName, getMulticastACLIgrMatch(nsInfo), aclT)
 	ingressACL := BuildACL(getMcastACLName(ns, "MulticastAllowIngress"),
 		types.DefaultMcastAllowPriority, ingressMatch, nbdb.ACLActionAllow, nil, aclT,
-		getDefaultDenyPolicyExternalIDs(aclT))
+		getDefaultDenyPolicyExternalIDs(aclT, ""))
 
 	acls := []*nbdb.ACL{egressACL, ingressACL}
 	ops, err := libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, nil, acls...)
@@ -157,7 +157,7 @@ func deleteMulticastAllowPolicy(nbClient libovsdbclient.Client, ns string) error
 //   that are not allowed to receive multicast traffic.
 // - one ACL dropping ingress multicast traffic to all pods.
 // Caller must hold the namespace's namespaceInfo object lock.
-func (oc *Controller) createDefaultDenyMulticastPolicy() error {
+func (oc *DefaultNetworkController) createDefaultDenyMulticastPolicy() error {
 	match := getMulticastACLMatch()
 
 	// By default deny any egress multicast traffic from any pod. This drops
@@ -166,13 +166,13 @@ func (oc *Controller) createDefaultDenyMulticastPolicy() error {
 	aclT := lportEgressAfterLB
 	egressACL := BuildACL(getMcastACLName(types.ClusterPortGroupName, "DefaultDenyMulticastEgress"),
 		types.DefaultMcastDenyPriority, match, nbdb.ACLActionDrop, nil,
-		aclT, getDefaultDenyPolicyExternalIDs(aclT))
+		aclT, getDefaultDenyPolicyExternalIDs(aclT, ""))
 
 	// By default deny any ingress multicast traffic to any pod.
 	aclT = lportIngress
 	ingressACL := BuildACL(getMcastACLName(types.ClusterPortGroupName, "DefaultDenyMulticastIngress"),
 		types.DefaultMcastDenyPriority, match, nbdb.ACLActionDrop, nil,
-		aclT, getDefaultDenyPolicyExternalIDs(aclT))
+		aclT, getDefaultDenyPolicyExternalIDs(aclT, ""))
 
 	ops, err := libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, nil, egressACL, ingressACL)
 	if err != nil {
@@ -203,20 +203,20 @@ func (oc *Controller) createDefaultDenyMulticastPolicy() error {
 // - one ACL allowing multicast traffic from cluster router ports
 // - one ACL allowing multicast traffic to cluster router ports.
 // Caller must hold the namespace's namespaceInfo object lock.
-func (oc *Controller) createDefaultAllowMulticastPolicy() error {
+func (oc *DefaultNetworkController) createDefaultAllowMulticastPolicy() error {
 	mcastMatch := getMulticastACLMatch()
 
 	aclT := lportEgressAfterLB
 	egressMatch := getACLMatch(types.ClusterRtrPortGroupName, mcastMatch, aclT)
 	egressACL := BuildACL(getMcastACLName(types.ClusterRtrPortGroupName, "DefaultAllowMulticastEgress"),
 		types.DefaultMcastAllowPriority, egressMatch, nbdb.ACLActionAllow, nil,
-		aclT, getDefaultDenyPolicyExternalIDs(aclT))
+		aclT, getDefaultDenyPolicyExternalIDs(aclT, ""))
 
 	aclT = lportIngress
 	ingressMatch := getACLMatch(types.ClusterRtrPortGroupName, mcastMatch, aclT)
 	ingressACL := BuildACL(getMcastACLName(types.ClusterRtrPortGroupName, "DefaultAllowMulticastIngress"),
 		types.DefaultMcastAllowPriority, ingressMatch, nbdb.ACLActionAllow, nil,
-		aclT, getDefaultDenyPolicyExternalIDs(aclT))
+		aclT, getDefaultDenyPolicyExternalIDs(aclT, ""))
 
 	ops, err := libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, nil, egressACL, ingressACL)
 	if err != nil {

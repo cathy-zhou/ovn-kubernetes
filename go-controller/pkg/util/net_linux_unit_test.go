@@ -9,6 +9,7 @@ import (
 
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
 	netlink_mocks "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/mocks/github.com/vishvananda/netlink"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util/mocks"
 	"github.com/stretchr/testify/assert"
 	"github.com/vishvananda/netlink"
@@ -279,6 +280,7 @@ func TestLinkAddrAdd(t *testing.T) {
 		desc                     string
 		inputLink                netlink.Link
 		inputNewAddr             *net.IPNet
+		inputFlags               int
 		errExp                   bool
 		onRetArgsNetLinkLibOpers []ovntest.TestifyMockHelper
 		onRetArgsLinkIfaceOpers  []ovntest.TestifyMockHelper
@@ -287,6 +289,7 @@ func TestLinkAddrAdd(t *testing.T) {
 			desc:         "setting <nil> address on link errors out",
 			inputLink:    mockLink,
 			inputNewAddr: nil,
+			inputFlags:   0,
 			errExp:       true,
 			onRetArgsNetLinkLibOpers: []ovntest.TestifyMockHelper{
 				{OnCallMethodName: "AddrAdd", OnCallMethodArgType: []string{"*mocks.Link", "*netlink.Addr"}, RetArgList: []interface{}{fmt.Errorf("mock error")}},
@@ -299,6 +302,7 @@ func TestLinkAddrAdd(t *testing.T) {
 			desc:         "test code path where error is returned when attempting to set new address on link",
 			inputLink:    mockLink,
 			inputNewAddr: ovntest.MustParseIPNet("192.168.1.15/24"),
+			inputFlags:   0,
 			errExp:       true,
 			onRetArgsNetLinkLibOpers: []ovntest.TestifyMockHelper{
 				{OnCallMethodName: "AddrAdd", OnCallMethodArgType: []string{"*mocks.Link", "*netlink.Addr"}, RetArgList: []interface{}{fmt.Errorf("mock error")}},
@@ -311,6 +315,7 @@ func TestLinkAddrAdd(t *testing.T) {
 			desc:         "setting new address on link succeeds",
 			inputLink:    mockLink,
 			inputNewAddr: ovntest.MustParseIPNet("192.168.1.15/24"),
+			inputFlags:   2,
 			onRetArgsNetLinkLibOpers: []ovntest.TestifyMockHelper{
 				{OnCallMethodName: "AddrAdd", OnCallMethodArgType: []string{"*mocks.Link", "*netlink.Addr"}, RetArgList: []interface{}{nil}},
 			},
@@ -321,7 +326,7 @@ func TestLinkAddrAdd(t *testing.T) {
 
 			ovntest.ProcessMockFnList(&mockNetLinkOps.Mock, tc.onRetArgsNetLinkLibOpers)
 			ovntest.ProcessMockFnList(&mockLink.Mock, tc.onRetArgsLinkIfaceOpers)
-			err := LinkAddrAdd(tc.inputLink, tc.inputNewAddr)
+			err := LinkAddrAdd(tc.inputLink, tc.inputNewAddr, tc.inputFlags)
 			t.Log(err)
 			if tc.errExp {
 				assert.Error(t, err)
@@ -631,7 +636,7 @@ func TestLinkRoutesAddOrUpdateMTU(t *testing.T) {
 			onRetArgsNetLinkLibOpers: []ovntest.TestifyMockHelper{
 				{OnCallMethodName: "RouteListFiltered", OnCallMethodArgType: []string{"int", "*netlink.Route", "uint64"}, RetArgList: []interface{}{[]netlink.Route{
 					{
-						Gw:  ovntest.MustParseIP("192.168.0.1"),
+						Gw:  nil,
 						Dst: ovntest.MustParseIPNet("10.18.20.0/24"),
 						MTU: 1400,
 						Src: ovntest.MustParseIP("192.168.0.10"),
@@ -644,9 +649,32 @@ func TestLinkRoutesAddOrUpdateMTU(t *testing.T) {
 			},
 		},
 		{
-			desc:         "Route exists, has the same (mtu and source) and is not updated",
+			desc:         "Route exists, has different gw and is updated",
 			inputLink:    mockLink,
-			inputGwIP:    nil,
+			inputGwIP:    ovntest.MustParseIP("192.168.0.1"),
+			inputSubnets: ovntest.MustParseIPNets("10.18.20.0/24"),
+			inputMTU:     1400,
+			inputSrc:     ovntest.MustParseIP("192.168.0.8"),
+			errExp:       false,
+			onRetArgsNetLinkLibOpers: []ovntest.TestifyMockHelper{
+				{OnCallMethodName: "RouteListFiltered", OnCallMethodArgType: []string{"int", "*netlink.Route", "uint64"}, RetArgList: []interface{}{[]netlink.Route{
+					{
+						Gw:  ovntest.MustParseIP("192.168.0.2"),
+						Dst: ovntest.MustParseIPNet("10.18.20.0/24"),
+						MTU: 1400,
+						Src: ovntest.MustParseIP("192.168.0.8"),
+					},
+				}, nil}},
+				{OnCallMethodName: "RouteReplace", OnCallMethodArgType: []string{"*netlink.Route"}, RetArgList: []interface{}{nil}},
+			},
+			onRetArgsLinkIfaceOpers: []ovntest.TestifyMockHelper{
+				{OnCallMethodName: "Attrs", OnCallMethodArgType: []string{}, RetArgList: []interface{}{&netlink.LinkAttrs{Name: "testIfaceName", Index: 1}}},
+			},
+		},
+		{
+			desc:         "Route exists, has the same (mtu, source and gw) and is not updated",
+			inputLink:    mockLink,
+			inputGwIP:    ovntest.MustParseIP("192.168.0.1"),
 			inputSubnets: ovntest.MustParseIPNets("10.18.20.0/24"),
 			inputMTU:     1400,
 			inputSrc:     ovntest.MustParseIP("192.168.0.10"),
@@ -666,7 +694,7 @@ func TestLinkRoutesAddOrUpdateMTU(t *testing.T) {
 			},
 		},
 		{
-			desc: "LinkRoutesAddOrUpdateSrcOrMTU() returns NO error when subnets input list is empty",
+			desc: "LinkRoutesApply() returns NO error when subnets input list is empty",
 		},
 	}
 	for i, tc := range tests {
@@ -675,7 +703,7 @@ func TestLinkRoutesAddOrUpdateMTU(t *testing.T) {
 			ovntest.ProcessMockFnList(&mockNetLinkOps.Mock, tc.onRetArgsNetLinkLibOpers)
 			ovntest.ProcessMockFnList(&mockLink.Mock, tc.onRetArgsLinkIfaceOpers)
 
-			err := LinkRoutesAddOrUpdateSourceOrMTU(tc.inputLink, tc.inputGwIP, tc.inputSubnets, tc.inputMTU, tc.inputSrc)
+			err := LinkRoutesApply(tc.inputLink, tc.inputGwIP, tc.inputSubnets, tc.inputMTU, tc.inputSrc)
 			t.Log(err)
 			if tc.errExp {
 				assert.Error(t, err)
@@ -1247,6 +1275,42 @@ func TestGetMTUOfInterfaceWithAddress(t *testing.T) {
 			assert.Equal(t, mtu, tc.wantMTU)
 			mockNetLinkOps.AssertExpectations(t)
 			exisitngMockLink.AssertExpectations(t)
+		})
+	}
+}
+
+func TestIsAddressReservedForInternalUse(t *testing.T) {
+	tests := []struct {
+		desc   string
+		input  net.IP
+		outExp bool
+	}{
+		{
+			desc:   "non-reserved IPv4 address",
+			input:  ovntest.MustParseIP("1.1.1.1"),
+			outExp: false,
+		},
+		{
+			desc:   "non-reserved IPv6 address",
+			input:  ovntest.MustParseIP("abcd::1"),
+			outExp: false,
+		},
+		{
+			desc:   "reserved IPv4 address",
+			input:  ovntest.MustParseIP(types.V4HostMasqueradeIP),
+			outExp: true,
+		},
+		{
+			desc:   "reserved IPv6 address",
+			input:  ovntest.MustParseIP(types.V6HostMasqueradeIP),
+			outExp: true,
+		},
+	}
+	for i, tc := range tests {
+		t.Run(fmt.Sprintf("%d:%s", i, tc.desc), func(t *testing.T) {
+			res := isAddressReservedForInternalUse(tc.input)
+			t.Log(res)
+			assert.Equal(t, res, tc.outExp)
 		})
 	}
 }

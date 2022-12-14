@@ -34,7 +34,6 @@ func NewFakeOVNNode(fexec *ovntest.FakeExec) *FakeOVNNode {
 	return &FakeOVNNode{
 		fakeExec: fexec,
 		recorder: record.NewFakeRecorder(1),
-		wg:       &sync.WaitGroup{},
 	}
 }
 
@@ -49,7 +48,7 @@ func (o *FakeOVNNode) start(ctx *cli.Context, objects ...runtime.Object) {
 	o.fakeClient = &util.OVNClientset{
 		KubeClient: fake.NewSimpleClientset(v1Objects...),
 	}
-	o.init()
+	o.init() // initializes the node
 }
 
 func (o *FakeOVNNode) restart() {
@@ -66,10 +65,11 @@ func (o *FakeOVNNode) init() {
 	var err error
 
 	o.stopChan = make(chan struct{})
+	o.wg = &sync.WaitGroup{}
 
 	o.watcher, err = factory.NewNodeWatchFactory(o.fakeClient, fakeNodeName)
 	Expect(err).NotTo(HaveOccurred())
 
-	o.node = NewNode(o.fakeClient.KubeClient, o.watcher, fakeNodeName, o.stopChan, o.recorder)
-	o.node.Start(context.TODO(), o.wg)
+	o.node = NewNode(o.fakeClient.KubeClient, o.watcher, fakeNodeName, o.stopChan, o.wg, o.recorder)
+	o.node.Start(context.TODO())
 }

@@ -1,10 +1,12 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/urfave/cli/v2"
 	v1 "k8s.io/api/core/v1"
@@ -19,9 +21,8 @@ import (
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util/mocks"
 
-	"github.com/containernetworking/plugins/pkg/ns"
-	"github.com/containernetworking/plugins/pkg/testutils"
 	"github.com/vishvananda/netlink"
 
 	. "github.com/onsi/ginkgo"
@@ -78,9 +79,6 @@ func compareFlowCacheEntry(returnedEntry, expectedEntry *flowCacheEntry) error {
 }
 
 func generateInitialFlowCacheEntry(mgmtInterfaceAddr string) *flowCacheEntry {
-	mgmtPortLink, err := netlink.LinkByName(types.K8sMgmtIntfName)
-	Expect(err).NotTo(HaveOccurred())
-	mgmtPortMAC := mgmtPortLink.Attrs().HardwareAddr
 	_, ipNet, err := net.ParseCIDR(thisNodeSubnet)
 	Expect(err).NotTo(HaveOccurred())
 	gwIfAddr := util.GetNodeGatewayIfAddr(ipNet)
@@ -97,7 +95,7 @@ func generateInitialFlowCacheEntry(mgmtInterfaceAddr string) *flowCacheEntry {
 			"table=0,priority=100,in_port=ext-vxlan,ip,nw_dst=" + thisNodeSubnet + ",dl_dst=" + thisNodeDRMAC + ",actions=goto_table:10",
 			"table=0,priority=10,arp,in_port=ext-vxlan,arp_op=1,arp_tpa=" + thisNodeSubnet + ",actions=resubmit(,2)",
 			"table=2,priority=100,arp,in_port=ext-vxlan,arp_op=1,arp_tpa=" + thisNodeSubnet + ",actions=move:tun_src->tun_dst,load:4097->NXM_NX_TUN_ID[0..31],move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],mod_dl_src:" + thisNodeDRMAC + ",load:0x2->NXM_OF_ARP_OP[],move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[],load:0x" + thisNodeDRMACRaw + "->NXM_NX_ARP_SHA[],move:NXM_OF_ARP_TPA[]->NXM_NX_REG0[],move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[],move:NXM_NX_REG0[]->NXM_OF_ARP_SPA[],IN_PORT",
-			"table=10,priority=100,ip,nw_dst=" + mgmtInterfaceAddr + ",actions=mod_dl_src:" + thisNodeDRMAC + ",mod_dl_dst:" + mgmtPortMAC.String() + ",output:ext",
+			"table=10,priority=100,ip,nw_dst=" + mgmtInterfaceAddr + ",actions=mod_dl_src:" + thisNodeDRMAC + ",mod_dl_dst:" + testMgmtMAC + ",output:ext",
 			"table=10,priority=100,ip,nw_dst=" + thisNodeDRIP + ",actions=mod_nw_dst:100.64.0.3,mod_dl_src:" + thisNodeDRMAC + ",mod_dl_dst:" + gwPortMAC.String() + ",output:ext",
 		},
 	}
@@ -115,10 +113,10 @@ func addNodeSetupCmds(fexec *ovntest.FakeExec, nodeName string) {
 	})
 	fexec.AddFakeCmd(&ovntest.ExpectedCmd{
 		Cmd:    "ovs-vsctl --timeout=15 --if-exists get interface br-ext mac_in_use",
-		Output: thisNodeDRMAC,
+		Output: "10:11:12:13:14:15",
 	})
 	fexec.AddFakeCmdsNoOutputNoError([]string{
-		"ovs-vsctl --timeout=15 set bridge br-ext other-config:hwaddr=" + thisNodeDRMAC,
+		"ovs-vsctl --timeout=15 set bridge br-ext other-config:hwaddr=10:11:12:13:14:15",
 		"ovs-vsctl --timeout=15 --may-exist add-port br-int int -- --may-exist add-port br-ext ext -- set Interface int type=patch options:peer=ext external-ids:iface-id=int-" + nodeName + " -- set Interface ext type=patch options:peer=int",
 	})
 	fexec.AddFakeCmdsNoOutputNoError([]string{
@@ -141,6 +139,13 @@ func createNode(name, os, ip string, annotations map[string]string) *v1.Node {
 			},
 		},
 	}
+}
+
+func addSyncFlows(fexec *ovntest.FakeExec) {
+	fexec.AddFakeCmdsNoOutputNoError([]string{
+		"ovs-ofctl dump-flows --no-stats br-ext table=20",
+		"ovs-ofctl -O OpenFlow13 --bundle replace-flows br-ext -",
+	})
 }
 
 func createPod(namespace, name, node, podIP, podMAC string) *v1.Pod {
@@ -166,50 +171,15 @@ func createPod(namespace, name, node, podIP, podMAC string) *v1.Pod {
 	}
 }
 
-func expectRouteForSubnet(routes []netlink.Route, subnet *net.IPNet, hoIfAddr net.IP) {
-	found := false
-	for _, route := range routes {
-		if route.Dst.String() == subnet.String() && route.Gw.String() == hoIfAddr.String() {
-			found = true
-			break
-		}
-	}
-	Expect(found).To(BeTrue(), fmt.Sprintf("failed to find hybrid overlay host route %s via %s", subnet, hoIfAddr))
-}
-
-func validateNetlinkState(nodeSubnet, hoDRIP string) {
-	link, err := netlink.LinkByName(extBridgeName)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(link.Attrs().Flags & net.FlagUp).To(Equal(net.FlagUp))
-
-	link, err = netlink.LinkByName(types.K8sMgmtIntfName)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(link.Attrs().Flags & net.FlagUp).To(Equal(net.FlagUp))
-
-	routes, err := netlink.RouteList(link, netlink.FAMILY_ALL)
-	Expect(err).NotTo(HaveOccurred())
-
-	// Expect a route to the hybrid overlay CIDR via the given hoDRIP
-	// through the management port
-	Expect(err).NotTo(HaveOccurred())
-	Expect(len(config.HybridOverlay.ClusterSubnets)).ToNot(BeZero())
-	for _, hoSubnet := range config.HybridOverlay.ClusterSubnets {
-		expectRouteForSubnet(routes, hoSubnet.CIDR, net.ParseIP(hoDRIP))
-	}
-}
-
-func appRun(app *cli.App, netns ns.NetNS) {
-	_ = netns.Do(func(ns.NetNS) error {
-		defer GinkgoRecover()
-		err := app.Run([]string{
-			app.Name,
-			"-enable-hybrid-overlay",
-			"-no-hostsubnet-nodes=" + v1.LabelOSStable + "=windows",
-			"-cluster-subnets=10.130.0.0/15/24",
-		})
-		Expect(err).NotTo(HaveOccurred())
-		return nil
+func appRun(app *cli.App) {
+	err := app.Run([]string{
+		app.Name,
+		"-enable-hybrid-overlay",
+		"-no-hostsubnet-nodes=" + v1.LabelOSStable + "=windows",
+		"-cluster-subnets=10.130.0.0/15/24",
+		"-hybrid-overlay-cluster-subnets=10.0.0.1/16/23",
 	})
+	Expect(err).NotTo(HaveOccurred())
 }
 
 func createNodeAnnotationsForSubnet(subnet string) map[string]string {
@@ -222,14 +192,69 @@ func createNodeAnnotationsForSubnet(subnet string) map[string]string {
 	return annotations
 }
 
+type fakeLink struct {
+	attrs *netlink.LinkAttrs
+}
+
+func (fl *fakeLink) Attrs() *netlink.LinkAttrs {
+	return fl.attrs
+}
+
+func (fl *fakeLink) Type() string {
+	return "fakeLink"
+}
+
+func addEnsureHybridOverlayBridgeMocks(nlMock *mocks.NetLinkOps) {
+	mockBrExt := &fakeLink{
+		attrs: &netlink.LinkAttrs{
+			Index: 555,
+		},
+	}
+	mockMp0 := &fakeLink{
+		attrs: &netlink.LinkAttrs{
+			Index:        777,
+			HardwareAddr: ovntest.MustParseMAC(testMgmtMAC),
+		},
+	}
+	mockRoute := &netlink.Route{
+		LinkIndex: 777,
+		Dst:       ovntest.MustParseIPNet("10.0.0.0/16"),
+		Gw:        ovntest.MustParseIP(thisNodeDRIP),
+	}
+
+	nlMocks := []ovntest.TestifyMockHelper{
+		{
+			OnCallMethodName: "LinkByName",
+			OnCallMethodArgs: []interface{}{"br-ext"},
+			RetArgList:       []interface{}{mockBrExt, nil},
+		},
+		{
+			OnCallMethodName: "LinkSetUp",
+			OnCallMethodArgs: []interface{}{mockBrExt},
+			RetArgList:       []interface{}{nil},
+		},
+		{
+			OnCallMethodName: "LinkByName",
+			OnCallMethodArgs: []interface{}{"ovn-k8s-mp0"},
+			RetArgList:       []interface{}{mockMp0, nil},
+		},
+		{
+			OnCallMethodName: "RouteAdd",
+			OnCallMethodArgs: []interface{}{mockRoute},
+			RetArgList:       []interface{}{nil},
+		},
+	}
+	ovntest.ProcessMockFnList(&nlMock.Mock, nlMocks)
+}
+
 var _ = Describe("Hybrid Overlay Node Linux Operations", func() {
 	var (
 		app        *cli.App
 		fexec      *ovntest.FakeExec
-		netns      ns.NetNS
 		stopChan   chan struct{}
 		wg         *sync.WaitGroup
 		mgmtIfAddr *net.IPNet
+		nlMock     *mocks.NetLinkOps
 	)
 	const (
 		thisNode   string = "mynode"
@@ -239,6 +264,9 @@ var _ = Describe("Hybrid Overlay Node Linux Operations", func() {
 	BeforeEach(func() {
 		// Restore global default values before each testcase
 		config.PrepareTestConfig()
+
+		nlMock = &mocks.NetLinkOps{}
+		util.SetNetLinkOpMockInst(nlMock)
 
 		app = cli.NewApp()
 		app.Name = "test"
@@ -251,30 +279,13 @@ var _ = Describe("Hybrid Overlay Node Linux Operations", func() {
 		err := util.SetExec(fexec)
 		Expect(err).NotTo(HaveOccurred())
 
-		netns, err = testutils.NewNS()
-		Expect(err).NotTo(HaveOccurred())
-
-		// prepare br-ext and ovn-k8s-mp0 in original namespace
-		_ = netns.Do(func(ns.NetNS) error {
-			defer GinkgoRecover()
-			ovntest.AddLink(extBridgeName)
-
-			// Set up management interface with its address
-			link := ovntest.AddLink(types.K8sMgmtIntfName)
-			_, thisNet, err := net.ParseCIDR(thisNodeSubnet)
-			Expect(err).NotTo(HaveOccurred())
-			mgmtIfAddr = util.GetNodeManagementIfAddr(thisNet)
-			err = netlink.AddrAdd(link, &netlink.Addr{IPNet: mgmtIfAddr})
-			Expect(err).NotTo(HaveOccurred())
-			return nil
-		})
+		mgmtIfAddr = util.GetNodeManagementIfAddr(ovntest.MustParseIPNet(thisNodeSubnet))
 	})
 
 	AfterEach(func() {
 		close(stopChan)
 		wg.Wait()
-		Expect(netns.Close()).To(Succeed())
-		Expect(testutils.UnmountNS(netns)).To(Succeed())
+		util.ResetNetLinkOpMockInst()
 	})
 
 	ovntest.OnSupportedPlatformsIt("does not set up tunnels for non-hybrid-overlay nodes without annotations", func() {
@@ -313,7 +324,7 @@ var _ = Describe("Hybrid Overlay Node Linux Operations", func() {
 			Eventually(fexec.CalledMatchesExpected, 2).Should(BeTrue(), fexec.ErrorDesc)
 			return nil
 		}
-		appRun(app, netns)
+		appRun(app)
 	})
 
 	ovntest.OnSupportedPlatformsIt("does not set up tunnels for non-hybrid-overlay nodes with subnet annotations", func() {
@@ -355,12 +366,11 @@ var _ = Describe("Hybrid Overlay Node Linux Operations", func() {
 			Eventually(fexec.CalledMatchesExpected, 2).Should(BeTrue(), fexec.ErrorDesc)
 			return nil
 		}
-		appRun(app, netns)
+		appRun(app)
 	})
 
 	ovntest.OnSupportedPlatformsIt("sets up local node hybrid overlay bridge", func() {
 		app.Action = func(ctx *cli.Context) error {
-
 			annotations := createNodeAnnotationsForSubnet(thisNodeSubnet)
 			annotations[hotypes.HybridOverlayDRMAC] = thisNodeDRMAC
 			annotations["k8s.ovn.org/node-gateway-router-lrp-ifaddr"] = "{\"ipv4\":\"100.64.0.3/16\"}"
@@ -371,7 +381,6 @@ var _ = Describe("Hybrid Overlay Node Linux Operations", func() {
 			})
 
 			addNodeSetupCmds(fexec, thisNode)
-			config.HybridOverlay.RawClusterSubnets = "10.0.0.1/16/23"
 			_, err := config.InitConfig(ctx, fexec, nil)
 			Expect(err).NotTo(HaveOccurred())
 			f := informers.NewSharedInformerFactory(fakeClient, informer.DefaultResyncInterval)
@@ -385,34 +394,30 @@ var _ = Describe("Hybrid Overlay Node Linux Operations", func() {
 			)
 			Expect(err).NotTo(HaveOccurred())
 
-			err = n.controller.EnsureHybridOverlayBridge(node)
-			Expect(err).NotTo(HaveOccurred())
+			addEnsureHybridOverlayBridgeMocks(nlMock)
+
+			// initial flowSync
+			addSyncFlows(fexec)
+			// flowsync after EnsureHybridOverlayBridge()
+			addSyncFlows(fexec)
+
+			f.Start(stopChan)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				n.Run(stopChan)
+			}()
 
 			linuxNode, okay := n.controller.(*NodeController)
 			Expect(okay).To(BeTrue())
-			Expect(linuxNode.initialized).To(BeTrue())
-
-			// ovs commands generated by the initial sync
-			fexec.AddFakeCmdsNoOutputNoError([]string{
-				"ovs-ofctl dump-flows --no-stats br-ext table=20",
-				"ovs-ofctl -O OpenFlow13 --bundle replace-flows br-ext -",
-			})
-
-			//  perform the requested cacheSync
-			linuxNode.syncFlows()
-
-			// the flow cache will be sync'ed to ovs from the above bundled command but there is not a good way using fexec to
-			// get that data so I am comapring the flowcache to what it should be
-			initialFlowCache := map[string]*flowCacheEntry{
-				"0x0": generateInitialFlowCacheEntry(mgmtIfAddr.IP.String()),
-			}
-			Expect(compareFlowCache(linuxNode.flowCache, initialFlowCache)).NotTo(HaveOccurred())
+			Eventually(func() bool {
+				return atomic.LoadUint32(&linuxNode.initialized) == 1
+			}, 2).Should(BeTrue())
 
 			Eventually(fexec.CalledMatchesExpected, 2).Should(BeTrue(), fexec.ErrorDesc)
-			validateNetlinkState(thisNodeSubnet, thisNodeDRIP)
 			return nil
 		}
-		appRun(app, netns)
+		appRun(app)
 	})
 	ovntest.OnSupportedPlatformsIt("sets up local linux pod", func() {
 		app.Action = func(ctx *cli.Context) error {
@@ -434,7 +439,6 @@ var _ = Describe("Hybrid Overlay Node Linux Operations", func() {
 
 			// Node setup from initial node sync
 			addNodeSetupCmds(fexec, thisNode)
-			config.HybridOverlay.RawClusterSubnets = "10.0.0.1/16/23"
 			_, err := config.InitConfig(ctx, fexec, nil)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -449,46 +453,54 @@ var _ = Describe("Hybrid Overlay Node Linux Operations", func() {
 			)
 			Expect(err).NotTo(HaveOccurred())
 
-			err = n.controller.EnsureHybridOverlayBridge(node)
-			Expect(err).NotTo(HaveOccurred())
+			addEnsureHybridOverlayBridgeMocks(nlMock)
+			// initial flowSync
+			addSyncFlows(fexec)
+			// flowsync after EnsureHybridOverlayBridge()
+			addSyncFlows(fexec)
+
+			f.Start(stopChan)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				n.Run(stopChan)
+			}()
+
 			linuxNode, okay := n.controller.(*NodeController)
 			Expect(okay).To(BeTrue())
-			Expect(linuxNode.initialized).To(BeTrue())
-			// ovs commands generated by the initial sync
-			fexec.AddFakeCmdsNoOutputNoError([]string{
-				"ovs-ofctl dump-flows --no-stats br-ext table=20",
-				"ovs-ofctl -O OpenFlow13 --bundle replace-flows br-ext -",
-			})
+			Eventually(func() bool {
+				return atomic.LoadUint32(&linuxNode.initialized) == 1
+			}, 2).Should(BeTrue())
 
-			// perform the requested cacheSync
-			linuxNode.syncFlows()
+			Eventually(fexec.CalledMatchesExpected, 2).Should(BeTrue(), fexec.ErrorDesc)
 			initialFlowCache := map[string]*flowCacheEntry{
 				"0x0": generateInitialFlowCacheEntry(mgmtIfAddr.IP.String()),
 			}
-			Expect(compareFlowCache(linuxNode.flowCache, initialFlowCache)).NotTo(HaveOccurred())
 
-			Eventually(fexec.CalledMatchesExpected, 2).Should(BeTrue(), fexec.ErrorDesc)
-			validateNetlinkState(thisNodeSubnet, thisNodeDRIP)
-			err = n.controller.AddPod(testPod)
+			Eventually(func() error {
+				linuxNode.flowMutex.Lock()
+				defer linuxNode.flowMutex.Unlock()
+				return compareFlowCache(linuxNode.flowCache, initialFlowCache)
+			}, 2).Should(BeNil())
+
+			_, err = fakeClient.CoreV1().Pods(testPod.Namespace).Create(context.TODO(), testPod, metav1.CreateOptions{})
+			// flowSync after add pods
+			addSyncFlows(fexec)
 			Expect(err).NotTo(HaveOccurred())
-			// ovs commands generated by second cacheSync
-			fexec.AddFakeCmdsNoOutputNoError([]string{
-				"ovs-ofctl dump-flows --no-stats br-ext table=20",
-				"ovs-ofctl -O OpenFlow13 --bundle replace-flows br-ext -",
-			})
 
-			// perform the requested cacheSync
-			linuxNode.syncFlows()
-			// make sure that the flow that sends traffic to the windows pod is present
 			initialFlowCache[podIPToCookie(net.ParseIP(pod1IP))] = &flowCacheEntry{
 				flows:       []string{"table=10,cookie=0x" + podIPToCookie(net.ParseIP(pod1IP)) + ",priority=100,ip,nw_dst=" + pod1IP + ",actions=set_field:" + thisNodeDRMAC + "->eth_src,set_field:" + pod1MAC + "->eth_dst,output:ext"},
 				ignoreLearn: true,
 			}
-			Expect(compareFlowCache(linuxNode.flowCache, initialFlowCache)).NotTo(HaveOccurred())
+			Eventually(func() error {
+				linuxNode.flowMutex.Lock()
+				defer linuxNode.flowMutex.Unlock()
+				return compareFlowCache(linuxNode.flowCache, initialFlowCache)
+			}, 2).Should(BeNil())
 			Eventually(fexec.CalledMatchesExpected, 2).Should(BeTrue(), fexec.ErrorDesc)
 			return nil
 		}
-		appRun(app, netns)
+		appRun(app)
 	})
 
 	ovntest.OnSupportedPlatformsIt("sets up tunnels for Windows nodes", func() {
@@ -513,7 +525,6 @@ var _ = Describe("Hybrid Overlay Node Linux Operations", func() {
 
 			// Node setup from initial node sync
 			addNodeSetupCmds(fexec, thisNode)
-			config.HybridOverlay.RawClusterSubnets = "10.0.0.1/16/23"
 			_, err := config.InitConfig(ctx, fexec, nil)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -528,38 +539,43 @@ var _ = Describe("Hybrid Overlay Node Linux Operations", func() {
 			)
 			Expect(err).NotTo(HaveOccurred())
 
-			err = n.controller.EnsureHybridOverlayBridge(node)
-			Expect(err).NotTo(HaveOccurred())
+			addEnsureHybridOverlayBridgeMocks(nlMock)
+			// initial flowSync
+			addSyncFlows(fexec)
+			// flowsync after EnsureHybridOverlayBridge()
+			addSyncFlows(fexec)
+
+			f.Start(stopChan)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				n.Run(stopChan)
+			}()
+
 			linuxNode, okay := n.controller.(*NodeController)
 			Expect(okay).To(BeTrue())
+			Eventually(func() bool {
+				return atomic.LoadUint32(&linuxNode.initialized) == 1
+			}, 2).Should(BeTrue())
 
-			Expect(linuxNode.initialized).To(BeTrue())
-			// ovs commands generated by the initial sync
-			fexec.AddFakeCmdsNoOutputNoError([]string{
-				"ovs-ofctl dump-flows --no-stats br-ext table=20",
-				"ovs-ofctl -O OpenFlow13 --bundle replace-flows br-ext -",
-			})
-
-			// perform the requested cacheSync
-			linuxNode.syncFlows()
+			Eventually(fexec.CalledMatchesExpected, 2).Should(BeTrue(), fexec.ErrorDesc)
 			initialFlowCache := map[string]*flowCacheEntry{
 				"0x0": generateInitialFlowCacheEntry(mgmtIfAddr.IP.String()),
 			}
-			Expect(compareFlowCache(linuxNode.flowCache, initialFlowCache)).NotTo(HaveOccurred())
-
-			Eventually(fexec.CalledMatchesExpected, 2).Should(BeTrue(), fexec.ErrorDesc)
-			validateNetlinkState(thisNodeSubnet, thisNodeDRIP)
+			Eventually(func() error {
+				linuxNode.flowMutex.Lock()
+				defer linuxNode.flowMutex.Unlock()
+				return compareFlowCache(linuxNode.flowCache, initialFlowCache)
+			}, 2).Should(BeNil())
 
 			windowsAnnotation := createNodeAnnotationsForSubnet(node1Subnet)
 			windowsAnnotation[hotypes.HybridOverlayDRMAC] = node1DRMAC
-			n.controller.AddNode(createNode(node1Name, "windows", node1IP, windowsAnnotation))
+			_, err = fakeClient.CoreV1().Nodes().Create(context.TODO(), createNode(node1Name, "windows", node1IP, windowsAnnotation), metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+			// flowsync after AddNode
+			addSyncFlows(fexec)
+			Eventually(fexec.CalledMatchesExpected, 2).Should(BeTrue(), fexec.ErrorDesc)
 
-			fexec.AddFakeCmdsNoOutputNoError([]string{
-				"ovs-ofctl dump-flows --no-stats br-ext table=20",
-				"ovs-ofctl -O OpenFlow13 --bundle replace-flows br-ext -",
-			})
-
-			linuxNode.syncFlows()
 			node1Cookie := nameToCookie(node1Name)
 			initialFlowCache[node1Cookie] = &flowCacheEntry{
 				flows: []string{
@@ -568,11 +584,14 @@ var _ = Describe("Hybrid Overlay Node Linux Operations", func() {
 					"cookie=0x" + node1Cookie + ",table=0,priority=101,ip,nw_dst=" + node1Subnet + ",nw_src=100.64.0.3,actions=load:4097->NXM_NX_TUN_ID[0..31],set_field:" + thisNodeDRIP + "->nw_src,set_field:" + node1IP + "->tun_dst,set_field:" + node1DRMAC + "->eth_dst,output:ext-vxlan",
 				},
 			}
-			Eventually(fexec.CalledMatchesExpected, 2).Should(BeTrue(), fexec.ErrorDesc)
-			Expect(compareFlowCache(linuxNode.flowCache, initialFlowCache)).NotTo(HaveOccurred())
 
+			Eventually(func() error {
+				linuxNode.flowMutex.Lock()
+				defer linuxNode.flowMutex.Unlock()
+				return compareFlowCache(linuxNode.flowCache, initialFlowCache)
+			}, 2).Should(BeNil())
 			return nil
 		}
-		appRun(app, netns)
+		appRun(app)
 	})
 })
