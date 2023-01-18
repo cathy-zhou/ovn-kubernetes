@@ -498,11 +498,12 @@ func ParseNetConf(netattachdef *nettypes.NetworkAttachmentDefinition) (*ovncnity
 //
 // Return value:
 //    bool: if this Pod is on this Network; true or false
-//    *nettypes.NetworkSelectionElement: all NetworkSelectionElement that pod is requested for the specified network
+//    map[string]*nettypes.NetworkSelectionElement: all NetworkSelectionElement that pod is requested
+//        for the specified network, key is NADName. Note multiple NADs of the same network are allowed
+//        on one pod, as long as they are of different NADName.
 //    error:  error in case of failure
-func PodWantsMultiNetwork(pod *kapi.Pod, nInfo NetInfo) (bool, *nettypes.NetworkSelectionElement, error) {
-	var validNADName string
-
+func PodWantsMultiNetwork(pod *kapi.Pod, nInfo NetInfo) (bool, map[string]*nettypes.NetworkSelectionElement, error) {
+	networkSelections := map[string]*nettypes.NetworkSelectionElement{}
 	podDesc := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
 	if !nInfo.IsSecondary() {
 		network, err := GetK8sPodDefaultNetwork(pod)
@@ -510,7 +511,10 @@ func PodWantsMultiNetwork(pod *kapi.Pod, nInfo NetInfo) (bool, *nettypes.Network
 			// multus won't add this Pod if this fails, should never happen
 			return false, nil, fmt.Errorf("error getting default-network's network-attachment for pod %s: %v", podDesc, err)
 		}
-		return true, network, nil
+		if network != nil {
+			networkSelections[GetNADName(network.Namespace, network.Name)] = network
+		}
+		return true, networkSelections, nil
 	}
 
 	// For non-default network controller, try to see if its name exists in the Pod's k8s.v1.cni.cncf.io/networks, if no,
@@ -520,7 +524,6 @@ func PodWantsMultiNetwork(pod *kapi.Pod, nInfo NetInfo) (bool, *nettypes.Network
 		return false, nil, err
 	}
 
-	networkSelections := map[string]*nettypes.NetworkSelectionElement{}
 	for _, network := range allNetworks {
 		nadName := GetNADName(network.Namespace, network.Name)
 		if nInfo.HasNAD(nadName) {
@@ -528,15 +531,11 @@ func PodWantsMultiNetwork(pod *kapi.Pod, nInfo NetInfo) (bool, *nettypes.Network
 				return false, nil, fmt.Errorf("unexpected error: more than one of the same NAD %s specified for pod %s",
 					nadName, podDesc)
 			}
-			validNADName = nadName
 			networkSelections[nadName] = network
 		}
 	}
-	if len(networkSelections) > 1 {
-		return false, nil, fmt.Errorf("unexpected error: more than one NAD of the network %s specified for pod %s",
-			nInfo.GetNetworkName(), podDesc)
-	} else if len(networkSelections) == 0 {
+	if len(networkSelections) == 0 {
 		return false, nil, nil
 	}
-	return true, networkSelections[validNADName], nil
+	return true, networkSelections, nil
 }
