@@ -5,12 +5,14 @@ import (
 	"reflect"
 	"time"
 
+	nadapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	kapi "k8s.io/api/core/v1"
+	kerrorsutil "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/klog/v2"
 )
 
@@ -107,7 +109,7 @@ func (bsnc *BaseSecondaryNetworkController) ensurePodForSecondaryNetwork(pod *ka
 		return err
 	}
 
-	on, network, err := util.PodWantsMultiNetwork(pod, bsnc.NetInfo)
+	on, networkMap, err := util.PodWantsMultiNetwork(pod, bsnc.NetInfo)
 	if err != nil {
 		// configuration error, no need to retry, do not return error
 		klog.Errorf("Error getting network-attachment for pod %s/%s network %s: %v",
@@ -126,8 +128,24 @@ func (bsnc *BaseSecondaryNetworkController) ensurePodForSecondaryNetwork(pod *ka
 		return nil
 	}
 
-	nadName := util.GetNADName(network.Namespace, network.Name)
+	var errs []error
+	for nadName, network := range networkMap {
+		if _, err = bsnc.logicalPortCache.get(pod, nadName); err == nil {
+			// logical switch port of this specific NAD has already been set up for this Pod
+			continue
+		}
+		if err = bsnc.addLogicalPortToNetworkForNAD(pod, nadName, switchName, network); err != nil {
+			errs = append(errs, fmt.Errorf("failed to add logical port of Pod %s/%s for NAD %s", pod.Namespace, pod.Name, nadName))
+		}
+	}
+	if len(errs) != 0 {
+		return kerrorsutil.NewAggregate(errs)
+	}
+	return nil
+}
 
+func (bsnc *BaseSecondaryNetworkController) addLogicalPortToNetworkForNAD(pod *kapi.Pod, nadName, switchName string,
+	network *nadapi.NetworkSelectionElement) error {
 	var libovsdbExecuteTime time.Duration
 
 	start := time.Now()
@@ -172,6 +190,7 @@ func (bsnc *BaseSecondaryNetworkController) ensurePodForSecondaryNetwork(pod *ka
 // removePodForSecondaryNetwork tried to tear down a for on a secondary network. It returns nil on success
 // and error on failure; failure indicates the pod tear down should be retried later.
 func (bsnc *BaseSecondaryNetworkController) removePodForSecondaryNetwork(pod *kapi.Pod, portInfoMap map[string]*lpInfo) error {
+	var allNADNames []string
 	var nadName string
 	var portInfo *lpInfo
 
@@ -179,11 +198,8 @@ func (bsnc *BaseSecondaryNetworkController) removePodForSecondaryNetwork(pod *ka
 	klog.Infof("Deleting pod: %s for network %s", podDesc, bsnc.GetNetworkName())
 
 	if portInfoMap != nil {
-		if len(portInfoMap) == 0 {
-			return nil
-		}
 		for nadName, portInfo = range portInfoMap {
-			break
+			allNADNames = append(allNADNames, nadName)
 		}
 	} else {
 		if !util.PodWantsNetwork(pod) || !util.PodScheduled(pod) {
@@ -202,33 +218,35 @@ func (bsnc *BaseSecondaryNetworkController) removePodForSecondaryNetwork(pod *ka
 
 		for nadName = range podNetworks {
 			if bsnc.HasNAD(nadName) {
-				break
+				allNADNames = append(allNADNames, nadName)
 			}
 		}
-		if nadName == "" {
-			return nil
+	}
+
+	for _, nadName = range allNADNames {
+		bsnc.logicalPortCache.remove(pod, nadName)
+
+		pInfo, err := bsnc.deletePodLogicalPort(pod, portInfo, nadName)
+		if err != nil {
+			return err
+		}
+
+		// do not release IP address unless we have validated no other pod is using it
+		if pInfo == nil {
+			continue
+		}
+
+		// Releasing IPs needs to happen last so that we can deterministically know that if delete failed that
+		// the IP of the pod needs to be released. Otherwise we could have a completed pod failed to be removed
+		// and we dont know if the IP was released or not, and subsequently could accidentally release the IP
+		// while it is now on another pod
+		klog.Infof("Attempting to release IPs for pod: %s/%s, ips: %s network %s", pod.Namespace, pod.Name,
+			util.JoinIPNetIPs(pInfo.ips, " "), bsnc.GetNetworkName())
+		if err = bsnc.releasePodIPs(pInfo); err != nil {
+			return err
 		}
 	}
-	bsnc.logicalPortCache.remove(pod, nadName)
-
-	// TBD namespaceInfo needed when multi-network policy support is added
-	pInfo, err := bsnc.deletePodLogicalPort(pod, portInfo, nadName)
-	if err != nil {
-		return err
-	}
-
-	// do not release IP address unless we have validated no other pod is using it
-	if pInfo == nil {
-		return nil
-	}
-
-	// Releasing IPs needs to happen last so that we can deterministically know that if delete failed that
-	// the IP of the pod needs to be released. Otherwise we could have a completed pod failed to be removed
-	// and we dont know if the IP was released or not, and subsequently could accidentally release the IP
-	// while it is now on another pod
-	klog.Infof("Attempting to release IPs for pod: %s/%s, ips: %s network %s", pod.Namespace, pod.Name,
-		util.JoinIPNetIPs(pInfo.ips, " "), bsnc.GetNetworkName())
-	return bsnc.releasePodIPs(pInfo)
+	return nil
 }
 
 func (bsnc *BaseSecondaryNetworkController) syncPodsForSecondaryNetwork(pods []interface{}) error {
@@ -240,7 +258,7 @@ func (bsnc *BaseSecondaryNetworkController) syncPodsForSecondaryNetwork(pods []i
 		if !ok {
 			return fmt.Errorf("spurious object in syncPods: %v", podInterface)
 		}
-		on, network, err := util.PodWantsMultiNetwork(pod, bsnc.NetInfo)
+		on, networkMap, err := util.PodWantsMultiNetwork(pod, bsnc.NetInfo)
 		if err != nil || !on {
 			if err != nil {
 				klog.Warningf("Failed to determine if pod %s/%s needs to be plumb interface on network %s: %v",
@@ -248,20 +266,21 @@ func (bsnc *BaseSecondaryNetworkController) syncPodsForSecondaryNetwork(pods []i
 			}
 			continue
 		}
-		nadName := util.GetNADName(network.Namespace, network.Name)
-		annotations, err := util.UnmarshalPodAnnotation(pod.Annotations, nadName)
-		if err != nil {
-			if !util.IsAnnotationNotSetError(err) {
-				klog.Errorf("Failed to get pod annotation of pod %s/%s for NAD %s", pod.Namespace, pod.Name, nadName)
+		for nadName := range networkMap {
+			annotations, err := util.UnmarshalPodAnnotation(pod.Annotations, nadName)
+			if err != nil {
+				if !util.IsAnnotationNotSetError(err) {
+					klog.Errorf("Failed to get pod annotation of pod %s/%s for NAD %s", pod.Namespace, pod.Name, nadName)
+				}
+				continue
 			}
-			continue
-		}
-		expectedLogicalPortName, err := bsnc.allocatePodIPs(pod, annotations, nadName)
-		if err != nil {
-			return err
-		}
-		if expectedLogicalPortName != "" {
-			expectedLogicalPorts[expectedLogicalPortName] = true
+			expectedLogicalPortName, err := bsnc.allocatePodIPs(pod, annotations, nadName)
+			if err != nil {
+				return err
+			}
+			if expectedLogicalPortName != "" {
+				expectedLogicalPorts[expectedLogicalPortName] = true
+			}
 		}
 	}
 	return bsnc.deleteStaleLogicalSwitchPorts(expectedLogicalPorts)
