@@ -11,10 +11,9 @@ import (
 	ocpconfigapi "github.com/openshift/api/config/v1"
 	libovsdbclient "github.com/ovn-org/libovsdb/client"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
-
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
-
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/sbdb"
+
 	"k8s.io/klog/v2"
 )
 

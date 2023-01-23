@@ -18,7 +18,7 @@ import (
 var fakeNodeName = "node"
 
 type FakeOVNNode struct {
-	node       *OvnNode
+	node       *DefaultNodeNetworkController
 	watcher    factory.NodeWatchFactory
 	stopChan   chan struct{}
 	recorder   *record.FakeRecorder
@@ -70,6 +70,9 @@ func (o *FakeOVNNode) init() {
 	o.watcher, err = factory.NewNodeWatchFactory(o.fakeClient, fakeNodeName)
 	Expect(err).NotTo(HaveOccurred())
 
-	o.node = NewNode(o.fakeClient.KubeClient, o.watcher, fakeNodeName, o.stopChan, o.wg, o.recorder)
+	bnnc := NewCommonNodeNetworkControllerInfo(o.fakeClient.KubeClient, o.watcher, o.recorder, fakeNodeName, false)
+	o.node = newDefaultNodeNetworkControllerCommon(bnnc, o.stopChan, o.wg)
+	// watcher is started by nodeNetworkControllerManager, not by nodeNetworkcontroller, so start it here.
+	o.watcher.Start()
 	o.node.Start(context.TODO())
 }

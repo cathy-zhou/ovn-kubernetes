@@ -75,7 +75,7 @@ var _ = Describe("Node DPU tests", func() {
 	var kubeMock kubemocks.Interface
 	var factoryMock factorymocks.NodeWatchFactory
 	var pod v1.Pod
-	var node OvnNode
+	var nc *DefaultNodeNetworkController
 	var podLister v1mocks.PodLister
 	var podNamespaceLister v1mocks.PodNamespaceLister
 
@@ -96,7 +96,8 @@ var _ = Describe("Node DPU tests", func() {
 
 		kubeMock = kubemocks.Interface{}
 		factoryMock = factorymocks.NodeWatchFactory{}
-		node = OvnNode{Kube: &kubeMock, watchFactory: &factoryMock}
+		bnnc := newCommonNodeNetworkControllerInfoCommon(nil, &kubeMock, &factoryMock, nil, "", false)
+		nc = newDefaultNodeNetworkControllerCommon(bnnc, nil, nil)
 
 		podNamespaceLister = v1mocks.PodNamespaceLister{}
 		podLister = v1mocks.PodLister{}
@@ -125,12 +126,12 @@ var _ = Describe("Node DPU tests", func() {
 			}
 			pod.Annotations = podAnnot
 			sriovnetOpsMock.On("GetVfRepresentorDPU", "0", "9").Return("pf0vf9", nil)
-			rep, err := node.getVfRepName(&pod)
+			rep, err := nc.getVfRepName(&pod)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(rep).To(Equal("pf0vf9"))
 		})
 		It("Fails if dpu.connection-details annotation is missing from Pod", func() {
-			_, err := node.getVfRepName(&pod)
+			_, err := nc.getVfRepName(&pod)
 			Expect(err).To(HaveOccurred())
 		})
 	})
@@ -165,7 +166,7 @@ var _ = Describe("Node DPU tests", func() {
 			pod.Annotations = map[string]string{}
 			fakeClient := newFakeKubeClientWithPod(&pod)
 			podNamespaceLister.On("Get", mock.AnythingOfType("string")).Return(pod, nil)
-			err := node.addRepPort(&pod, vfRep, ifInfo, &podLister, fakeClient)
+			err := nc.addRepPort(&pod, vfRep, ifInfo, &podLister, fakeClient)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("failed to get dpu annotation"))
 		})
@@ -191,7 +192,7 @@ var _ = Describe("Node DPU tests", func() {
 			podNamespaceLister.On("Get", mock.AnythingOfType("string")).Return(pod, nil)
 
 			// call addRepPort()
-			err := node.addRepPort(&pod, vfRep, ifInfo, &podLister, fakeClient)
+			err := nc.addRepPort(&pod, vfRep, ifInfo, &podLister, fakeClient)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("failed to run ovs command"))
 			Expect(execMock.CalledMatchesExpected()).To(BeTrue(), execMock.ErrorDesc())
@@ -221,7 +222,7 @@ var _ = Describe("Node DPU tests", func() {
 			podNamespaceLister.On("Get", mock.AnythingOfType("string")).Return(pod, nil)
 
 			// call addRepPort()
-			err := node.addRepPort(&pod, vfRep, ifInfo, &podLister, fakeClient)
+			err := nc.addRepPort(&pod, vfRep, ifInfo, &podLister, fakeClient)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("failed to run ovs command"))
 			Expect(execMock.CalledMatchesExpected()).To(BeTrue(), execMock.ErrorDesc())
@@ -277,7 +278,7 @@ var _ = Describe("Node DPU tests", func() {
 					fakeClient := newFakeKubeClientWithPod(&pod)
 					podNamespaceLister.On("Get", mock.AnythingOfType("string")).Return(pod, nil)
 
-					err := node.addRepPort(&pod, vfRep, ifInfo, &podLister, fakeClient)
+					err := nc.addRepPort(&pod, vfRep, ifInfo, &podLister, fakeClient)
 					Expect(err).To(HaveOccurred())
 					Expect(execMock.CalledMatchesExpected()).To(BeTrue(), execMock.ErrorDesc())
 				})
@@ -294,7 +295,7 @@ var _ = Describe("Node DPU tests", func() {
 					fakeClient := newFakeKubeClientWithPod(&pod)
 					podNamespaceLister.On("Get", mock.AnythingOfType("string")).Return(pod, nil)
 
-					err := node.addRepPort(&pod, vfRep, ifInfo, &podLister, fakeClient)
+					err := nc.addRepPort(&pod, vfRep, ifInfo, &podLister, fakeClient)
 					Expect(err).To(HaveOccurred())
 					Expect(execMock.CalledMatchesExpected()).To(BeTrue(), execMock.ErrorDesc())
 				})
@@ -312,7 +313,7 @@ var _ = Describe("Node DPU tests", func() {
 					fakeClient := newFakeKubeClientWithPod(&pod)
 					podNamespaceLister.On("Get", mock.AnythingOfType("string")).Return(pod, nil)
 
-					err := node.addRepPort(&pod, vfRep, ifInfo, &podLister, fakeClient)
+					err := nc.addRepPort(&pod, vfRep, ifInfo, &podLister, fakeClient)
 					Expect(err).To(HaveOccurred())
 					Expect(execMock.CalledMatchesExpected()).To(BeTrue(), execMock.ErrorDesc())
 				})
@@ -335,7 +336,7 @@ var _ = Describe("Node DPU tests", func() {
 				fakeClient := newFakeKubeClientWithPod(&pod)
 				podNamespaceLister.On("Get", mock.AnythingOfType("string")).Return(pod, nil)
 
-				err = node.addRepPort(&pod, vfRep, ifInfo, &podLister, fakeClient)
+				err = nc.addRepPort(&pod, vfRep, ifInfo, &podLister, fakeClient)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(execMock.CalledMatchesExpected()).To(BeTrue(), execMock.ErrorDesc())
 			})
@@ -362,7 +363,7 @@ var _ = Describe("Node DPU tests", func() {
 				fakeClient := newFakeKubeClientWithPod(&pod)
 				podNamespaceLister.On("Get", mock.AnythingOfType("string")).Return(pod, nil)
 
-				err = node.addRepPort(&pod, vfRep, ifInfo, &podLister, fakeClient)
+				err = nc.addRepPort(&pod, vfRep, ifInfo, &podLister, fakeClient)
 				Expect(err).To(HaveOccurred())
 				Expect(execMock.CalledMatchesExpected()).To(BeTrue(), execMock.ErrorDesc())
 			})
@@ -384,7 +385,7 @@ var _ = Describe("Node DPU tests", func() {
 			execMock.AddFakeCmd(&ovntest.ExpectedCmd{
 				Cmd: fmt.Sprintf("ovs-vsctl --timeout=15 --if-exists del-port br-int %s", "pf0vf9"),
 			})
-			err := node.delRepPort(vfRep)
+			err := nc.delRepPort(vfRep)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(execMock.CalledMatchesExpected()).To(BeTrue(), execMock.ErrorDesc())
 		})
@@ -394,7 +395,7 @@ var _ = Describe("Node DPU tests", func() {
 			execMock.AddFakeCmd(&ovntest.ExpectedCmd{
 				Cmd: genOVSDelPortCmd("pf0vf9"),
 			})
-			err := node.delRepPort(vfRep)
+			err := nc.delRepPort(vfRep)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(execMock.CalledMatchesExpected()).To(BeTrue(), execMock.ErrorDesc())
 		})
@@ -413,7 +414,7 @@ var _ = Describe("Node DPU tests", func() {
 				Err: nil,
 			})
 			// pass on the second
-			err := node.delRepPort(vfRep)
+			err := nc.delRepPort(vfRep)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(execMock.CalledMatchesExpected()).To(BeTrue(), execMock.ErrorDesc())
 		})
