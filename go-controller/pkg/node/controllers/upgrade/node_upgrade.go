@@ -14,7 +14,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 )
@@ -38,21 +37,31 @@ func NewController(client kubernetes.Interface, wf factory.NodeWatchFactory) *up
 
 // WaitForTopologyVerions polls continuously until the running master has reported a topology of
 // at least the minimum requested.
-func (uc *upgradeController) WaitForTopologyVersion(ctx context.Context, minVersion int, timeout time.Duration) error {
-	return wait.PollWithContext(ctx, 10*time.Second, timeout, func(ctx context.Context) (bool, error) {
-		ver, err := uc.GetTopologyVersion(ctx)
-		if err == nil {
-			if ver >= minVersion {
-				klog.Infof("Cluster topology version is now %d", ver)
-				return true, nil
-			}
+func (uc *upgradeController) WaitForTopologyVersion(ctx context.Context, stopChan <-chan struct{}, minVersion int, timeout time.Duration) error {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	timeoutContext, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	for {
+		select {
+		case <-ticker.C:
+			ver, err := uc.GetTopologyVersion(ctx)
+			if err == nil {
+				if ver >= minVersion {
+					klog.Infof("Cluster topology version is now %d", ver)
+					return nil
+				}
 
-			klog.Infof("Cluster topology version %d < %d", ver, minVersion)
-			return false, nil
+				klog.Infof("Cluster topology version %d < %d", ver, minVersion)
+			} else {
+				klog.Errorf("Failed to retrieve topology version: %v", err)
+			}
+		case <-stopChan:
+			return fmt.Errorf("failed to get topology version: stopped")
+		case <-timeoutContext.Done():
+			return fmt.Errorf("failed to get topology version: %v", timeoutContext.Err())
 		}
-		klog.Errorf("Failed to retrieve topology version: %v", err)
-		return false, nil // swallow error so we retry
-	})
+	}
 }
 
 // GetTopologyVersion polls the coordination points (Nodes and ConfigMaps) until

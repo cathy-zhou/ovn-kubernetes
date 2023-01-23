@@ -5,7 +5,8 @@ import (
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-	factoryMocks "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory/mocks"
+	factorymocks "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory/mocks"
+	kubemocks "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube/mocks"
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -35,17 +36,20 @@ func genDeleteStaleRepPortCmd(iface string) string {
 
 func genFindInterfaceWithSandboxCmd() string {
 	return fmt.Sprintf("ovs-vsctl --timeout=15 --columns=name,external_ids --data=bare --no-headings " +
-		"--format=csv find Interface external_ids:sandbox!=\"\" external_ids:vf-netdev-name!=\"\"")
+		"--format=csv find Interface external_ids:sandbox!=\"\" external_ids:vf-netdev-name!=\"\" " +
+		"external_ids:k8s.ovn.org/network{=}[]")
 }
 
 var _ = Describe("Healthcheck tests", func() {
 	var execMock *ovntest.FakeExec
-	var factoryMock *factoryMocks.ObjectCacheInterface
+	var factoryMock factorymocks.NodeWatchFactory
+	var kubeMock kubemocks.Interface
 
 	BeforeEach(func() {
 		execMock = ovntest.NewFakeExec()
 		Expect(util.SetExec(execMock)).To(Succeed())
-		factoryMock = &factoryMocks.ObjectCacheInterface{}
+		kubeMock = kubemocks.Interface{}
+		factoryMock = factorymocks.NodeWatchFactory{}
 	})
 
 	AfterEach(func() {
@@ -86,6 +90,8 @@ var _ = Describe("Healthcheck tests", func() {
 
 	Describe("checkForStaleOVSRepresentorInterfaces", func() {
 		nodeName := "localNode"
+		bnnc := newCommonNodeNetworkControllerInfo(nil, &kubeMock, &factoryMock, nil, nodeName, false)
+		nc := newDefaultNodeNetworkController(bnnc, nil, nil)
 		podList := []*v1.Pod{
 			{
 				ObjectMeta: metav1.ObjectMeta{
@@ -131,7 +137,7 @@ var _ = Describe("Healthcheck tests", func() {
 					Output: "",
 					Err:    nil,
 				})
-				checkForStaleOVSRepresentorInterfaces(nodeName, factoryMock)
+				nc.checkForStaleOVSRepresentorInterfaces()
 				Expect(execMock.CalledMatchesExpected()).To(BeTrue(), execMock.ErrorDesc)
 			})
 		})
@@ -145,7 +151,7 @@ var _ = Describe("Healthcheck tests", func() {
 						"pod-b-ifc,sandbox=123abcfaa iface-id=b-ns_b-pod\n",
 					Err: nil,
 				})
-				checkForStaleOVSRepresentorInterfaces(nodeName, factoryMock)
+				nc.checkForStaleOVSRepresentorInterfaces()
 				Expect(execMock.CalledMatchesExpected()).To(BeTrue(), execMock.ErrorDesc)
 			})
 		})

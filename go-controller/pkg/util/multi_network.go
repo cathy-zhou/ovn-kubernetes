@@ -337,6 +337,80 @@ func (layer2NetConfInfo *Layer2NetConfInfo) MTU() int {
 	return layer2NetConfInfo.mtu
 }
 
+// LocalnetNetConfInfo is structure which holds specific secondary localnet network information
+type LocalnetNetConfInfo struct {
+	subnets        string
+	mtu            int
+	excludeSubnets string
+
+	VLANID         int
+	ClusterSubnets []*net.IPNet
+	ExcludeSubnets []*net.IPNet
+}
+
+func (localnetNetConfInfo *LocalnetNetConfInfo) CompareNetConf(newNetConfInfo NetConfInfo) bool {
+	var errs []error
+	var err error
+
+	newLocalnetNetConfInfo, ok := newNetConfInfo.(*LocalnetNetConfInfo)
+	if !ok {
+		klog.V(5).Infof("New netconf topology type is different, expect %s",
+			localnetNetConfInfo.TopologyType())
+		return false
+	}
+	if !isSubnetsStringEqual(localnetNetConfInfo.subnets, newLocalnetNetConfInfo.subnets) {
+		err = fmt.Errorf("new %s netconf subnets %v has changed, expect %v",
+			types.LocalnetTopology, newLocalnetNetConfInfo.subnets, localnetNetConfInfo.subnets)
+		errs = append(errs, err)
+	}
+	if localnetNetConfInfo.mtu != newLocalnetNetConfInfo.mtu {
+		err = fmt.Errorf("new %s netconf mtu %v has changed, expect %v",
+			types.LocalnetTopology, newLocalnetNetConfInfo.mtu, localnetNetConfInfo.mtu)
+		errs = append(errs, err)
+	}
+	if !isSubnetsStringEqual(localnetNetConfInfo.excludeSubnets, newLocalnetNetConfInfo.excludeSubnets) {
+		err = fmt.Errorf("new %s netconf excludeSubnets %v has changed, expect %v",
+			types.LocalnetTopology, newLocalnetNetConfInfo.excludeSubnets, localnetNetConfInfo.excludeSubnets)
+		errs = append(errs, err)
+	}
+	if localnetNetConfInfo.VLANID != newLocalnetNetConfInfo.VLANID {
+		err = fmt.Errorf("new %s netconf VLAN ID %v has changed, expect %v",
+			types.LocalnetTopology, newLocalnetNetConfInfo.VLANID, localnetNetConfInfo.VLANID)
+		errs = append(errs, err)
+	}
+
+	if len(errs) != 0 {
+		err = kerrors.NewAggregate(errs)
+		klog.V(5).Infof(err.Error())
+		return false
+	}
+	return true
+}
+
+func newLocalnetNetConfInfo(netconf *ovncnitypes.NetConf) (*LocalnetNetConfInfo, error) {
+	clusterSubnets, excludeSubnets, err := verifyExcludeIPs(netconf.Subnets, netconf.ExcludeSubnets)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s netconf %s: %v", netconf.Topology, netconf.Name, err)
+	}
+
+	return &LocalnetNetConfInfo{
+		subnets:        netconf.Subnets,
+		mtu:            netconf.MTU,
+		VLANID:         netconf.VLANID,
+		excludeSubnets: netconf.ExcludeSubnets,
+		ClusterSubnets: clusterSubnets,
+		ExcludeSubnets: excludeSubnets,
+	}, nil
+}
+
+func (localnetNetConfInfo *LocalnetNetConfInfo) TopologyType() string {
+	return types.LocalnetTopology
+}
+
+func (localnetNetConfInfo *LocalnetNetConfInfo) MTU() int {
+	return localnetNetConfInfo.mtu
+}
+
 // GetNADName returns key of NetAttachDefInfo.NetAttachDefs map, also used as Pod annotation key
 func GetNADName(namespace, name string) string {
 	return fmt.Sprintf("%s/%s", namespace, name)
@@ -362,6 +436,8 @@ func newNetConfInfo(netconf *ovncnitypes.NetConf) (NetConfInfo, error) {
 		return newLayer3NetConfInfo(netconf)
 	case types.Layer2Topology:
 		return newLayer2NetConfInfo(netconf)
+	case types.LocalnetTopology:
+		return newLocalnetNetConfInfo(netconf)
 	default:
 		// other topology NAD can be supported later
 		return nil, fmt.Errorf("topology %s not supported", netconf.Topology)
