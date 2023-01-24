@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	kapi "k8s.io/api/core/v1"
@@ -20,7 +21,7 @@ import (
 )
 
 // watchPodsDPU watch updates for pod dpu annotations
-func (n *OvnNode) watchPodsDPU(isOvnUpEnabled bool) error {
+func (n *OvnNode) watchPodsDPU() error {
 	var retryPods sync.Map
 	// servedPods tracks the pods that got a VF
 	var servedPods sync.Map
@@ -49,6 +50,7 @@ func (n *OvnNode) watchPodsDPU(isOvnUpEnabled bool) error {
 					retryPods.Store(pod.UID, true)
 					return
 				}
+				isOvnUpEnabled := atomic.LoadInt32(&n.atomicOvnUpEnabled) > 0
 				podInterfaceInfo, err := cni.PodAnnotation2PodInfo(pod.Annotations, nil, isOvnUpEnabled, string(pod.UID),
 					"", nadName, netName, config.Default.MTU)
 				if err != nil {
@@ -86,6 +88,7 @@ func (n *OvnNode) watchPodsDPU(isOvnUpEnabled bool) error {
 					klog.Infof("Failed to get rep name, %s. retrying", err)
 					return
 				}
+				isOvnUpEnabled := atomic.LoadInt32(&n.atomicOvnUpEnabled) > 0
 				podInterfaceInfo, err := cni.PodAnnotation2PodInfo(pod.Annotations, nil, isOvnUpEnabled, string(pod.UID),
 					"", nadName, netName, config.Default.MTU)
 				if err != nil {

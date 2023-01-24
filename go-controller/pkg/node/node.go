@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	kapi "k8s.io/api/core/v1"
@@ -46,6 +47,9 @@ type OvnNode struct {
 	wg           *sync.WaitGroup
 	recorder     record.EventRecorder
 	gateway      Gateway
+
+	// atomic integer value to indicate if PortBinding.up is supported
+	atomicOvnUpEnabled int32
 
 	// retry framework for namespaces, used for the removal of stale conntrack entries for external gateways
 	retryNamespaces *retry.RetryFramework
@@ -316,28 +320,6 @@ func isOVNControllerReady() (bool, error) {
 	return true, nil
 }
 
-// Starting with v21.03.0 OVN sets OVS.Interface.external-id:ovn-installed
-// and OVNSB.Port_Binding.up when all OVS flows associated to a
-// logical port have been successfully programmed.
-// OVS.Interface.external-id:ovn-installed can only be used correctly
-// in a combination with OVS.Interface.external-id:iface-id-ver
-func getOVNIfUpCheckMode() (bool, error) {
-	if config.OvnKubeNode.DisableOVNIfaceIdVer {
-		klog.Infof("'iface-id-ver' is manually disabled, ovn-installed feature can't be used")
-		return false, nil
-	}
-	if _, stderr, err := util.RunOVNSbctl("--columns=up", "list", "Port_Binding"); err != nil {
-		if strings.Contains(stderr, "does not contain a column") {
-			klog.Infof("Falling back to using legacy OVS flow readiness checks")
-			return false, nil
-		}
-		return false, fmt.Errorf("failed to check if port_binding is supported in OVN, stderr: %q, error: %v",
-			stderr, err)
-	}
-	klog.Infof("Detected support for port binding with external IDs")
-	return true, nil
-}
-
 type managementPortEntry struct {
 	port   ManagementPort
 	config *managementPortConfig
@@ -458,10 +440,13 @@ func (n *OvnNode) Start(ctx context.Context) error {
 	}
 	klog.Infof("Node %s ready for ovn initialization with subnet %s", n.name, util.JoinIPNets(subnets, ","))
 
-	if config.OvnKubeNode.Mode != types.NodeModeDPUHost {
-		isOvnUpEnabled, err = getOVNIfUpCheckMode()
+	if config.OvnKubeNode.Mode != types.NodeModeDPUHost && !config.OvnKubeNode.DisableOVNIfaceIdVer {
+		isOvnUpEnabled, err = util.GetOVNIfUpCheckMode()
 		if err != nil {
 			return err
+		} else if isOvnUpEnabled {
+			klog.Infof("Detected support for port binding with external IDs")
+			atomic.StoreInt32(&n.atomicOvnUpEnabled, 1)
 		}
 	}
 
@@ -572,16 +557,23 @@ func (n *OvnNode) Start(ctx context.Context) error {
 					}
 				}
 				// ensure CNI support for port binding built into OVN, as masters have been upgraded
-				if initialTopoVersion < types.OvnPortBindingTopoVersion && cniServer != nil && !isOvnUpEnabled {
-					isOvnUpEnabled, err = getOVNIfUpCheckMode()
+				if initialTopoVersion < types.OvnPortBindingTopoVersion && cniServer != nil &&
+					!isOvnUpEnabled && !config.OvnKubeNode.DisableOVNIfaceIdVer {
+					isOvnUpEnabled, err = util.GetOVNIfUpCheckMode()
 					if err != nil {
 						klog.Errorf("%v", err)
-					}
-					if isOvnUpEnabled {
+					} else if isOvnUpEnabled {
+						klog.Infof("Detected support for port binding with external IDs")
 						cniServer.EnableOVNPortUpSupport()
+						atomic.StoreInt32(&n.atomicOvnUpEnabled, 1)
 					}
 				}
 			}()
+		}
+	} else if config.OvnKubeNode.Mode == types.NodeModeDPU {
+		err = n.updateIsOvnUpEnabled(ctx)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -649,7 +641,7 @@ func (n *OvnNode) Start(ctx context.Context) error {
 	}
 
 	if config.OvnKubeNode.Mode == types.NodeModeDPU {
-		if err := n.watchPodsDPU(isOvnUpEnabled); err != nil {
+		if err := n.watchPodsDPU(); err != nil {
 			return err
 		}
 	} else {
@@ -665,6 +657,40 @@ func (n *OvnNode) Start(ctx context.Context) error {
 	}
 
 	klog.Infof("OVN Kube Node initialized and ready.")
+	return nil
+}
+
+// updateIsOvnUpEnabled checks if ovnkube-master has been upgraded from OvnPortBindingTopoVersion
+// and start to support port binding up field. If so update atomicOvnUpEnabled accordingly.
+func (n *OvnNode) updateIsOvnUpEnabled(ctx context.Context) error {
+	isOvnUpEnabled := atomic.LoadInt32(&n.atomicOvnUpEnabled) > 0
+	if config.OvnKubeNode.Mode != types.NodeModeDPU || isOvnUpEnabled || config.OvnKubeNode.DisableOVNIfaceIdVer {
+		return nil
+	}
+	upgradeController := upgrade.NewController(n.client, n.watchFactory)
+	initialTopoVersion, err := upgradeController.GetTopologyVersion(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get initial topology version: %w", err)
+	}
+
+	klog.Infof("Current control-plane topology version is %d", initialTopoVersion)
+
+	// need to run upgrade controller
+	go func() {
+		if err := upgradeController.WaitForTopologyVersion(ctx, types.OvnCurrentTopologyVersion, 30*time.Minute); err != nil {
+			klog.Fatalf("Error while waiting for Topology Version to be updated: %v", err)
+		}
+		// ensure CNI support for port binding built into OVN, as masters have been upgraded
+		if initialTopoVersion < types.OvnPortBindingTopoVersion {
+			isOvnUpEnabled, err := util.GetOVNIfUpCheckMode()
+			if err != nil {
+				klog.Errorf("%v", err)
+			} else if isOvnUpEnabled {
+				klog.Infof("Detected support for port binding with external IDs")
+				atomic.StoreInt32(&n.atomicOvnUpEnabled, 1)
+			}
+		}
+	}()
 	return nil
 }
 
