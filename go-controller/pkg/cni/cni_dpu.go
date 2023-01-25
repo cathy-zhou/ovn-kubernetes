@@ -22,13 +22,16 @@ func (pr *PodRequest) updatePodDPUConnDetailsWithRetry(kube kube.Interface, podL
 		cpod := pod.DeepCopy()
 		cpod.Annotations, err = util.MarshalPodDPUConnDetails(cpod.Annotations, dpuConnDetails, pr.nadName)
 		if err != nil {
+			if util.IsAnnotationAlreadySetError(err) {
+				return nil
+			}
 			return err
 		}
 		return kube.UpdatePod(cpod)
 	})
 	if resultErr != nil {
-		return fmt.Errorf("failed to update %s annotation on pod %s/%s for NAD %s: %v",
-			util.DPUConnectionDetailsAnnot, pr.PodNamespace, pr.PodName, pr.nadName, resultErr)
+		return fmt.Errorf("failed to update %s annotation dpuConnDetails %+v on pod %s/%s for NAD %s: %v",
+			util.DPUConnectionDetailsAnnot, dpuConnDetails, pr.PodNamespace, pr.PodName, pr.nadName, resultErr)
 	}
 	return nil
 }

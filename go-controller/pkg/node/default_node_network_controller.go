@@ -54,6 +54,13 @@ type BaseNodeNetworkController struct {
 	util.NetInfo
 	util.NetConfInfo
 
+	// servedPods tracks the pods that got VF representor added for this network
+	servedPods sync.Map
+	// podNadCache stores all the NAD that the given Pod is attached for this network controller,
+	// we assume that Pod's Network Attachment Selection Annotation will not change over time.
+	// key is pod.UUID, value is networkMap of map[string]*NetworkSelectionElement type
+	podNadCache sync.Map
+
 	// stopChan and WaitGroup per controller
 	stopChan chan struct{}
 	wg       *sync.WaitGroup
