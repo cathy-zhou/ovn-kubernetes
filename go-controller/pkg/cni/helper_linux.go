@@ -369,17 +369,41 @@ func ConfigureOVS(ctx context.Context, namespace, podName, hostIfaceName string,
 	// Find and remove any existing OVS port with this iface-id. Pods can
 	// have multiple sandboxes if some are waiting for garbage collection,
 	// but only the latest one should have the iface-id set.
-	uuids, _ := ovsFind("Interface", "_uuid", "external-ids:iface-id="+ifaceID)
-	for _, uuid := range uuids {
-		if out, err := ovsExec("remove", "Interface", uuid, "external-ids", "iface-id"); err != nil {
-			klog.Warningf("Failed to clear stale OVS port %q iface-id %q: %v\n  %q", uuid, ifaceID, err, out)
+	names, _ := ovsFind("Interface", "name", "external-ids:iface-id="+ifaceID)
+	for _, name := range names {
+		if name == hostIfaceName {
+			// this may be result of restarting ovnkube-node, and it is trying to add the same VF representor to
+			// br-int for the same pod; do not delete port in this case.
+			continue
+		}
+		if out, err := ovsExec("--if-exists", "--with-iface", "del-port", "br-int", name); err != nil {
+			klog.Warningf("Failed to delete stale OVS port %q with iface-id %q from br-int: %v\n %q",
+				name, ifaceID, err, out)
+		}
+	}
+
+	// if the specified port was created for other Pod/Network, return error
+	extIds, err := ovsFind("Interface", "external_ids", "name="+hostIfaceName)
+	if err == nil && len(extIds) == 1 {
+		extId := extIds[0]
+		sandboxStr := util.GetExternalIDValByKey(extId, "sandbox")
+		nadNameString := util.GetExternalIDValByKey(extId, types.NADExternalID)
+		// if network_name does not exists, it is default network
+		if nadNameString == "" {
+			nadNameString = types.DefaultNetworkName
+		}
+		if sandboxStr != sandboxID {
+			return fmt.Errorf("OVS port %s was added for sandbox (%s), now readding it for (%s)", hostIfaceName, sandboxStr, sandboxID)
+		}
+		if nadNameString != ifInfo.NADName {
+			return fmt.Errorf("OVS port %s was added for NAD (%s), expect (%s)", hostIfaceName, nadNameString, ifInfo.NADName)
 		}
 	}
 
 	// Add the new sandbox's OVS port, tag the port as transient so stale
 	// pod ports are scrubbed on hard reboot
 	ovsArgs := []string{
-		"add-port", "br-int", hostIfaceName, "other_config:transient=true", "--", "set",
+		"--may-exist", "add-port", "br-int", hostIfaceName, "other_config:transient=true", "--", "set",
 		"interface", hostIfaceName,
 		fmt.Sprintf("external_ids:attached_mac=%s", ifInfo.MAC),
 		fmt.Sprintf("external_ids:iface-id=%s", ifaceID),

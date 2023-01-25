@@ -195,8 +195,18 @@ func (pr *PodRequest) cmdDel(podLister corev1listers.PodLister, kclient kubernet
 			if err != nil {
 				klog.Warningf("Failed to get DPU connection details annotation for pod %s/%s NAD %s: %v", pr.PodNamespace,
 					pr.PodName, pr.nadName, err)
+			}
+
+			// check if this cmdDel is meant for the current sandbox, if not, directly return
+			if dpuCD.SandboxId != pr.SandboxID {
+				klog.Infof("The cmdDel request for sandbox %s is not meant for the currently configured "+
+					"pod %s/%s on NAD %s with sandbox %s. Ignoring this request.",
+					pr.SandboxID, namespace, podName, pr.nadName, dpuCD.SandboxId)
 				return response, nil
 			}
+
+			// Delete the DPU connection-details annotation
+			_ = pr.updatePodDPUConnDetailsWithRetry(&kube.Kube{KClient: kclient}, podLister, nil)
 			vfNetdevName = dpuCD.VfNetdevName
 		} else {
 			// Find the the hostInterface name
