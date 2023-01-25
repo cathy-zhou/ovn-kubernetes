@@ -16,6 +16,7 @@ import (
 
 	nettypes "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -63,11 +64,11 @@ func (bnnc *BaseNodeNetworkController) addDPUPod4Nad(pod *kapi.Pod, dpuCD *util.
 }
 
 // watchPodsDPU watch updates for pod dpu annotations
-func (bnnc *BaseNodeNetworkController) watchPodsDPU() error {
+func (bnnc *BaseNodeNetworkController) watchPodsDPU() (*factory.Handler, error) {
 	podLister := corev1listers.NewPodLister(bnnc.watchFactory.LocalPodInformer().GetIndexer())
 	kclient := bnnc.Kube.(*kube.Kube)
 
-	_, err := bnnc.watchFactory.AddPodHandler(cache.ResourceEventHandlerFuncs{
+	podHandler, err := bnnc.watchFactory.AddPodHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			pod := obj.(*kapi.Pod)
 			klog.V(5).Infof("Add for Pod: %s/%s for network %s", pod.Namespace, pod.Name, bnnc.GetNetworkName())
@@ -76,7 +77,20 @@ func (bnnc *BaseNodeNetworkController) watchPodsDPU() error {
 			}
 			// add all the Pod's Nad into Pod's podNadCache
 			networkMap := make(map[string]*nettypes.NetworkSelectionElement)
-			networkMap[types.DefaultNetworkName] = nil
+			if !bnnc.IsSecondary() {
+				networkMap[types.DefaultNetworkName] = nil
+			} else {
+				var on bool
+				var err error
+				on, networkMap, err = util.PodWantsMultiNetwork(pod, bnnc.NetInfo)
+				if !on || err != nil {
+					if err != nil {
+						klog.Warningf("Error getting network-attachment for pod %s/%s network %s: %v",
+							pod.Namespace, pod.Name, bnnc.GetNetworkName(), err)
+					}
+					return
+				}
+			}
 			bnnc.podNadCache.Store(pod.UID, networkMap)
 
 			// initialize serverCache to be empty
@@ -192,7 +206,7 @@ func (bnnc *BaseNodeNetworkController) watchPodsDPU() error {
 			}
 		},
 	}, nil)
-	return err
+	return podHandler, err
 }
 
 // updatePodDPUConnStatusWithRetry update the pod annotion with the givin connection details

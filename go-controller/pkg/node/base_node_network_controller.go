@@ -129,7 +129,7 @@ func (bnnc *BaseNodeNetworkController) checkForStaleOVSRepresentorInterfaces() {
 				}
 				continue
 			}
-			for nadName, _ := range networkMap {
+			for nadName := range networkMap {
 				ifaceID := util.GetSecondaryNetworkIfaceId(pod.Namespace, pod.Name, nadName)
 				expectedIfaceIds[ifaceID] = true
 			}
