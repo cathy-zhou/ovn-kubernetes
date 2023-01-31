@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
@@ -15,6 +16,7 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
+	kexec "k8s.io/utils/exec"
 )
 
 // nodeNetworkControllerManager structure is the object manages all controllers for all networks for ovnkube-node
@@ -142,6 +144,13 @@ func (ncm *nodeNetworkControllerManager) getOVNIfUpCheckMode() error {
 func (ncm *nodeNetworkControllerManager) Init() error {
 	err := ncm.getOVNIfUpCheckMode()
 	if err != nil {
+		return err
+	}
+
+	// Initialize OVS exec runner; find OVS binaries that the CNI code uses.
+	// Must happen before calling any OVS exec from pkg/cni to prevent races.
+	// Not required in DPUHost mode as OVS is not present there.
+	if err := cni.SetExec(kexec.New()); err != nil {
 		return err
 	}
 
