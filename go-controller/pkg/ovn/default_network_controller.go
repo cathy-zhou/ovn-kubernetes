@@ -170,7 +170,7 @@ func newDefaultNetworkControllerCommon(cnci *CommonNetworkControllerInfo,
 		BaseNetworkController: BaseNetworkController{
 			CommonNetworkControllerInfo: *cnci,
 			NetConfInfo:                 &util.DefaultNetConfInfo{},
-			NetInfo:                     &util.DefaultNetInfo{},
+			NetInfo:                     util.NewDefaultNetInfo(),
 			lsManager:                   lsm.NewLogicalSwitchManager(),
 			logicalPortCache:            newPortCache(defaultStopChan),
 			namespaces:                  make(map[string]*namespaceInfo),
@@ -279,6 +279,12 @@ func (oc *DefaultNetworkController) Start(ctx context.Context) error {
 func (oc *DefaultNetworkController) Stop() {
 	close(oc.stopChan)
 	oc.wg.Wait()
+}
+
+// Cleanup cleans up logical entities for the given network, called from net-attach-def routine
+// could be called from a dummy Controller (only has CommonNetworkControllerInfo set)
+func (oc *DefaultNetworkController) Cleanup(netName string) error {
+	return nil
 }
 
 // Init runs a subnet IPAM and a controller that watches arrival/departure

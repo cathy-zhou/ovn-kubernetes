@@ -78,6 +78,8 @@ func (cm *networkControllerManager) NewNetworkController(nInfo util.NetInfo,
 	cnci := cm.newCommonNetworkControllerInfo()
 	topoType := netConfInfo.TopologyType()
 	switch topoType {
+	case "":
+		return ovn.NewDefaultNetworkController(cm.newCommonNetworkControllerInfo()), nil
 	case ovntypes.Layer3Topology:
 		return ovn.NewSecondaryLayer3NetworkController(cnci, nInfo, netConfInfo), nil
 	case ovntypes.Layer2Topology:
@@ -311,7 +313,9 @@ func (cm *networkControllerManager) Init() error {
 		return err
 	}
 
-	cm.NewDefaultNetworkController()
+	if !config.OVNKubernetesFeature.EnableMultiNetwork {
+		cm.defaultNetworkController = ovn.NewDefaultNetworkController(cm.newCommonNetworkControllerInfo())
+	}
 	return nil
 }
 
@@ -369,12 +373,6 @@ func (cm *networkControllerManager) newCommonNetworkControllerInfo() *ovn.Common
 		cm.sbClient, cm.podRecorder, cm.SCTPSupport, cm.multicastSupport)
 }
 
-// NewDefaultNetworkController creates the controller for default network
-func (cm *networkControllerManager) NewDefaultNetworkController() {
-	defaultController := ovn.NewDefaultNetworkController(cm.newCommonNetworkControllerInfo())
-	cm.defaultNetworkController = defaultController
-}
-
 // Run starts default controller and to starts level driven net-attach-def controller to which manages network
 // controller associated with net-attach-def
 func (cm *networkControllerManager) Run(ctx context.Context) error {
@@ -391,16 +389,15 @@ func (cm *networkControllerManager) Run(ctx context.Context) error {
 		return err
 	}
 
-	if cm.defaultNetworkController != nil {
+	if cm.nadController != nil {
+		klog.Infof("Starts net-attach-def controller")
+		return cm.nadController.Run(cm.stopChan)
+	} else {
+		// Start default network controller
 		err = cm.defaultNetworkController.Start(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to start default network controller: %v", err)
 		}
-	}
-
-	if cm.nadController != nil {
-		klog.Infof("Starts net-attach-def controller")
-		return cm.nadController.Run(cm.stopChan)
 	}
 	return nil
 }
@@ -410,11 +407,6 @@ func (cm *networkControllerManager) Stop() {
 	// stops the net-attach-def controller
 	close(cm.stopChan)
 
-	// stops the default network controller
-	if cm.defaultNetworkController != nil {
-		cm.defaultNetworkController.Stop()
-	}
-
 	// then stops each network controller associated with net-attach-def; it is ok
 	// to call GetAllControllers here as net-attach-def controller has been stopped,
 	// and no more change of network controllers
@@ -422,5 +414,8 @@ func (cm *networkControllerManager) Stop() {
 		for _, oc := range cm.nadController.GetAllNetworkControllers() {
 			oc.Stop()
 		}
+	} else if cm.defaultNetworkController != nil {
+		// stops the default network controller
+		cm.defaultNetworkController.Stop()
 	}
 }

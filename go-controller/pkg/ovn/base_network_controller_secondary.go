@@ -209,7 +209,7 @@ func (bsnc *BaseSecondaryNetworkController) removePodForSecondaryNetwork(pod *ka
 		portInfoMap = map[string]*lpInfo{}
 	}
 	for nadName := range podNetworks {
-		if !bsnc.HasNAD(nadName) {
+		if hasNAD, _ := bsnc.HasNAD(nadName); !hasNAD {
 			continue
 		}
 		bsnc.logicalPortCache.remove(pod, nadName)

@@ -151,7 +151,7 @@ func (gp *gressPolicy) addPeerPods(pods ...*v1.Pod) error {
 	}
 	ips := make([]net.IP, 0, len(pods)*podIPFactor)
 	for _, pod := range pods {
-		podIPs, err := util.GetPodIPsOfNetwork(pod, &util.DefaultNetInfo{})
+		podIPs, err := util.GetPodIPsOfNetwork(pod, util.NewDefaultNetInfo())
 		if err != nil {
 			return err
 		}
@@ -163,7 +163,7 @@ func (gp *gressPolicy) addPeerPods(pods ...*v1.Pod) error {
 
 // must be called with network policy read lock
 func (gp *gressPolicy) deletePeerPod(pod *v1.Pod) error {
-	ips, err := util.GetPodIPsOfNetwork(pod, &util.DefaultNetInfo{})
+	ips, err := util.GetPodIPsOfNetwork(pod, util.NewDefaultNetInfo())
 	if err != nil {
 		return err
 	}

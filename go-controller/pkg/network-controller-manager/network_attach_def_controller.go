@@ -50,9 +50,9 @@ type BaseNetworkController interface {
 type NetworkController interface {
 	BaseNetworkController
 	CompareNetConf(util.NetConfInfo) bool
-	AddNAD(nadName string)
+	AddNAD(nadName string, nadConf *util.NADConfig)
 	DeleteNAD(nadName string)
-	HasNAD(nadName string) bool
+	HasNAD(nadName string) (bool, *util.NADConfig)
 	// Cleanup cleans up the given network, it could be called to clean up network controllers that are deleted when
 	// ovn-k8s is down; so it's receiver could be a dummy network controller.
 	Cleanup(netName string) error
@@ -139,6 +139,13 @@ func (nadController *netAttachDefinitionController) Run(stopChan <-chan struct{}
 	err := nadController.SyncNetworkControllers()
 	if err != nil {
 		return fmt.Errorf("failed to sync all existing NAD entries: %v", err)
+	}
+
+	// In case there is no default NAD exists, always add a pseudo default NAD first to enable creation of the default
+	// network controller
+	if err := nadController.AddNetAttachDefCommon(nadController.ncm, types.DefaultNetworkName, types.DefaultNetworkName,
+		util.NewDefaultNetInfo(), &util.DefaultNetConfInfo{}, &util.NADConfig{}, nil, true); err != nil {
+		return err
 	}
 
 	klog.Info("Starting workers for controller %s", controllerName)
@@ -322,21 +329,22 @@ func (nadController *netAttachDefinitionController) GetAllNetworkControllers() [
 // Non-retriable errors (configuration error etc.) are just logged, and the function immediately returns nil.
 func (nadController *netAttachDefinitionController) AddNetAttachDef(ncm NetworkControllerManager,
 	netattachdef *nettypes.NetworkAttachmentDefinition, doStart bool) error {
-	var netConfInfo util.NetConfInfo
-	var nInfo util.NetInfo
-	var err, invalidNADErr error
 	var netName string
 
 	netAttachDefName := util.GetNADName(netattachdef.Namespace, netattachdef.Name)
 	klog.Infof("Add net-attach-def %s", netAttachDefName)
 
-	nInfo, netConfInfo, invalidNADErr = util.ParseNADInfo(netattachdef)
+	nInfo, netConfInfo, nadConf, invalidNADErr := util.ParseNADInfo(netattachdef)
 	if invalidNADErr == nil {
 		netName = nInfo.GetNetworkName()
-		if netName == types.DefaultNetworkName {
-			invalidNADErr = fmt.Errorf("NAD for default network, skip it")
-		}
 	}
+	return nadController.AddNetAttachDefCommon(ncm, netAttachDefName, netName, nInfo, netConfInfo, nadConf, invalidNADErr, doStart)
+}
+
+func (nadController *netAttachDefinitionController) AddNetAttachDefCommon(ncm NetworkControllerManager,
+	netAttachDefName, netName string, nInfo util.NetInfo, netConfInfo util.NetConfInfo, nadConf *util.NADConfig,
+	invalidNADErr error, doStart bool) error {
+	var err error
 
 	return nadController.perNADNetConfInfo.DoWithLock(netAttachDefName, func(nadName string) error {
 		nadNci, loaded := nadController.perNADNetConfInfo.LoadOrStore(nadName, &nadNetConfInfo{
@@ -352,7 +360,7 @@ func (nadController *netAttachDefinitionController) AddNetAttachDef(ncm NetworkC
 				return nil
 			}
 			klog.V(5).Infof("net-attach-def %s network %s first seen", nadName, netName)
-			err = nadController.addNADToController(ncm, nadName, nInfo, netConfInfo, doStart)
+			err = nadController.addNADToController(ncm, nadName, nInfo, netConfInfo, nadConf, doStart)
 			if err != nil {
 				klog.Errorf("Failed to add net-attach-def %s to network %s: %v", nadName, netName, err)
 				nadController.perNADNetConfInfo.Delete(nadName)
@@ -378,7 +386,7 @@ func (nadController *netAttachDefinitionController) AddNetAttachDef(ncm NetworkC
 				if !doStart {
 					return nil
 				}
-				err = nadController.addNADToController(ncm, nadName, nInfo, netConfInfo, doStart)
+				err = nadController.addNADToController(ncm, nadName, nInfo, netConfInfo, nadConf, doStart)
 				if err != nil {
 					klog.Errorf("Failed to add net-attach-def %s to network %s: %v", nadName, netName, err)
 					return err
@@ -401,7 +409,7 @@ func (nadController *netAttachDefinitionController) AddNetAttachDef(ncm NetworkC
 			}
 			klog.V(5).Infof("Add updated net-attach-def %s to network %s", nadName, netName)
 			nadController.perNADNetConfInfo.LoadOrStore(nadName, &nadNetConfInfo{NetConfInfo: netConfInfo, netName: netName})
-			err = nadController.addNADToController(ncm, nadName, nInfo, netConfInfo, doStart)
+			err = nadController.addNADToController(ncm, nadName, nInfo, netConfInfo, nadConf, doStart)
 			if err != nil {
 				klog.Errorf("Failed to add net-attach-def %s to network %s: %v", nadName, netName, err)
 				nadController.perNADNetConfInfo.Delete(nadName)
@@ -434,7 +442,7 @@ func (nadController *netAttachDefinitionController) DeleteNetAttachDef(netAttach
 }
 
 func (nadController *netAttachDefinitionController) addNADToController(ncm NetworkControllerManager, nadName string,
-	nInfo util.NetInfo, netConfInfo util.NetConfInfo, doStart bool) (err error) {
+	nInfo util.NetInfo, netConfInfo util.NetConfInfo, nadConf *util.NADConfig, doStart bool) (err error) {
 	var oc NetworkController
 	var nadExists, isStarted bool
 
@@ -478,7 +486,7 @@ func (nadController *netAttachDefinitionController) addNADToController(ncm Netwo
 		}
 		if !nadExists {
 			nni.nadNames[nadName] = struct{}{}
-			nni.nc.AddNAD(nadName)
+			nni.nc.AddNAD(nadName, nadConf)
 			defer func() {
 				if err != nil {
 					delete(nni.nadNames, nadName)

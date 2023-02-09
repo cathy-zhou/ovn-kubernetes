@@ -26,12 +26,20 @@ type NetInfo interface {
 	GetNetworkName() string
 	IsSecondary() bool
 	GetPrefix() string
-	AddNAD(nadName string)
+	AddNAD(nadName string, nadConf *NADConfig)
 	DeleteNAD(nadName string)
-	HasNAD(nadName string) bool
+	HasNAD(nadName string) (bool, *NADConfig)
 }
 
-type DefaultNetInfo struct{}
+type BaseNetInfo struct {
+	// all net-attach-def NAD names for this network, used to determine if a pod needs
+	// to be plumbed for this network
+	nadNames *sync.Map
+}
+
+type DefaultNetInfo struct {
+	BaseNetInfo
+}
 
 // GetNetworkName returns the network name
 func (nInfo *DefaultNetInfo) GetNetworkName() string {
@@ -49,28 +57,31 @@ func (nInfo *DefaultNetInfo) GetPrefix() string {
 }
 
 // AddNAD adds the specified NAD, no op for default network
-func (nInfo *DefaultNetInfo) AddNAD(nadName string) {
-	panic("unexpected call for default network")
+func (nInfo *BaseNetInfo) AddNAD(nadName string, nadConf *NADConfig) {
+	nInfo.nadNames.Store(nadName, nadConf)
 }
 
 // DeleteNAD deletes the specified NAD, no op for default network
-func (nInfo *DefaultNetInfo) DeleteNAD(nadName string) {
-	panic("unexpected call for default network")
+func (nInfo *BaseNetInfo) DeleteNAD(nadName string) {
+	nInfo.nadNames.Delete(nadName)
 }
 
 // HasNAD returns true if the given NAD exists, already return true for
 // default network
-func (nInfo *DefaultNetInfo) HasNAD(nadName string) bool {
-	panic("unexpected call for default network")
+func (nInfo *BaseNetInfo) HasNAD(nadName string) (bool, *NADConfig) {
+	var nadConf *NADConfig
+	v, ok := nInfo.nadNames.Load(nadName)
+	if v != nil {
+		nadConf = v.(*NADConfig)
+	}
+	return ok, nadConf
 }
 
 // SecondaryNetInfo holds the network name information for secondary network if non-nil
 type SecondaryNetInfo struct {
+	BaseNetInfo
 	// network name
 	netName string
-	// all net-attach-def NAD names for this network, used to determine if a pod needs
-	// to be plumbed for this network
-	nadNames *sync.Map
 }
 
 // GetNetworkName returns the network name
@@ -86,23 +97,6 @@ func (nInfo *SecondaryNetInfo) IsSecondary() bool {
 // GetPrefix returns if the logical entities prefix for this network
 func (nInfo *SecondaryNetInfo) GetPrefix() string {
 	return GetSecondaryNetworkPrefix(nInfo.netName)
-}
-
-// AddNAD adds the specified NAD
-func (nInfo *SecondaryNetInfo) AddNAD(nadName string) {
-	nInfo.nadNames.Store(nadName, true)
-}
-
-// DeleteNAD deletes the specified NAD
-func (nInfo *SecondaryNetInfo) DeleteNAD(nadName string) {
-	nInfo.nadNames.Delete(nadName)
-}
-
-// HasNAD returns true if the given NAD exists, used
-// to check if the network needs to be plumbed over
-func (nInfo *SecondaryNetInfo) HasNAD(nadName string) bool {
-	_, ok := nInfo.nadNames.Load(nadName)
-	return ok
 }
 
 // NetConfInfo is structure which holds specific per-network configuration
@@ -369,28 +363,43 @@ func newNetConfInfo(netconf *ovncnitypes.NetConf) (NetConfInfo, error) {
 }
 
 // ParseNADInfo parses config in NAD spec and return a NetAttachDefInfo object for secondary networks
-func ParseNADInfo(netattachdef *nettypes.NetworkAttachmentDefinition) (NetInfo, NetConfInfo, error) {
+func ParseNADInfo(netattachdef *nettypes.NetworkAttachmentDefinition) (NetInfo, NetConfInfo, *NADConfig, error) {
 	netconf, err := ParseNetConf(netattachdef)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	netconfInfo, err := newNetConfInfo(netconf)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return NewNetInfo(netconf), netconfInfo, nil
+
+	nadConf, err := GetNADConfig(netattachdef)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return NewNetInfo(netconf), netconfInfo, nadConf, nil
+}
+
+func NewDefaultNetInfo() NetInfo {
+	return &DefaultNetInfo{
+		BaseNetInfo: BaseNetInfo{
+			nadNames: &sync.Map{},
+		},
+	}
 }
 
 // ParseNetConf returns NetInfo for the given netconf
 func NewNetInfo(netconf *ovncnitypes.NetConf) NetInfo {
 	var nInfo NetInfo
 	if netconf.Name == types.DefaultNetworkName {
-		nInfo = &DefaultNetInfo{}
+		nInfo = NewDefaultNetInfo()
 	} else {
 		nInfo = &SecondaryNetInfo{
-			netName:  netconf.Name,
-			nadNames: &sync.Map{},
+			BaseNetInfo: BaseNetInfo{
+				nadNames: &sync.Map{},
+			},
+			netName: netconf.Name,
 		}
 	}
 	return nInfo
@@ -407,14 +416,38 @@ func ParseNetConf(netattachdef *nettypes.NetworkAttachmentDefinition) (*ovncnity
 		return nil, ErrorAttachDefNotOvnManaged
 	}
 
-	if netconf.Name != types.DefaultNetworkName {
-		nadName := GetNADName(netattachdef.Namespace, netattachdef.Name)
-		if netconf.NADName != nadName {
-			return nil, fmt.Errorf("net-attach-def name (%s) is inconsistent with config (%s)", nadName, netconf.NADName)
+	if netconf.Topology == "" {
+		// NAD of default network
+		netconf.Name = types.DefaultNetworkName
+	} else {
+		if netconf.NADName == "" {
+			return nil, fmt.Errorf("missing NADName in secondary network netconf %s", netconf.Name)
+		}
+		// "ovn-kubernetes" network name is reserved for later
+		if netconf.Name == "" || netconf.Name == types.DefaultNetworkName || netconf.Name == "ovn-kubernetes" {
+			return nil, fmt.Errorf("invalid name in in secondary network netconf (%s)", netconf.Name)
 		}
 	}
 
+	nadName := GetNADName(netattachdef.Namespace, netattachdef.Name)
+	if netconf.NADName != "" {
+		if netconf.NADName != nadName {
+			return nil, fmt.Errorf("net-attach-def name (%s) is inconsistent with config (%s)", nadName, netconf.NADName)
+		}
+	} else {
+		netconf.NADName = nadName
+	}
+
 	return netconf, nil
+}
+
+// per nad configuration, currently only rate limit config
+type NADConfig struct {
+}
+
+// GetNADConfig returns the nad specific configuration obtained from the net-attach-def
+func GetNADConfig(netattachdef *nettypes.NetworkAttachmentDefinition) (*NADConfig, error) {
+	return &NADConfig{}, nil
 }
 
 // GetPodNADToNetworkMapping sees if the given pod needs to plumb over this given network specified by netconf,
@@ -440,6 +473,11 @@ func GetPodNADToNetworkMapping(pod *kapi.Pod, nInfo NetInfo) (bool, map[string]*
 			return false, nil, fmt.Errorf("error getting default-network's network-attachment for pod %s: %v", podDesc, err)
 		}
 		if network != nil {
+			nadName := GetNADName(network.Namespace, network.Name)
+			if hasNAD, _ := nInfo.HasNAD(nadName); !hasNAD {
+				return false, nil, fmt.Errorf("default-network's network-attachment-element for pod %s: %s is not managed by OVN",
+					podDesc, nadName)
+			}
 			networkSelections[GetNADName(network.Namespace, network.Name)] = network
 		}
 		return true, networkSelections, nil
@@ -454,7 +492,7 @@ func GetPodNADToNetworkMapping(pod *kapi.Pod, nInfo NetInfo) (bool, map[string]*
 
 	for _, network := range allNetworks {
 		nadName := GetNADName(network.Namespace, network.Name)
-		if nInfo.HasNAD(nadName) {
+		if hasNAD, _ := nInfo.HasNAD(nadName); hasNAD {
 			if _, ok := networkSelections[nadName]; ok {
 				return false, nil, fmt.Errorf("unexpected error: more than one of the same NAD %s specified for pod %s",
 					nadName, podDesc)
