@@ -72,6 +72,7 @@ type networkNADInfo struct {
 
 type nadNetConfInfo struct {
 	util.NetConfInfo
+	nadConf *util.NADConfig
 	netName string
 }
 
@@ -286,6 +287,21 @@ func (nadController *netAttachDefinitionController) onNetworkAttachDefinitionUpd
 		return
 	}
 
+	// only handle NADConfig update
+	nInfo1, netConfInfo1, nadConf1, err1 := util.ParseNADInfo(oldNAD)
+	if err1 == nil {
+		nInfo2, netConfInfo2, nadConf2, err2 := util.ParseNADInfo(newNAD)
+		if err2 == nil {
+			if netConfInfo1.CompareNetConf(netConfInfo2) && nInfo1.GetNetworkName() == nInfo2.GetNetworkName() {
+				if util.IsNADConfSame(nadConf1, nadConf2) {
+					return
+				}
+				nadController.queueNetworkAttachDefinition(newObj)
+				return
+			}
+		}
+	}
+
 	err := fmt.Sprintf("Updating net-attach-def %s/%s is not supported", newNAD.Namespace, newNAD.Name)
 	nadRef := kapi.ObjectReference{
 		Kind:      "NetworkAttachmentDefinition",
@@ -350,6 +366,7 @@ func (nadController *netAttachDefinitionController) AddNetAttachDefCommon(ncm Ne
 		nadNci, loaded := nadController.perNADNetConfInfo.LoadOrStore(nadName, &nadNetConfInfo{
 			NetConfInfo: netConfInfo,
 			netName:     netName,
+			nadConf:     nadConf,
 		})
 		if !loaded {
 			// first time to process this nad
@@ -380,10 +397,11 @@ func (nadController *netAttachDefinitionController) AddNetAttachDefCommon(ncm Ne
 				klog.V(5).Infof("net-attach-def %s spec has changed", nadName)
 				nadUpdated = true
 			}
+			nadConfUpdated := !util.IsNADConfSame(nadNci.nadConf, nadConf)
 
 			if !nadUpdated {
-				// nothing changed, may still need to start the controller
-				if !doStart {
+				// nothing changed, may still need to start the controller or update its NADConfig
+				if !doStart && !nadConfUpdated {
 					return nil
 				}
 				err = nadController.addNADToController(ncm, nadName, nInfo, netConfInfo, nadConf, doStart)
@@ -493,6 +511,9 @@ func (nadController *netAttachDefinitionController) addNADToController(ncm Netwo
 					nni.nc.DeleteNAD(nadName)
 				}
 			}()
+		} else {
+			// update NADConf
+			nni.nc.AddNAD(nadName, nadConf)
 		}
 
 		if !doStart || isStarted {

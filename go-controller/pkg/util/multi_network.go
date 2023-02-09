@@ -450,6 +450,11 @@ func GetNADConfig(netattachdef *nettypes.NetworkAttachmentDefinition) (*NADConfi
 	return &NADConfig{}, nil
 }
 
+// IsNADConfSame compares the given two NADConfig and returns true if they are the same
+func IsNADConfSame(nadConf1 *NADConfig, nadConf2 *NADConfig) bool {
+	return true
+}
+
 // GetPodNADToNetworkMapping sees if the given pod needs to plumb over this given network specified by netconf,
 // and return the matching NetworkSelectionElement if any exists.
 //
