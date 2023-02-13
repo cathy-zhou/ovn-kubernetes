@@ -498,6 +498,30 @@ func (oc *DefaultNetworkController) Run(ctx context.Context) error {
 	return nil
 }
 
+func (oc *DefaultNetworkController) StartInterConnect(icInfo *util.InterConnectInfo) error {
+	logicalSwitch, ok := icInfo.LogicalEntityToConnect.(*nbdb.LogicalSwitch)
+	if !ok {
+		// configuration error, no retry
+		klog.Errorf("Inter-connect error: network %s can only connect to layer 2 network", oc.GetNetworkName())
+		return nil
+	}
+	routerName := oc.GetNetworkScopedName(ovntypes.OVNClusterRouter)
+	logicalRouter := &nbdb.LogicalRouter{Name: routerName}
+	return oc.Connect2Networks(logicalSwitch, logicalRouter, icInfo.Subnets)
+}
+
+func (oc *DefaultNetworkController) StopInterConnect(icInfo *util.InterConnectInfo) error {
+	logicalSwitch, ok := icInfo.LogicalEntityToConnect.(*nbdb.LogicalSwitch)
+	if !ok {
+		// configuration error, no retry
+		klog.Errorf("Inter-connect error: network %s can only connect to layer 2 network", oc.GetNetworkName())
+		return nil
+	}
+	routerName := oc.GetNetworkScopedName(ovntypes.OVNClusterRouter)
+	logicalRouter := &nbdb.LogicalRouter{Name: routerName}
+	return oc.Disconnect2Networks(logicalSwitch, logicalRouter)
+}
+
 type defaultNetworkControllerEventHandler struct {
 	baseHandler     baseNetworkControllerEventHandler
 	watchFactory    *factory.WatchFactory

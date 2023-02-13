@@ -382,7 +382,22 @@ func (oc *SecondaryLayer3NetworkController) Init() error {
 	}
 
 	_, err := oc.createOvnClusterRouter()
-	return err
+	if err != nil {
+		return err
+	}
+
+	//oc.IterateInterConnectedNetwork(func(netName string, icInfo *util.InterConnectInfo) {
+	//	logicalSwitch, ok := icInfo.LogicalEntityToConnect.(*nbdb.LogicalSwitch)
+	//	if !ok {
+	//		fmt.Errorf("failed to connect network %s to network %s, can only connect to layer2 network", oc.GetNetworkName(), netName)
+	//		return
+	//	}
+	//	if err = oc.Connect2Networks(logicalSwitch, logicalRouter, icInfo.Subnets); err != nil {
+	//		fmt.Errorf("failed to connect network %s to network %s", oc.GetNetworkName(), netName)
+	//	}
+	//})
+
+	return nil
 }
 
 func (oc *SecondaryLayer3NetworkController) addUpdateNodeEvent(node *kapi.Node, nSyncs *nodeSyncs) error {
@@ -509,4 +524,28 @@ func (oc *SecondaryLayer3NetworkController) syncNodes(nodes []interface{}) error
 		}
 	}
 	return nil
+}
+
+func (oc *SecondaryLayer3NetworkController) StartInterConnect(icInfo *util.InterConnectInfo) error {
+	logicalSwitch, ok := icInfo.LogicalEntityToConnect.(*nbdb.LogicalSwitch)
+	if !ok {
+		// configuration error, no retry
+		klog.Errorf("Inter-connect error: network %s can only connect to layer 2 network", oc.GetNetworkName())
+		return nil
+	}
+	routerName := oc.GetNetworkScopedName(types.OVNClusterRouter)
+	logicalRouter := &nbdb.LogicalRouter{Name: routerName}
+	return oc.Connect2Networks(logicalSwitch, logicalRouter, icInfo.Subnets)
+}
+
+func (oc *SecondaryLayer3NetworkController) StopInterConnect(icInfo *util.InterConnectInfo) error {
+	logicalSwitch, ok := icInfo.LogicalEntityToConnect.(*nbdb.LogicalSwitch)
+	if !ok {
+		// configuration error, no retry
+		klog.Errorf("Inter-connect error: network %s can only connect to layer 2 network", oc.GetNetworkName())
+		return nil
+	}
+	routerName := oc.GetNetworkScopedName(types.OVNClusterRouter)
+	logicalRouter := &nbdb.LogicalRouter{Name: routerName}
+	return oc.Disconnect2Networks(logicalSwitch, logicalRouter)
 }

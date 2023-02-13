@@ -117,6 +117,17 @@ func (oc *DefaultNetworkController) SetupMaster(existingNodeNames []string) erro
 	if err != nil {
 		return err
 	}
+
+	//oc.IterateInterConnectedNetwork(func(netName string, icInfo *util.InterConnectInfo) {
+	//	logicalSwitch, ok := icInfo.LogicalEntityToConnect.(*nbdb.LogicalSwitch)
+	//	if !ok {
+	//		fmt.Errorf("failed to connect network %s to network %s, can only connect to layer2 network", oc.GetNetworkName(), netName)
+	//	}
+	//	if err = oc.Connect2Networks(logicalSwitch, logicalRouter, icInfo.Subnets); err != nil {
+	//		fmt.Errorf("failed to connect network %s to network %s", oc.GetNetworkName(), netName)
+	//	}
+	//})
+	//
 	oc.defaultCOPPUUID = *(logicalRouter.Copp)
 
 	// Create a cluster-wide port group that all logical switch ports are part of

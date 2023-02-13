@@ -295,6 +295,38 @@ func (oc *SecondaryLayer2NetworkController) Init() error {
 			_ = oc.lsManager.AllocateIPs(switchName, []*net.IPNet{{IP: excludeIP, Mask: ipMask}})
 		}
 	}
+	//
+	//oc.IterateInterConnectedNetwork(func(netName string, icInfo *util.InterConnectInfo) {
+	//	if err = oc.StartInterConnect(icInfo); err != nil {
+	//		fmt.Errorf("failed to connect network %s to network %s", oc.GetNetworkName(), netName)
+	//	}
+	//})
 
 	return nil
+}
+
+func (oc *SecondaryLayer2NetworkController) StartInterConnect(icInfo *util.InterConnectInfo) error {
+	layer2NetConfInfo := oc.NetConfInfo.(*util.Layer2NetConfInfo)
+	layer2ClusterSubnets := layer2NetConfInfo.ClusterSubnets
+	switchName := oc.GetNetworkScopedName(types.OVNLayer2Switch)
+	logicalSwitch := &nbdb.LogicalSwitch{Name: switchName}
+	logicalRouter, ok := icInfo.LogicalEntityToConnect.(*nbdb.LogicalRouter)
+	if !ok {
+		// configuration error, no retry
+		klog.Errorf("Inter-connect error: network %s can only connect to layer 3 network", oc.GetNetworkName())
+		return nil
+	}
+	return oc.Connect2Networks(logicalSwitch, logicalRouter, layer2ClusterSubnets)
+}
+
+func (oc *SecondaryLayer2NetworkController) StopInterConnect(icInfo *util.InterConnectInfo) error {
+	logicalRouter, ok := icInfo.LogicalEntityToConnect.(*nbdb.LogicalRouter)
+	if !ok {
+		// configuration error, no retry
+		klog.Errorf("Inter-connect error: network %s can only connect to layer 3 network", oc.GetNetworkName())
+		return nil
+	}
+	switchName := oc.GetNetworkScopedName(types.OVNLayer2Switch)
+	logicalSwitch := &nbdb.LogicalSwitch{Name: switchName}
+	return oc.Disconnect2Networks(logicalSwitch, logicalRouter)
 }

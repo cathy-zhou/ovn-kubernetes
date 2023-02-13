@@ -137,6 +137,7 @@ const (
 	// Deprecated: we used to set topology version as an annotation on the node. We don't do this anymore.
 	OvnK8sTopoAnno         = OvnK8sPrefix + "/" + "topology-version"
 	OvnK8sSmallMTUTaintKey = OvnK8sPrefix + "/" + "mtu-too-small"
+	OvnK8sConnectToNad     = OvnK8sPrefix + "/" + "connect-to-nad"
 
 	// name of the configmap used to synchronize status (e.g. watch for topology changes)
 	OvnK8sStatusCMName         = "control-plane-status"

@@ -339,7 +339,25 @@ func (bnc *BaseNetworkController) addRoutesGatewayIP(pod *kapi.Pod, network *nad
 		topoType := bnc.TopologyType()
 		switch topoType {
 		case ovntypes.Layer2Topology:
-			// no route needed for directly connected subnets
+			//layer2NetConfInfo := bnc.NetConfInfo.(*util.Layer2NetConfInfo)
+			//for _, podIfAddr := range podAnnotation.IPs {
+			//	isIPv6 := utilnet.IsIPv6CIDR(podIfAddr)
+			//	clusterSubnet, err := util.MatchIPNetFamily(isIPv6, layer2NetConfInfo.ClusterSubnets)
+			//	if err != nil {
+			//		return err
+			//	}
+			//	gatewayIPnet := util.GetNodeGatewayIfAddr(clusterSubnet)
+			//	bnc.IterateInterConnectedNetwork(func(netName string, icInfo *util.InterConnectInfo) {
+			//		for _, subnet := range icInfo.Subnets {
+			//			if isIPv6 == utilnet.IsIPv6CIDR(subnet) {
+			//				podAnnotation.Routes = append(podAnnotation.Routes, util.PodRoute{
+			//					Dest:    subnet,
+			//					NextHop: gatewayIPnet.IP,
+			//				})
+			//			}
+			//		}
+			//	})
+			//}
 			return nil
 		case ovntypes.Layer3Topology:
 			for _, podIfAddr := range podAnnotation.IPs {
@@ -358,6 +376,16 @@ func (bnc *BaseNetworkController) addRoutesGatewayIP(pod *kapi.Pod, network *nad
 						})
 					}
 				}
+				//bnc.IterateInterConnectedNetwork(func(netName string, icInfo *util.InterConnectInfo) {
+				//	for _, subnet := range icInfo.Subnets {
+				//		if isIPv6 == utilnet.IsIPv6CIDR(subnet) {
+				//			podAnnotation.Routes = append(podAnnotation.Routes, util.PodRoute{
+				//				Dest:    subnet,
+				//				NextHop: gatewayIPnet.IP,
+				//			})
+				//		}
+				//	}
+				//})
 			}
 			return nil
 		}

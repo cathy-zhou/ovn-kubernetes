@@ -11,6 +11,7 @@ import (
 	nettypes "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	ovncnitypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 
 	kapi "k8s.io/api/core/v1"
@@ -26,15 +27,22 @@ type NetInfo interface {
 	GetNetworkName() string
 	IsSecondary() bool
 	GetPrefix() string
+	GetNetworkScopedName(name string) string
 	AddNAD(nadName string, nadConf *NADConfig)
 	DeleteNAD(nadName string)
 	HasNAD(nadName string) (bool, *NADConfig)
+	//AddInterConnectNetwork(netName string, icInfo *InterConnectInfo)
+	//DeleteInterConnectNetwork(netName string)
+	//IterateInterConnectedNetwork(f func(netName string, icInfo *InterConnectInfo))
 }
 
 type BaseNetInfo struct {
 	// all net-attach-def NAD names for this network, used to determine if a pod needs
 	// to be plumbed for this network
 	nadNames *sync.Map
+	//// interconnection subnets, key is network name connected to this network,
+	//// value is list of subnets belongs to the connected network
+	//interConnectSubnets *sync.Map
 }
 
 type DefaultNetInfo struct {
@@ -56,16 +64,41 @@ func (nInfo *DefaultNetInfo) GetPrefix() string {
 	return ""
 }
 
-// AddNAD adds the specified NAD, no op for default network
+// GetNetworkScopedName returns if a name in this network scope
+func (nInfo *DefaultNetInfo) GetNetworkScopedName(name string) string {
+	return name
+}
+
+// AddNAD adds the specified NAD
 func (nInfo *BaseNetInfo) AddNAD(nadName string, nadConf *NADConfig) {
 	nInfo.nadNames.Store(nadName, nadConf)
 }
 
-// DeleteNAD deletes the specified NAD, no op for default network
+// DeleteNAD deletes the specified NAD
 func (nInfo *BaseNetInfo) DeleteNAD(nadName string) {
 	nInfo.nadNames.Delete(nadName)
 }
 
+//// AddInterConnectNetwork adds the specified inter-connected network's inter-connect information
+//func (nInfo *BaseNetInfo) AddInterConnectNetwork(netName string, icInfo *InterConnectInfo) {
+//	nInfo.interConnectSubnets.Store(netName, icInfo)
+//}
+//
+//// DeleteInterConnectNetwork deletes the specified inter-connected network's inter-connect information when disconnected
+//func (nInfo *BaseNetInfo) DeleteInterConnectNetwork(netName string) {
+//	nInfo.interConnectSubnets.Delete(netName)
+//}
+//
+//// IterateInterConnectedSubnets iterate all inter-connected subnets
+//func (nInfo *BaseNetInfo) IterateInterConnectedNetwork(f func(string, *InterConnectInfo)) {
+//	nInfo.interConnectSubnets.Range(func(k, v interface{}) bool {
+//		netName := k.(string)
+//		icInfo := v.(*InterConnectInfo)
+//		f(netName, icInfo)
+//		return true
+//	})
+//}
+//
 // HasNAD returns true if the given NAD exists, already return true for
 // default network
 func (nInfo *BaseNetInfo) HasNAD(nadName string) (bool, *NADConfig) {
@@ -99,11 +132,26 @@ func (nInfo *SecondaryNetInfo) GetPrefix() string {
 	return GetSecondaryNetworkPrefix(nInfo.netName)
 }
 
+// GetNetworkScopedName returns if a name in this network scope
+func (nInfo *SecondaryNetInfo) GetNetworkScopedName(name string) string {
+	return nInfo.GetPrefix() + name
+}
+
+type InterConnectInfo struct {
+	NetName string
+	// the logical entity to connect to, it is either a logical router or a logical switch
+	LogicalEntityToConnect interface{}
+	// the subnets of this network to reach for, routes need to be added to the Pod of other network inter-connected with
+	Subnets []*net.IPNet
+}
+
 // NetConfInfo is structure which holds specific per-network configuration
 type NetConfInfo interface {
 	CompareNetConf(NetConfInfo) bool
 	TopologyType() string
 	MTU() int
+	NADToInterConnect() string
+	InterConnectInfo(netInfo NetInfo) *InterConnectInfo
 }
 
 // DefaultNetConfInfo is structure which holds specific default network information
@@ -128,6 +176,29 @@ func (defaultNetConfInfo *DefaultNetConfInfo) TopologyType() string {
 // MTU returns the defaultNetConfInfo's MTU value
 func (defaultNetConfInfo *DefaultNetConfInfo) MTU() int {
 	return config.Default.MTU
+}
+
+// NADToInterConnect returns the NAD this network is requested to inter-connected with
+func (defaultNetConfInfo *DefaultNetConfInfo) NADToInterConnect() string {
+	return ""
+}
+
+// InterConnectInfo returns the information used by inter-connection
+func (defaultNetConfInfo *DefaultNetConfInfo) InterConnectInfo(netInfo NetInfo) *InterConnectInfo {
+	subnets := make([]*net.IPNet, 0, len(config.Default.ClusterSubnets))
+	for i, cidr := range config.Default.ClusterSubnets {
+		subnets[i] = cidr.CIDR
+	}
+
+	logicalRouter := &nbdb.LogicalRouter{
+		Name: types.OVNClusterRouter,
+	}
+
+	return &InterConnectInfo{
+		NetName:                netInfo.GetNetworkName(),
+		LogicalEntityToConnect: logicalRouter,
+		Subnets:                subnets,
+	}
 }
 
 func isSubnetsStringEqual(subnetsString, newSubnetsString string) bool {
@@ -235,6 +306,29 @@ func (layer3NetConfInfo *Layer3NetConfInfo) MTU() int {
 	return layer3NetConfInfo.mtu
 }
 
+// NADToInterConnect returns the NAD this network is requested to inter-connected with
+func (layer3NetConfInfo *Layer3NetConfInfo) NADToInterConnect() string {
+	return ""
+}
+
+// InterConnectInfo returns the information used by inter-connection
+func (layer3NetConfInfo *Layer3NetConfInfo) InterConnectInfo(netInfo NetInfo) *InterConnectInfo {
+	subnets := make([]*net.IPNet, len(config.Default.ClusterSubnets), len(config.Default.ClusterSubnets))
+	for i, cidr := range layer3NetConfInfo.ClusterSubnets {
+		subnets[i] = cidr.CIDR
+	}
+
+	logicalRouter := &nbdb.LogicalRouter{
+		Name: netInfo.GetNetworkScopedName(types.OVNClusterRouter),
+	}
+
+	return &InterConnectInfo{
+		NetName:                netInfo.GetNetworkName(),
+		LogicalEntityToConnect: logicalRouter,
+		Subnets:                subnets,
+	}
+}
+
 // Layer2NetConfInfo is structure which holds specific secondary layer2 network information
 type Layer2NetConfInfo struct {
 	subnets        string
@@ -243,8 +337,11 @@ type Layer2NetConfInfo struct {
 
 	ClusterSubnets []*net.IPNet
 	ExcludeSubnets []*net.IPNet
+	ConnectToNAD   string
 }
 
+// CompareNetConf compares the layer2NetConfInfo with the given newNetConfInfo and returns true
+// if they share the same netconf information
 func (layer2NetConfInfo *Layer2NetConfInfo) CompareNetConf(newNetConfInfo NetConfInfo) bool {
 	var errs []error
 	var err error
@@ -269,6 +366,11 @@ func (layer2NetConfInfo *Layer2NetConfInfo) CompareNetConf(newNetConfInfo NetCon
 			types.Layer2Topology, newLayer2NetConfInfo.excludeSubnets, layer2NetConfInfo.excludeSubnets)
 		errs = append(errs, err)
 	}
+	if layer2NetConfInfo.ConnectToNAD != newLayer2NetConfInfo.ConnectToNAD {
+		err = fmt.Errorf("new %s netconf connect %v has changed, expect %v",
+			types.Layer2Topology, newLayer2NetConfInfo.excludeSubnets, layer2NetConfInfo.excludeSubnets)
+		errs = append(errs, err)
+	}
 	if len(errs) != 0 {
 		err = kerrors.NewAggregate(errs)
 		klog.V(5).Infof(err.Error())
@@ -277,11 +379,13 @@ func (layer2NetConfInfo *Layer2NetConfInfo) CompareNetConf(newNetConfInfo NetCon
 	return true
 }
 
-func newLayer2NetConfInfo(netconf *ovncnitypes.NetConf) (*Layer2NetConfInfo, error) {
+func newLayer2NetConfInfo(netconf *ovncnitypes.NetConf, annotations map[string]string) (*Layer2NetConfInfo, error) {
 	clusterSubnets, excludeSubnets, err := verifyExcludeIPs(netconf.Subnets, netconf.ExcludeSubnets)
 	if err != nil {
 		return nil, fmt.Errorf("invalid %s netconf %s: %v", netconf.Topology, netconf.Name, err)
 	}
+
+	nad := annotations[types.OvnK8sConnectToNad]
 
 	return &Layer2NetConfInfo{
 		subnets:        netconf.Subnets,
@@ -289,6 +393,7 @@ func newLayer2NetConfInfo(netconf *ovncnitypes.NetConf) (*Layer2NetConfInfo, err
 		excludeSubnets: netconf.ExcludeSubnets,
 		ClusterSubnets: clusterSubnets,
 		ExcludeSubnets: excludeSubnets,
+		ConnectToNAD:   nad,
 	}, nil
 }
 
@@ -323,12 +428,31 @@ func verifyExcludeIPs(subnetsString string, excludeSubnetsString string) ([]*net
 	return clusterSubnets, excludeSubnets, nil
 }
 
+// TopologyType returns the layer2NetConfInfo's topology type
 func (layer2NetConfInfo *Layer2NetConfInfo) TopologyType() string {
 	return types.Layer2Topology
 }
 
+// MTU returns the layer2NetConfInfo's MTU value
 func (layer2NetConfInfo *Layer2NetConfInfo) MTU() int {
 	return layer2NetConfInfo.mtu
+}
+
+// NADToInterConnect returns the NAD this network is requested to inter-connected with
+func (layer2NetConfInfo *Layer2NetConfInfo) NADToInterConnect() string {
+	return layer2NetConfInfo.ConnectToNAD
+}
+
+// InterConnectInfo returns the information used by inter-connection
+func (layer2NetConfInfo *Layer2NetConfInfo) InterConnectInfo(netInfo NetInfo) *InterConnectInfo {
+	logicalSwitch := &nbdb.LogicalSwitch{
+		Name: netInfo.GetNetworkScopedName(types.OVNLayer2Switch),
+	}
+	return &InterConnectInfo{
+		NetName:                netInfo.GetNetworkName(),
+		LogicalEntityToConnect: logicalSwitch,
+		Subnets:                layer2NetConfInfo.ClusterSubnets,
+	}
 }
 
 // GetNADName returns key of NetAttachDefInfo.NetAttachDefs map, also used as Pod annotation key
@@ -347,7 +471,7 @@ func GetSecondaryNetworkPrefix(netName string) string {
 	return name + "_"
 }
 
-func newNetConfInfo(netconf *ovncnitypes.NetConf) (NetConfInfo, error) {
+func newNetConfInfo(netconf *ovncnitypes.NetConf, annotations map[string]string) (NetConfInfo, error) {
 	if netconf.Name == types.DefaultNetworkName {
 		return &DefaultNetConfInfo{}, nil
 	}
@@ -355,7 +479,7 @@ func newNetConfInfo(netconf *ovncnitypes.NetConf) (NetConfInfo, error) {
 	case types.Layer3Topology:
 		return newLayer3NetConfInfo(netconf)
 	case types.Layer2Topology:
-		return newLayer2NetConfInfo(netconf)
+		return newLayer2NetConfInfo(netconf, annotations)
 	default:
 		// other topology NAD can be supported later
 		return nil, fmt.Errorf("topology %s not supported", netconf.Topology)
@@ -369,7 +493,7 @@ func ParseNADInfo(netattachdef *nettypes.NetworkAttachmentDefinition) (NetInfo, 
 		return nil, nil, nil, err
 	}
 
-	netconfInfo, err := newNetConfInfo(netconf)
+	netconfInfo, err := newNetConfInfo(netconf, netattachdef.Annotations)
 	if err != nil {
 		return nil, nil, nil, err
 	}

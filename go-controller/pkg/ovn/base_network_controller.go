@@ -128,10 +128,6 @@ func NewCommonNetworkControllerInfo(client clientset.Interface, kube kube.Interf
 	}
 }
 
-func (bnc *BaseNetworkController) GetNetworkScopedName(name string) string {
-	return fmt.Sprintf("%s%s", bnc.GetPrefix(), name)
-}
-
 func (bnc *BaseNetworkController) GetLogicalPortName(pod *kapi.Pod, nadName string) string {
 	if !bnc.IsSecondary() {
 		return util.GetLogicalPortName(pod.Namespace, pod.Name)
@@ -703,4 +699,63 @@ func (bnc *BaseNetworkController) recordNodeErrorEvent(node *kapi.Node, nodeErr 
 
 	klog.V(5).Infof("Posting %s event for Node %s: %v", kapi.EventTypeWarning, node.Name, nodeErr)
 	bnc.recorder.Eventf(nodeRef, kapi.EventTypeWarning, "ErrorReconcilingNode", nodeErr.Error())
+}
+
+func (bnc *BaseNetworkController) Connect2Networks(logicalSwitch *nbdb.LogicalSwitch, logicalRouter *nbdb.LogicalRouter,
+	layer2ClusterSubnets []*net.IPNet) error {
+	var nodeLRPMAC net.HardwareAddr
+	var nodeLRPMACFound bool
+	lrpNetworks := []string{}
+	for _, hostSubnet := range layer2ClusterSubnets {
+		gwIfAddr := util.GetNodeGatewayIfAddr(hostSubnet)
+		lrpNetworks = append(lrpNetworks, gwIfAddr.String())
+		if !nodeLRPMACFound && !utilnet.IsIPv6CIDR(hostSubnet) {
+			nodeLRPMAC = util.IPAddrToHWAddr(gwIfAddr.IP)
+			nodeLRPMACFound = true
+		}
+	}
+
+	// Connect the switch to the router
+	logicalSwitchPort := nbdb.LogicalSwitchPort{
+		Name:      types.SwitchToRouterPrefix + logicalSwitch.Name,
+		Type:      "router",
+		Addresses: []string{"router"},
+		Options:   map[string]string{"router-port": types.RouterToSwitchPrefix + logicalSwitch.Name},
+	}
+	err := libovsdbops.CreateOrUpdateLogicalSwitchPortsOnSwitch(bnc.nbClient, logicalSwitch, &logicalSwitchPort)
+	if err != nil {
+		return fmt.Errorf("failed to add logical port %+v to switch %s: %v", logicalSwitchPort, logicalSwitch.Name, err)
+	}
+
+	lrpName := types.RouterToSwitchPrefix + logicalSwitch.Name
+	logicalRouterPort := nbdb.LogicalRouterPort{
+		Name:     lrpName,
+		MAC:      nodeLRPMAC.String(),
+		Networks: lrpNetworks,
+	}
+	err = libovsdbops.CreateOrUpdateLogicalRouterPort(bnc.nbClient, logicalRouter, &logicalRouterPort, nil,
+		&logicalRouterPort.MAC, &logicalRouterPort.Networks)
+	if err != nil {
+		return fmt.Errorf("failed to add logical router port %s, error: %v", lrpName, err)
+	}
+	return nil
+}
+
+func (bnc *BaseNetworkController) Disconnect2Networks(logicalSwitch *nbdb.LogicalSwitch, logicalRouter *nbdb.LogicalRouter) error {
+	logicalRouterPort := nbdb.LogicalRouterPort{
+		Name: types.RouterToSwitchPrefix + logicalSwitch.Name,
+	}
+	klog.Infof("Cathy delete logicalRouterPort %s from logical router %s", logicalRouterPort.Name, logicalRouter.Name)
+	err := libovsdbops.DeleteLogicalRouterPorts(bnc.nbClient, logicalRouter, &logicalRouterPort)
+	if err != nil {
+		return fmt.Errorf("failed to delete router port %s: %v", logicalRouterPort.Name, err)
+	}
+
+	logicalSwitchPort := nbdb.LogicalSwitchPort{Name: types.SwitchToRouterPrefix + logicalSwitch.Name}
+	klog.Infof("Cathy delete LogicalSwitchPort %s from logical switch %s", logicalSwitchPort.Name, logicalSwitch.Name)
+	err = libovsdbops.DeleteLogicalSwitchPorts(bnc.nbClient, logicalSwitch, &logicalSwitchPort)
+	if err != nil {
+		return fmt.Errorf("failed to delete logical switch port %s from switch %s: %v", logicalSwitchPort.Name, logicalSwitch.Name, err)
+	}
+	return err
 }
