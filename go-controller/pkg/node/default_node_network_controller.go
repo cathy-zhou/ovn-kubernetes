@@ -27,7 +27,6 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/informer"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/controllers/upgrade"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/healthcheck"
 	retry "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
@@ -54,6 +53,10 @@ type BaseNodeNetworkController struct {
 	util.NetInfo
 	util.NetConfInfo
 
+	// Indicate the node upgrade state, set to 1 when:
+	// node upgrade is done, except the ones that can only be done in separate go routine which rely on
+	// ovnkube-master being upgrade to the latest topology version
+	atomicNodeUpgradeDone int32
 	// stopChan and WaitGroup per controller
 	stopChan chan struct{}
 	wg       *sync.WaitGroup
@@ -102,6 +105,7 @@ func newDefaultNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo, sto
 			CommonNodeNetworkControllerInfo: *cnnci,
 			NetConfInfo:                     &util.DefaultNetConfInfo{},
 			NetInfo:                         &util.DefaultNetInfo{},
+			atomicNodeUpgradeDone:           0,
 			stopChan:                        stopChan,
 			wg:                              wg,
 		},
@@ -520,83 +524,56 @@ func (nc *DefaultNodeNetworkController) Start(ctx context.Context) error {
 
 	// Note(adrianc): DPU deployments are expected to support the new shared gateway changes, upgrade flow
 	// is not needed. Future upgrade flows will need to take DPUs into account.
-	if config.OvnKubeNode.Mode == types.NodeModeFull {
-		// Upgrade for Node. If we upgrade workers before masters, then we need to keep service routing via
-		// mgmt port until masters have been updated and modified OVN config. Run a goroutine to handle this case
-		upgradeController := upgrade.NewController(nc.client, nc.watchFactory)
-		initialTopoVersion, err := upgradeController.GetTopologyVersion(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to get initial topology version: %w", err)
-		}
-		klog.Infof("Current control-plane topology version is %d", initialTopoVersion)
-		bridgeName := nc.gateway.GetGatewayBridgeIface()
-
-		needLegacySvcRoute := true
-		if (initialTopoVersion >= types.OvnHostToSvcOFTopoVersion && config.GatewayModeShared == config.Gateway.Mode) ||
-			(initialTopoVersion >= types.OvnRoutingViaHostTopoVersion) {
-			// Configure route for svc towards shared gw bridge
-			// Have to have the route to bridge for multi-NIC mode, where the default gateway may go to a non-OVS interface
-			if err := configureSvcRouteViaBridge(bridgeName); err != nil {
-				return err
-			}
-			needLegacySvcRoute = false
+	if config.OvnKubeNode.Mode != types.NodeModeDPUHost {
+		bridgeName := ""
+		if config.OvnKubeNode.Mode == types.NodeModeFull {
+			bridgeName = nc.gateway.GetGatewayBridgeIface()
 		}
 
-		// Determine if we need to run upgrade checks
-		if initialTopoVersion != types.OvnCurrentTopologyVersion {
-			if needLegacySvcRoute {
-				klog.Info("System may be upgrading, falling back to legacy K8S Service via management port")
-				// add back legacy route for service via management port
-				link, err := util.LinkSetUp(types.K8sMgmtIntfName)
-				if err != nil {
-					return fmt.Errorf("unable to get link for %s, error: %v", types.K8sMgmtIntfName, err)
-				}
-				var gwIP net.IP
-				for _, subnet := range config.Kubernetes.ServiceCIDRs {
-					if utilnet.IsIPv4CIDR(subnet) {
-						gwIP = mgmtPortConfig.ipv4.gwIP
-					} else {
-						gwIP = mgmtPortConfig.ipv6.gwIP
-					}
-					err := util.LinkRoutesApply(link, gwIP, []*net.IPNet{subnet}, config.Default.RoutableMTU, nil)
-					if err != nil {
-						return fmt.Errorf("unable to add legacy route for services via mp0, error: %v", err)
-					}
-				}
-			}
-			// need to run upgrade controller
-			go func() {
-				if err := upgradeController.WaitForTopologyVersion(ctx, nc.stopChan, types.OvnCurrentTopologyVersion, 30*time.Minute); err != nil {
-					klog.Fatalf("Error while waiting for Topology Version to be updated: %v", err)
-				}
-				// upgrade complete now see what needs upgrading
-				// migrate service route from ovn-k8s-mp0 to shared gw bridge
-				if (initialTopoVersion < types.OvnHostToSvcOFTopoVersion && config.GatewayModeShared == config.Gateway.Mode) ||
-					(initialTopoVersion < types.OvnRoutingViaHostTopoVersion) {
-					if err := upgradeServiceRoute(bridgeName); err != nil {
-						klog.Fatalf("Failed to upgrade service route for node, error: %v", err)
-					}
-				}
-				// ensure CNI support for port binding built into OVN, as masters have been upgraded
-				if initialTopoVersion < types.OvnPortBindingTopoVersion && cniServer != nil &&
-					!isOvnUpEnabled && !config.OvnKubeNode.DisableOVNIfaceIdVer {
-					isOvnUpEnabled, err := util.GetOVNIfUpCheckMode()
-					if err != nil {
-						klog.Errorf("%v", err)
-					} else if isOvnUpEnabled {
-						klog.Infof("Detected support for port binding with external IDs")
-						cniServer.EnableOVNPortUpSupport()
-						atomic.StoreInt32(&nc.atomicOvnUpEnabled, 1)
-					}
-				}
-			}()
-		}
-	} else if config.OvnKubeNode.Mode == types.NodeModeDPU {
-		err = nc.updateIsOvnUpEnabled(ctx)
+		initialTopoVersion, err := nc.nodeUpgradeAfterMasterUpgraded(ctx, isOvnUpEnabled, cniServer, bridgeName)
 		if err != nil {
 			return err
 		}
+
+		if config.OvnKubeNode.Mode == types.NodeModeFull {
+			needLegacySvcRoute := true
+			if (initialTopoVersion >= types.OvnHostToSvcOFTopoVersion && config.GatewayModeShared == config.Gateway.Mode) ||
+				(initialTopoVersion >= types.OvnRoutingViaHostTopoVersion) {
+				// Configure route for svc towards shared gw bridge
+				// Have to have the route to bridge for multi-NIC mode, where the default gateway may go to a non-OVS interface
+				if err := configureSvcRouteViaBridge(bridgeName); err != nil {
+					return err
+				}
+				needLegacySvcRoute = false
+			}
+
+			// Determine if we need to run upgrade checks
+			if initialTopoVersion != types.OvnCurrentTopologyVersion {
+				if needLegacySvcRoute {
+					klog.Info("System may be upgrading, falling back to legacy K8S Service via management port")
+					// add back legacy route for service via management port
+					link, err := util.LinkSetUp(types.K8sMgmtIntfName)
+					if err != nil {
+						return fmt.Errorf("unable to get link for %s, error: %v", types.K8sMgmtIntfName, err)
+					}
+					var gwIP net.IP
+					for _, subnet := range config.Kubernetes.ServiceCIDRs {
+						if utilnet.IsIPv4CIDR(subnet) {
+							gwIP = mgmtPortConfig.ipv4.gwIP
+						} else {
+							gwIP = mgmtPortConfig.ipv6.gwIP
+						}
+						err := util.LinkRoutesApply(link, gwIP, []*net.IPNet{subnet}, config.Default.RoutableMTU, nil)
+						if err != nil {
+							return fmt.Errorf("unable to add legacy route for services via mp0, error: %v", err)
+						}
+					}
+				}
+			}
+		}
 	}
+	// indicate node upgrade is done
+	atomic.StoreInt32(&nc.atomicNodeUpgradeDone, 1)
 
 	if config.HybridOverlay.Enabled {
 		// Not supported with DPUs, enforced in config

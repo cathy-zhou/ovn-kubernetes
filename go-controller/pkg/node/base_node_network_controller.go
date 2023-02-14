@@ -2,51 +2,82 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/controllers/upgrade"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
 )
 
-// updateIsOvnUpEnabled checks if ovnkube-master has been upgraded from OvnPortBindingTopoVersion
-// and start to support port binding up field. If so update atomicOvnUpEnabled accordingly.
-func (bnnc *BaseNodeNetworkController) updateIsOvnUpEnabled(ctx context.Context) error {
-	isOvnUpEnabled := atomic.LoadInt32(&bnnc.atomicOvnUpEnabled) > 0
-	if config.OvnKubeNode.Mode != types.NodeModeDPU || isOvnUpEnabled || config.OvnKubeNode.DisableOVNIfaceIdVer {
-		return nil
+// nodeUpgradeAfterMasterUpgraded checks if ovnkube-master has been upgraded to the latest topology version
+// and does all node upgrades that depend on that.
+func (bnnc *BaseNodeNetworkController) nodeUpgradeAfterMasterUpgraded(ctx context.Context, isOvnUpEnabled bool,
+	cniServer *cni.Server, bridgeName string) (int, error) {
+	// in default network full mode, always initialize the upgrade controller, it will be used by node upgrade later
+	if (isOvnUpEnabled || config.OvnKubeNode.DisableOVNIfaceIdVer) &&
+		!(config.OvnKubeNode.Mode == types.NodeModeFull && !bnnc.IsSecondary()) {
+		return 0, nil
 	}
+
+	// Upgrade for Node. If we upgrade workers before masters, then we need to keep service routing via
+	// mgmt port until masters have been updated and modified OVN config. Run a goroutine to handle this case
 	upgradeController := upgrade.NewController(bnnc.client, bnnc.watchFactory)
 	initialTopoVersion, err := upgradeController.GetTopologyVersion(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get initial topology version: %w", err)
+		return 0, fmt.Errorf("failed to get initial topology version: %w", err)
 	}
-
 	klog.Infof("Current control-plane topology version is %d", initialTopoVersion)
 
 	// need to run upgrade controller
 	go func() {
 		if err := upgradeController.WaitForTopologyVersion(ctx, bnnc.stopChan, types.OvnCurrentTopologyVersion, 30*time.Minute); err != nil {
-			klog.Fatalf("Error while waiting for Topology Version to be updated: %v", err)
+			if !errors.Is(err, upgrade.ErrStopped) {
+				klog.Fatalf("Error while waiting for Topology Version to be updated: %v", err)
+			}
+			return
 		}
+
 		// ensure CNI support for port binding built into OVN, as masters have been upgraded
-		if initialTopoVersion < types.OvnPortBindingTopoVersion {
+		if initialTopoVersion < types.OvnPortBindingTopoVersion && !isOvnUpEnabled && !config.OvnKubeNode.DisableOVNIfaceIdVer {
 			isOvnUpEnabled, err := util.GetOVNIfUpCheckMode()
 			if err != nil {
 				klog.Errorf("%v", err)
 			} else if isOvnUpEnabled {
 				klog.Infof("Detected support for port binding with external IDs")
+				if cniServer != nil {
+					cniServer.EnableOVNPortUpSupport()
+				}
 				atomic.StoreInt32(&bnnc.atomicOvnUpEnabled, 1)
 			}
 		}
+
+		if config.OvnKubeNode.Mode == types.NodeModeFull && !bnnc.IsSecondary() {
+			// either atomicNodeUpgradeDone will be eventually updated to 1, or stopChan is closed. No timeout is needed
+			if err := wait.PollImmediateUntil(500*time.Millisecond, func() (bool, error) {
+				return atomic.LoadInt32(&bnnc.atomicNodeUpgradeDone) > 0, nil
+			}, bnnc.stopChan); err != nil {
+				return
+			}
+			// upgrade complete now see what needs upgrading
+			// migrate service route from ovn-k8s-mp0 to shared gw bridge
+			if (initialTopoVersion < types.OvnHostToSvcOFTopoVersion && config.GatewayModeShared == config.Gateway.Mode) ||
+				(initialTopoVersion < types.OvnRoutingViaHostTopoVersion) {
+				if err := upgradeServiceRoute(bridgeName); err != nil {
+					klog.Fatalf("Failed to upgrade service route for node, error: %v", err)
+				}
+			}
+		}
 	}()
-	return nil
+	return initialTopoVersion, nil
 }
 
 // checkForStaleOVSRepresentorInterfaces checks for stale OVS ports backed by Repreresentor interfaces,

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
@@ -29,6 +30,7 @@ func NewSecondaryNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo, n
 			CommonNodeNetworkControllerInfo: *cnnci,
 			NetConfInfo:                     netconfInfo,
 			NetInfo:                         netInfo,
+			atomicNodeUpgradeDone:           0,
 			stopChan:                        make(chan struct{}),
 			wg:                              &sync.WaitGroup{},
 		},
@@ -38,6 +40,17 @@ func NewSecondaryNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo, n
 // Start starts the default controller; handles all events and creates all needed logical entities
 func (nc *SecondaryNodeNetworkController) Start(ctx context.Context) error {
 	klog.Infof("Start secondary node network controller of network %s", nc.GetNetworkName())
+
+	isOvnUpEnabled := atomic.LoadInt32(&nc.atomicOvnUpEnabled) > 0
+
+	// update atomicOvnUpEnabled, which will be consumed by watchPodsDPU() added by later PR...
+	_, err := nc.nodeUpgradeAfterMasterUpgraded(ctx, isOvnUpEnabled, nil, "")
+	if err != nil {
+		return err
+	}
+
+	// indicate node upgrade is done
+	atomic.StoreInt32(&nc.atomicNodeUpgradeDone, 1)
 
 	go wait.Until(func() {
 		nc.checkForStaleOVSRepresentorInterfaces()

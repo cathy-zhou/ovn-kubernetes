@@ -2,6 +2,7 @@ package upgrade
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -17,6 +18,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 )
+
+var ErrStopped = errors.New("network stopped")
 
 // upgradeController detects TopologyVersion edges as broadcast from the ovn-kube master.
 // Previously, ovn-kube used an annotation on the Node object. We now use a ConfigMap as the
@@ -57,7 +60,7 @@ func (uc *upgradeController) WaitForTopologyVersion(ctx context.Context, stopCha
 				klog.Errorf("Failed to retrieve topology version: %v", err)
 			}
 		case <-stopChan:
-			return fmt.Errorf("failed to get topology version: stopped")
+			return ErrStopped
 		case <-timeoutContext.Done():
 			return fmt.Errorf("failed to get topology version: %v", timeoutContext.Err())
 		}
