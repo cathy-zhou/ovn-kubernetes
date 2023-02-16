@@ -39,7 +39,7 @@ const (
 	avoidResync     = 0
 	numberOfWorkers = 2
 	qps             = 15
-	maxRetries      = 10
+	maxRetries      = 200
 )
 
 type BaseNetworkController interface {
