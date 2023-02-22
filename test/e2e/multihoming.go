@@ -24,11 +24,13 @@ import (
 
 var _ = Describe("Multi Homing", func() {
 	const (
-		podName                    = "tinypod"
-		secondaryNetworkCIDR       = "10.128.0.0/16"
-		secondaryNetworkName       = "tenant-blue"
-		secondaryFlatL2IgnoreCIDR  = "10.128.0.0/29"
-		secondaryFlatL2NetworkCIDR = "10.128.0.0/24"
+		podName                      = "tinypod"
+		secondaryNetworkCIDR         = "10.128.0.0/16"
+		secondaryNetworkName         = "tenant-blue"
+		secondaryFlatL2IgnoreCIDR    = "10.128.0.0/29"
+		secondaryFlatL2NetworkCIDR   = "10.128.0.0/24"
+		secondaryLocalnetIgnoreCIDR  = "60.128.0.0/29"
+		secondaryLocalnetNetworkCIDR = "60.128.0.0/24"
 	)
 	f := wrappedTestFramework("multi-homing")
 
@@ -117,6 +119,45 @@ var _ = Describe("Multi Homing", func() {
 				networkAttachmentConfig{
 					name:     secondaryNetworkName,
 					topology: "layer2",
+				},
+				podConfiguration{
+					attachments: []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
+					name:        podName,
+				},
+			),
+			table.Entry(
+				"when attaching to an localnet - switched - network",
+				networkAttachmentConfig{
+					cidr:     secondaryLocalnetNetworkCIDR,
+					name:     secondaryNetworkName,
+					topology: "localnet",
+					vlanID:   "10",
+				},
+				podConfiguration{
+					attachments: []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
+					name:        podName,
+				},
+			),
+			table.Entry(
+				"when attaching to an Localnet - switched - network featuring `excludeCIDR`s",
+				networkAttachmentConfig{
+					cidr:         secondaryLocalnetNetworkCIDR,
+					name:         secondaryNetworkName,
+					topology:     "localnet",
+					excludeCIDRs: []string{secondaryLocalnetIgnoreCIDR},
+					vlanID:       "10",
+				},
+				podConfiguration{
+					attachments: []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
+					name:        podName,
+				},
+			),
+			table.Entry(
+				"when attaching to an localnet - switched - network without IPAM",
+				networkAttachmentConfig{
+					name:     secondaryNetworkName,
+					topology: "localnet",
+					vlanID:   "10",
 				},
 				podConfiguration{
 					attachments: []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
@@ -379,6 +420,7 @@ type networkAttachmentConfig struct {
 	name         string
 	topology     string
 	networkName  string
+	vlanID       string
 }
 
 func (nac networkAttachmentConfig) attachmentName() string {
@@ -399,7 +441,8 @@ func generateNAD(config networkAttachmentConfig) *nadapi.NetworkAttachmentDefini
         "subnets": %q,
         "excludeSubnets": %q,
         "mtu": 1300,
-        "netAttachDefName": %q
+        "netAttachDefName": %q,
+        "vlanID": %s
 }
 `,
 		config.attachmentName(),
@@ -407,6 +450,7 @@ func generateNAD(config networkAttachmentConfig) *nadapi.NetworkAttachmentDefini
 		config.cidr,
 		strings.Join(config.excludeCIDRs, ","),
 		namespacedName(config.namespace, config.name),
+		config.vlanID,
 	)
 	return generateNetAttachDef(config.namespace, config.name, nadSpec)
 }
