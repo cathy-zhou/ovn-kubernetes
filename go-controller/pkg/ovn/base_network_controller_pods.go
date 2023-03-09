@@ -619,6 +619,10 @@ func (bnc *BaseNetworkController) addLogicalPortToNetwork(pod *kapi.Pod, nadName
 		}
 	}
 
+	// it is possible that IPs have already been allocated to this pod and annotation has already been updated,
+	// but the input pod argument got from the informer cache is lagging behind, and we fail to get pod annotation.
+	// needsIP is incorrectly set to true in this case. Continue reallocating IPs and this function will eventually
+	// fail in updatePodAnnotationWithRetry() with ErrOverridePodIPs when trying to override pod IP annotation.
 	if needsIP {
 		if existingLSP != nil {
 			// try to get the MAC and IPs from existing OVN port first
