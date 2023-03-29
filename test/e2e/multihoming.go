@@ -104,6 +104,18 @@ var _ = Describe("Multi Homing", func() {
 				},
 			),
 			table.Entry(
+				"when attaching to an L3 - routed - network with IPv6 network",
+				networkAttachmentConfig{
+					cidr:     netCIDR("2001:db8:abcd:0012::0/60", 64),
+					name:     secondaryNetworkName,
+					topology: "layer3",
+				},
+				podConfiguration{
+					attachments: []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
+					name:        podName,
+				},
+			),
+			table.Entry(
 				"when attaching to an L2 - switched - network",
 				networkAttachmentConfig{
 					cidr:     secondaryFlatL2NetworkCIDR,
