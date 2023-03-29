@@ -21,7 +21,11 @@ var NoIPError = errors.New("no IP available")
 // NextIP returns IP incremented by 1
 func NextIP(ip net.IP) net.IP {
 	i := ipToInt(ip)
-	return intToIP(i.Add(i, big.NewInt(1)))
+	iplen := 4
+	if utilnet.IsIPv6(ip) {
+		iplen = 16
+	}
+	return intToIP(i.Add(i, big.NewInt(1)), iplen)
 }
 
 func ipToInt(ip net.IP) *big.Int {
@@ -31,8 +35,10 @@ func ipToInt(ip net.IP) *big.Int {
 	return big.NewInt(0).SetBytes(ip.To16())
 }
 
-func intToIP(i *big.Int) net.IP {
-	return net.IP(i.Bytes())
+func intToIP(i *big.Int, iplen int) net.IP {
+	b := i.Bytes()
+	b = append(make([]byte, iplen-len(b)), b...)
+	return net.IP(b)
 }
 
 // ExtractPortAddresses returns the MAC and IPs of the given logical switch port

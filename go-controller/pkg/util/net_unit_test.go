@@ -41,6 +41,11 @@ func TestNextIP(t *testing.T) {
 			expOutput: "255.0.0.0",
 		},
 		{
+			desc:      "IPv6: test increment of leading zeros",
+			input:     "10:100:200:2::",
+			expOutput: "10:100:200:2::1",
+		},
+		{
 			desc:      "IPv6: test increment of eight hextet",
 			input:     "2001:db8::ffff",
 			expOutput: "2001:db8::1:0",
