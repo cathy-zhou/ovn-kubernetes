@@ -421,6 +421,25 @@ var _ = Describe("Multi Homing", func() {
 				},
 			),
 			table.Entry(
+				"can communicate over an L3 - routed - secondary network with a dual stack configuration",
+				networkAttachmentConfig{
+					name:     secondaryNetworkName,
+					topology: "layer3",
+					cidr:     strings.Join([]string{netCIDR(secondaryNetworkCIDR, netPrefixLengthPerNode), netCIDR(secondaryIPv6CIDR, netPrefixLengthIPv6PerNode)}, ","),
+				},
+				podConfiguration{
+					attachments:  []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
+					name:         clientPodName,
+					nodeSelector: map[string]string{nodeHostnameKey: workerOneNodeName},
+				},
+				podConfiguration{
+					attachments:  []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
+					name:         podName,
+					containerCmd: httpServerContainerCmd(port),
+					nodeSelector: map[string]string{nodeHostnameKey: workerTwoNodeName},
+				},
+			),
+			table.Entry(
 				"can communicate over an L2 - switched - secondary network without IPAM",
 				networkAttachmentConfig{
 					name:     secondaryNetworkName,
