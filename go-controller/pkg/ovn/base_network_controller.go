@@ -55,16 +55,12 @@ type CommonNetworkControllerInfo struct {
 	// has SCTP support
 	SCTPSupport bool
 
-	// Supports multicast?
+	// has multicast support; set to false for secondary networks.
+	// TBD: Changes need to be made to support multicast for secondary networks
 	multicastSupport bool
 
 	// Is ACL logging enabled while configuring meters?
 	aclLoggingEnabled bool
-}
-
-// used as receiver for functions shared by NetworkController, gressPolicy or test suite
-type NetworkControllerNetInfo struct {
-	util.NetInfo
 }
 
 // BaseNetworkController structure holds per-network fields and network specific configuration
@@ -76,7 +72,7 @@ type BaseNetworkController struct {
 	controllerName string
 
 	// per controller NAD/netconf name information
-	NetworkControllerNetInfo
+	util.NetInfo
 	util.NetConfInfo
 
 	// retry framework for pods
@@ -371,8 +367,9 @@ func (bnc *BaseNetworkController) createNodeLogicalSwitch(nodeName string, hostS
 	}
 
 	// multicast is only supported in default network for now
+	// TBD: changes needs to be made to support multicast in secondary networks
 	if bnc.multicastSupport {
-		err = libovsdbops.AddPortsToPortGroup(bnc.nbClient, bnc.GetNetworkScopedName(types.ClusterRtrPortGroupName), logicalSwitchPort.UUID)
+		err = libovsdbops.AddPortsToPortGroup(bnc.nbClient, types.ClusterRtrPortGroupName, logicalSwitchPort.UUID)
 		if err != nil {
 			klog.Errorf(err.Error())
 			return err

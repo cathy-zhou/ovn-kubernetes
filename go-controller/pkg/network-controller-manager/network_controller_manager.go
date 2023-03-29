@@ -284,7 +284,7 @@ func (cm *networkControllerManager) createACLLoggingMeter() error {
 	return nil
 }
 
-func (cm *networkControllerManager) configureAclLoggingSupport() {
+func (cm *networkControllerManager) enableACLLoggingSupport() {
 	cm.aclLoggingEnabled = true
 	if err := cm.createACLLoggingMeter(); err != nil {
 		klog.Warningf("ACL logging support enabled, however acl-logging meter could not be created: %v. "+
@@ -323,7 +323,7 @@ func (cm *networkControllerManager) Start(ctx context.Context) error {
 	}
 
 	cm.configureMulticastSupport()
-	cm.configureAclLoggingSupport()
+	cm.enableACLLoggingSupport()
 
 	err = cm.enableOVNLogicalDataPathGroups()
 	if err != nil {

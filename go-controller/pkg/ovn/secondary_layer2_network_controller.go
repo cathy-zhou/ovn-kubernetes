@@ -23,19 +23,20 @@ func NewSecondaryLayer2NetworkController(cnci *CommonNetworkControllerInfo, netI
 	netconfInfo util.NetConfInfo) *SecondaryLayer2NetworkController {
 	stopChan := make(chan struct{})
 
+	ipv4Mode, ipv6Mode := netconfInfo.IPMode()
 	oc := &SecondaryLayer2NetworkController{
 		BaseSecondaryLayer2NetworkController{
 			BaseSecondaryNetworkController: BaseSecondaryNetworkController{
 				BaseNetworkController: BaseNetworkController{
 					CommonNetworkControllerInfo: *cnci,
-					NetworkControllerNetInfo:    NetworkControllerNetInfo{NetInfo: netInfo},
+					NetInfo:                     netInfo,
 					controllerName:              netInfo.GetNetworkName() + "-network-controller",
 					NetConfInfo:                 netconfInfo,
 					lsManager:                   lsm.NewL2SwitchManager(),
 					logicalPortCache:            newPortCache(stopChan),
 					namespaces:                  make(map[string]*namespaceInfo),
 					namespacesMutex:             sync.Mutex{},
-					addressSetFactory:           addressset.NewOvnAddressSetFactory(cnci.nbClient),
+					addressSetFactory:           addressset.NewOvnAddressSetFactory(cnci.nbClient, ipv4Mode, ipv6Mode),
 					networkPolicies:             syncmap.NewSyncMap[*networkPolicy](),
 					sharedNetpolPortGroups:      syncmap.NewSyncMap[*defaultDenyPortGroups](),
 					stopChan:                    stopChan,
@@ -55,11 +56,6 @@ func NewSecondaryLayer2NetworkController(cnci *CommonNetworkControllerInfo, netI
 // Start starts the secondary layer2 controller, handles all events and creates all needed logical entities
 func (oc *SecondaryLayer2NetworkController) Start(ctx context.Context) error {
 	klog.Infof("Start secondary %s network controller of network %s", oc.TopologyType(), oc.GetNetworkName())
-	err := oc.initializeAddressSet()
-	if err != nil {
-		return err
-	}
-
 	if err := oc.Init(); err != nil {
 		return err
 	}

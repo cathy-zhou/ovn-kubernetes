@@ -289,9 +289,16 @@ var _ = ginkgo.Describe("OVN Namespace Operations", func() {
 			gwLRPIPs, err := fakeOvn.controller.joinSwIPManager.EnsureJoinLRPIPs(node1.Name)
 			gomega.Expect(len(gwLRPIPs) != 0).To(gomega.BeTrue())
 
+			// check the namespace and ensure the address set
+			// being created with the right set of IPs in it.
+			allowIPs := []string{node1.NodeMgmtPortIP}
+			for _, lrpIP := range gwLRPIPs {
+				allowIPs = append(allowIPs, lrpIP.IP.String())
+			}
+
 			err = fakeOvn.controller.WatchNamespaces()
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			fakeOvn.asf.EventuallyExpectEmptyAddressSetExist(hostNetworkNamespace)
+			fakeOvn.asf.EventuallyExpectAddressSetWithIPs(hostNetworkNamespace, allowIPs)
 
 			err = fakeOvn.controller.WatchNodes()
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -313,10 +320,6 @@ var _ = ginkgo.Describe("OVN Namespace Operations", func() {
 
 			// check the namespace again and ensure the address set
 			// being created with the right set of IPs in it.
-			allowIPs := []string{node1.NodeMgmtPortIP}
-			for _, lrpIP := range gwLRPIPs {
-				allowIPs = append(allowIPs, lrpIP.IP.String())
-			}
 			fakeOvn.asf.EventuallyExpectAddressSetWithIPs(hostNetworkNamespace, allowIPs)
 		})
 	})

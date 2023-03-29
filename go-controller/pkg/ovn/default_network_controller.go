@@ -131,7 +131,7 @@ func newDefaultNetworkControllerCommon(cnci *CommonNetworkControllerInfo,
 
 	netInfo := &util.DefaultNetInfo{}
 	if addressSetFactory == nil {
-		addressSetFactory = addressset.NewOvnAddressSetFactory(cnci.nbClient)
+		addressSetFactory = addressset.NewOvnAddressSetFactory(cnci.nbClient, config.IPv4Mode, config.IPv6Mode)
 	}
 	svcController, svcFactory, err := newServiceController(cnci.client, cnci.nbClient, cnci.recorder)
 	if err != nil {
@@ -146,7 +146,7 @@ func newDefaultNetworkControllerCommon(cnci *CommonNetworkControllerInfo,
 		BaseNetworkController: BaseNetworkController{
 			CommonNetworkControllerInfo: *cnci,
 			controllerName:              DefaultNetworkControllerName,
-			NetworkControllerNetInfo:    NetworkControllerNetInfo{NetInfo: netInfo},
+			NetInfo:                     netInfo,
 			NetConfInfo:                 &util.DefaultNetConfInfo{},
 			lsManager:                   lsm.NewLogicalSwitchManager(),
 			logicalPortCache:            newPortCache(defaultStopChan),
@@ -235,7 +235,7 @@ func (oc *DefaultNetworkController) newRetryFramework(
 func (oc *DefaultNetworkController) Start(ctx context.Context) error {
 	klog.Infof("Starting the default network controller")
 
-	err := oc.initializeAddressSet()
+	err := oc.syncAddressSets()
 	if err != nil {
 		return err
 	}

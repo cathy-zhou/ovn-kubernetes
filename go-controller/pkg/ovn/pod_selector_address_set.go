@@ -164,12 +164,15 @@ func (psas *PodSelectorAddressSet) init(bnc *BaseNetworkController) error {
 		if err != nil {
 			return err
 		}
+		ipv4Mode, ipv6Mode := bnc.IPMode()
 		psas.handlerResources = &PodSelectorAddrSetHandlerInfo{
 			addressSet:        as,
 			key:               psas.key,
 			podSelector:       psas.podSelector,
 			namespaceSelector: psas.namespaceSelector,
 			namespace:         psas.namespace,
+			ipv4Mode:          ipv4Mode,
+			ipv6Mode:          ipv6Mode,
 		}
 	}
 
@@ -230,7 +233,7 @@ func (bnc *BaseNetworkController) addPodSelectorHandler(psAddrSet *PodSelectorAd
 		_ = bnc.handlePodAddUpdate(podHandlerResources, objs...)
 		return nil
 	}
-	retryFramework := bnc.newRetryFrameworkWithParameters(
+	retryFramework := bnc.newNetpolRetryFramework(
 		factory.AddressSetPodSelectorType,
 		syncFunc,
 		podHandlerResources)
@@ -251,7 +254,7 @@ func (bnc *BaseNetworkController) addNamespacedPodSelectorHandler(psAddrSet *Pod
 	// start watching namespaces selected by the namespace selector nsSel;
 	// upon namespace add event, start watching pods in that namespace selected
 	// by the label selector podSel
-	retryFramework := bnc.newRetryFrameworkWithParameters(
+	retryFramework := bnc.newNetpolRetryFramework(
 		factory.AddressSetNamespaceAndPodSelectorType,
 		nil,
 		psAddrSet.handlerResources,
@@ -294,6 +297,9 @@ type PodSelectorAddrSetHandlerInfo struct {
 	namespaceSelector labels.Selector
 	// namespace is used when namespaceSelector is nil to set static namespace
 	namespace string
+
+	ipv4Mode bool
+	ipv6Mode bool
 }
 
 // idempotent
@@ -336,7 +342,7 @@ func (handlerInfo *PodSelectorAddrSetHandlerInfo) addPods(pods ...*v1.Pod) error
 	}
 
 	podIPFactor := 1
-	if config.IPv4Mode && config.IPv6Mode {
+	if handlerInfo.ipv4Mode && handlerInfo.ipv6Mode {
 		podIPFactor = 2
 	}
 	ips := make([]net.IP, 0, len(pods)*podIPFactor)
@@ -524,7 +530,7 @@ func (bnc *BaseNetworkController) handleNamespaceAddUpdate(podHandlerInfo *PodSe
 		_ = bnc.handlePodAddUpdate(podHandlerInfo, objs...)
 		return nil
 	}
-	retryFramework := bnc.newRetryFrameworkWithParameters(
+	retryFramework := bnc.newNetpolRetryFramework(
 		factory.AddressSetPodSelectorType,
 		syncFunc,
 		podHandlerInfo,
@@ -720,7 +726,7 @@ func deleteAddrSetsWithoutACLRef(predicate func(set *nbdb.AddressSet) bool,
 	return nil
 }
 
-func (bnc *BaseNetworkController) initializeAddressSet() error {
+func (bnc *BaseNetworkController) syncAddressSets() error {
 	// sync address sets, only required for DefaultNetworkController, since any old objects in the db without
 	// Owner set are owned by the default network controller.
 	syncer := address_set_syncer.NewAddressSetSyncer(bnc.nbClient, bnc.controllerName)

@@ -40,7 +40,8 @@ func (bnc *BaseNetworkController) syncMultiNetworkPolicies(multiPolicies []inter
 func (bnc *BaseNetworkController) shouldApplyMultiPolicy(mpolicy *multinetworkpolicyapi.MultiNetworkPolicy) bool {
 	policyForAnnot, ok := mpolicy.Annotations[PolicyForAnnotation]
 	if !ok {
-		// should never happen.
+		klog.V(5).Infof("%s annotation not defined in multi-policy %s/%s", PolicyForAnnotation,
+			mpolicy.Namespace, mpolicy.Name)
 		return false
 	}
 	policyForAnnot = strings.ReplaceAll(policyForAnnot, " ", "")

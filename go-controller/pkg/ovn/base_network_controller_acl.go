@@ -57,17 +57,17 @@ func hashedPortGroup(s string) string {
 
 // BuildACL should be used to build ACL instead of directly calling libovsdbops.BuildACL.
 // It can properly set and reset log settings for ACL based on ACLLoggingLevels
-func (ncni *NetworkControllerNetInfo) BuildACL(aclName string, priority int, match, action string,
-	logLevels *ACLLoggingLevels, aclT aclType, externalIDs map[string]string) *nbdb.ACL {
+func BuildACL(aclName string, priority int, match, action string,
+	logLevels *ACLLoggingLevels, aclT aclType, externalIDs map[string]string, netInfo util.NetInfo) *nbdb.ACL {
 	var options map[string]string
 	var direction string
 
-	if ncni.IsSecondary() {
+	if netInfo.IsSecondary() {
 		if externalIDs == nil {
 			externalIDs = map[string]string{}
 		}
-		externalIDs[types.NetworkExternalID] = ncni.GetNetworkName()
-		aclName = ncni.GetNetworkScopedName(aclName)
+		externalIDs[types.NetworkExternalID] = netInfo.GetNetworkName()
+		aclName = netInfo.GetNetworkScopedName(aclName)
 	}
 	switch aclT {
 	case lportEgressAfterLB:

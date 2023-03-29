@@ -111,7 +111,8 @@ func TestGetMatchFromIPBlock(t *testing.T) {
 	}
 
 	for _, tc := range testcases {
-		gressPolicy := newGressPolicy(knet.PolicyTypeIngress, 5, "testing", "test", DefaultNetworkControllerName, false, &util.DefaultNetInfo{})
+		gressPolicy := newGressPolicy(knet.PolicyTypeIngress, 5, "testing", "test",
+			DefaultNetworkControllerName, false, &util.DefaultNetInfo{}, &util.DefaultNetConfInfo{})
 		for _, ipBlock := range tc.ipBlocks {
 			gressPolicy.addIPBlock(ipBlock)
 		}

@@ -261,11 +261,13 @@ func (oc *DefaultNetworkController) deleteNamespace(ns *kapi.Namespace) error {
 // ns is the name of the namespace, while namespace is the optional k8s namespace object
 // if no k8s namespace object is provided, this function will attempt to find it via informer cache
 func (oc *DefaultNetworkController) ensureNamespaceLocked(ns string, readOnly bool, namespace *kapi.Namespace) (*namespaceInfo, func(), error) {
+	var ips []net.IP
 	// special handling of host network namespace. issues/3381
-	//if config.Kubernetes.HostNetworkNamespace != "" && ns == config.Kubernetes.HostNetworkNamespace {
-	//	ips = oc.getAllHostNamespaceAddresses(ns)
-	//}
-	ips := oc.getAllNamespacePodAddresses(ns)
+	if config.Kubernetes.HostNetworkNamespace != "" && ns == config.Kubernetes.HostNetworkNamespace {
+		ips = oc.getAllHostNamespaceAddresses()
+	} else {
+		ips = oc.getAllNamespacePodAddresses(ns)
+	}
 
 	oc.namespacesMutex.Lock()
 	nsInfo := oc.namespaces[ns]
@@ -338,7 +340,7 @@ func (oc *DefaultNetworkController) ensureNamespaceLocked(ns string, readOnly bo
 }
 
 //nolint:unused
-func (oc *DefaultNetworkController) getAllHostNamespaceAddresses(ns string) []net.IP {
+func (oc *DefaultNetworkController) getAllHostNamespaceAddresses() []net.IP {
 	var ips []net.IP
 	// add the mp0 interface addresses to this namespace.
 	existingNodes, err := oc.watchFactory.GetNodes()

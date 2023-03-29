@@ -8,40 +8,40 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
+	kapi "k8s.io/api/core/v1"
 	knet "k8s.io/api/networking/v1"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 )
 
 func (bnc *BaseNetworkController) initRetryFramework() {
-	// Init the retry framework for pods, namespaces, nodes, network policies, egress firewalls,
-	// egress IP (and dependent namespaces, pods, nodes), cloud private ip config.
+	// Init the retry framework for network policies (multi-network-policy for secondary networks)
 	if !bnc.IsSecondary() {
-		bnc.retryNetworkPolicies = bnc.newRetryFrameworkWithParameters(factory.PolicyType, nil, nil)
+		bnc.retryNetworkPolicies = bnc.newNetpolRetryFramework(factory.PolicyType, nil, nil)
 	} else {
-		bnc.retryNetworkPolicies = bnc.newRetryFrameworkWithParameters(factory.MultiNetworkPolicyType, nil, nil)
+		bnc.retryNetworkPolicies = bnc.newNetpolRetryFramework(factory.MultiNetworkPolicyType, nil, nil)
 	}
 }
 
-// newRetryFrameworkWithParameters builds and returns a retry framework for the input resource
+// newNetpolRetryFramework builds and returns a retry framework for the input resource
 // type and assigns all ovnk-master-specific function attributes in the returned struct;
 // these functions will then be called by the retry logic in the retry package when
 // WatchResource() is called.
-// newRetryFrameworkWithParameters takes as input a resource type (required)
+// newNetpolRetryFramework takes as input a resource type (required)
 // and the following optional parameters: a namespace and a label filter for the
 // shared informer, a sync function to process all objects of this type at startup,
 // and resource-specific extra parameters (used now for network-policy-dependant types).
-// In order to create a retry framework for most resource types, newRetryFrameworkMaster is
-// to be preferred, as it calls newRetryFrameworkWithParameters with all optional parameters unset.
-// newRetryFrameworkWithParameters is instead called directly by the watchers that are
-// dynamically created when a network policy is added: AddressSetNamespaceAndPodSelectorType,
-// PeerNamespaceSelectorType, AddressSetPodSelectorType.
-func (bnc *BaseNetworkController) newRetryFrameworkWithParameters(
+// newNetpolRetryFramework is also called directly by the watchers that are
+// dynamically created when a network policy is added: PolicyType, MultiNetworkPolicyType,
+// AddressSetNamespaceAndPodSelectorType, AddressSetPodSelectorType, PeerNamespaceSelectorType,
+// LocalPodSelectorType,
+func (bnc *BaseNetworkController) newNetpolRetryFramework(
 	objectType reflect.Type,
 	syncFunc func([]interface{}) error,
 	extraParameters interface{}) *retry.RetryFramework {
 	eventHandler := &networkControllerPolicyEventHandler{
-		baseHandler:     baseNetworkControllerEventHandler{},
 		objType:         objectType,
 		watchFactory:    bnc.watchFactory,
 		bnc:             bnc,
@@ -65,7 +65,6 @@ func (bnc *BaseNetworkController) newRetryFrameworkWithParameters(
 
 // event handlers handles policy related events
 type networkControllerPolicyEventHandler struct {
-	baseHandler     baseNetworkControllerEventHandler
 	watchFactory    *factory.WatchFactory
 	objType         reflect.Type
 	bnc             *BaseNetworkController
@@ -78,7 +77,44 @@ type networkControllerPolicyEventHandler struct {
 // equal and an update needs be executed. This is regardless of how the update is carried out (whether with a dedicated update
 // function or with a delete on the old obj followed by an add on the new obj).
 func (h *networkControllerPolicyEventHandler) AreResourcesEqual(obj1, obj2 interface{}) (bool, error) {
-	return h.baseHandler.areResourcesEqual(h.objType, obj1, obj2)
+	// switch based on type
+	switch h.objType {
+	case factory.PolicyType: //
+		np1, ok := obj1.(*knet.NetworkPolicy)
+		if !ok {
+			return false, fmt.Errorf("could not cast obj1 of type %T to *knet.NetworkPolicy", obj1)
+		}
+		np2, ok := obj2.(*knet.NetworkPolicy)
+		if !ok {
+			return false, fmt.Errorf("could not cast obj2 of type %T to *knet.NetworkPolicy", obj2)
+		}
+		return reflect.DeepEqual(np1, np2), nil
+
+	case factory.MultiNetworkPolicyType: //
+		mnp1, ok := obj1.(*mnpapi.MultiNetworkPolicy)
+		if !ok {
+			return false, fmt.Errorf("could not cast obj1 of type %T to *multinetworkpolicyapi.MultiNetworkPolicy", obj1)
+		}
+		mnp2, ok := obj2.(*mnpapi.MultiNetworkPolicy)
+		if !ok {
+			return false, fmt.Errorf("could not cast obj2 of type %T to *multinetworkpolicyapi.MultiNetworkPolicy", obj2)
+		}
+		return reflect.DeepEqual(mnp1, mnp2), nil
+
+	case factory.AddressSetPodSelectorType, //
+		factory.LocalPodSelectorType: //
+		// For these types, there was no old vs new obj comparison in the original update code,
+		// so pretend they're always different so that the update code gets executed
+		return false, nil
+
+	case factory.PeerNamespaceSelectorType, //
+		factory.AddressSetNamespaceAndPodSelectorType: //
+		// For these types there is no update code, so pretend old and new
+		// objs are always equivalent and stop processing the update event.
+		return true, nil
+	}
+
+	return false, fmt.Errorf("no object comparison for type %s", h.objType)
 }
 
 // GetInternalCacheEntry returns the internal cache entry for this object, given an object and its type.
@@ -90,7 +126,35 @@ func (h *networkControllerPolicyEventHandler) GetInternalCacheEntry(obj interfac
 // GetResourceFromInformerCache returns the latest state of the object, given an object key and its type.
 // from the informers cache.
 func (h *networkControllerPolicyEventHandler) GetResourceFromInformerCache(key string) (interface{}, error) {
-	return h.baseHandler.getResourceFromInformerCache(h.objType, h.watchFactory, key)
+	var obj interface{}
+	var namespace, name string
+	var err error
+
+	namespace, name, err = cache.SplitMetaNamespaceKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to split key %s: %v", key, err)
+	}
+
+	switch h.objType {
+	case factory.PolicyType:
+		obj, err = h.watchFactory.GetNetworkPolicy(namespace, name)
+
+	case factory.MultiNetworkPolicyType:
+		obj, err = h.watchFactory.GetMultiNetworkPolicy(namespace, name)
+
+	case factory.AddressSetPodSelectorType,
+		factory.LocalPodSelectorType:
+		obj, err = h.watchFactory.GetPod(namespace, name)
+
+	case factory.AddressSetNamespaceAndPodSelectorType,
+		factory.PeerNamespaceSelectorType:
+		obj, err = h.watchFactory.GetNamespace(name)
+
+	default:
+		err = fmt.Errorf("object type %s not supported, cannot retrieve it from informers cache",
+			h.objType)
+	}
+	return obj, err
 }
 
 // RecordAddEvent records the add event on this given object.
@@ -157,7 +221,7 @@ func (h *networkControllerPolicyEventHandler) RecordErrorEvent(obj interface{}, 
 // IsResourceScheduled returns true if the given object has been scheduled.
 // Only applied to pods for now. Returns true for all other types.
 func (h *networkControllerPolicyEventHandler) IsResourceScheduled(obj interface{}) bool {
-	return h.baseHandler.isResourceScheduled(h.objType, obj)
+	return true
 }
 
 // AddResource adds the specified object to the cluster according to its type and returns the error,
@@ -352,5 +416,13 @@ func (h *networkControllerPolicyEventHandler) SyncFunc(objs []interface{}) error
 // IsObjectInTerminalState returns true if the given object is a in terminal state.
 // This is used now for pods that are either in a PodSucceeded or in a PodFailed state.
 func (h *networkControllerPolicyEventHandler) IsObjectInTerminalState(obj interface{}) bool {
-	return h.baseHandler.isObjectInTerminalState(h.objType, obj)
+	switch h.objType {
+	case factory.AddressSetPodSelectorType,
+		factory.LocalPodSelectorType:
+		pod := obj.(*kapi.Pod)
+		return util.PodCompleted(pod)
+
+	default:
+		return false
+	}
 }

@@ -406,7 +406,7 @@ func (oc *DefaultNetworkController) createEgressFirewallRules(priority int, matc
 	// egressFirewall_<namespace name>_<priority>
 	aclName := buildEgressFwAclName(externalID, priority)
 
-	egressFirewallACL := oc.BuildACL(
+	egressFirewallACL := BuildACL(
 		aclName,
 		priority,
 		match,
@@ -418,6 +418,7 @@ func (oc *DefaultNetworkController) createEgressFirewallRules(priority int, matc
 			egressFirewallACLExtIdKey:    externalID,
 			egressFirewallACLPriorityKey: fmt.Sprintf("%d", priority),
 		},
+		oc.NetInfo,
 	)
 	ops, err := libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, nil, egressFirewallACL)
 	if err != nil {

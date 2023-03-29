@@ -51,10 +51,10 @@ type multicastPolicy struct{}
 
 func (p multicastPolicy) getMulticastPolicyExpectedData(fakeOvn *FakeOVN, ns string, ports []string) []libovsdb.TestData {
 	pg_hash := hashedPortGroup(ns)
-	egressMatch := fakeOvn.controller.getACLMatch(pg_hash, getMulticastACLEgrMatch(), lportEgressAfterLB)
+	egressMatch := fakeOvn.controller.getACLMatch(pg_hash, fakeOvn.controller.getMulticastACLEgrMatch(), lportEgressAfterLB)
 
 	ip4AddressSet, ip6AddressSet := getNsAddrSetHashNames(ns)
-	mcastMatch := getACLMatchAF(getMulticastACLIgrMatchV4(ip4AddressSet), getMulticastACLIgrMatchV6(ip6AddressSet))
+	mcastMatch := getACLMatchAF(getMulticastACLIgrMatchV4(ip4AddressSet), getMulticastACLIgrMatchV6(ip6AddressSet), config.IPv4Mode, config.IPv6Mode)
 	ingressMatch := fakeOvn.controller.getACLMatch(pg_hash, mcastMatch, lportIngress)
 
 	egressACL := libovsdbops.BuildACL(

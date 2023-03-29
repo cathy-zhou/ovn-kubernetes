@@ -269,7 +269,7 @@ func (bnc *BaseNetworkController) updateStaleDefaultDenyACLNames(npType knet.Pol
 				return err
 			}
 		}
-		newACL := bnc.BuildACL(
+		newACL := BuildACL(
 			newName, // this is the only thing we need to change, keep the rest same
 			aclList[0].Priority,
 			aclList[0].Match,
@@ -277,6 +277,7 @@ func (bnc *BaseNetworkController) updateStaleDefaultDenyACLNames(npType knet.Pol
 			bnc.GetNamespaceACLLogging(namespace),
 			aclT,
 			aclList[0].ExternalIDs,
+			bnc.NetInfo,
 		)
 		newACL.UUID = aclList[0].UUID // for performance
 		err := libovsdbops.CreateOrUpdateACLs(bnc.nbClient, newACL)
@@ -305,6 +306,8 @@ func (bnc *BaseNetworkController) syncNetworkPolicies(networkPolicies []interfac
 	return bnc.syncNetworkPoliciesCommon(expectedPolicies)
 }
 
+// syncNetworkPoliciesCommon syncs logical entities associated with existing network policies.
+// It serves both networkpolicies (for default network) and multi-networkpolicies (for secondary networks)
 func (bnc *BaseNetworkController) syncNetworkPoliciesCommon(expectedPolicies map[string]map[string]bool) error {
 	// find network policies that don't exist in k8s anymore, but still present in the dbs, and cleanup.
 	// Peer address sets and network policy's port groups (together with acls) will be cleaned up.
@@ -430,9 +433,11 @@ func (bnc *BaseNetworkController) syncNetworkPoliciesCommon(expectedPolicies map
 	}
 
 	// add default hairpin allow acl
-	err = bnc.addHairpinAllowACL()
-	if err != nil {
-		return fmt.Errorf("failed to create allow hairping acl: %w", err)
+	if !bnc.IsSecondary() {
+		err = bnc.addHairpinAllowACL()
+		if err != nil {
+			return fmt.Errorf("failed to create allow hairping acl: %w", err)
+		}
 	}
 
 	return nil
@@ -449,8 +454,8 @@ func (bnc *BaseNetworkController) addAllowACLFromNode(nodeName string, mgmtPortI
 	}
 	match := fmt.Sprintf("%s.src==%s", ipFamily, mgmtPortIP.String())
 
-	nodeACL := bnc.BuildACL(getAllowFromNodeACLName(), types.DefaultAllowPriority, match,
-		nbdb.ACLActionAllowRelated, nil, lportIngress, nil)
+	nodeACL := BuildACL(getAllowFromNodeACLName(), types.DefaultAllowPriority, match,
+		nbdb.ACLActionAllowRelated, nil, lportIngress, nil, bnc.NetInfo)
 
 	ops, err := libovsdbops.CreateOrUpdateACLsOps(nbClient, nil, nodeACL)
 	if err != nil {
@@ -492,14 +497,14 @@ func getARPAllowACLName(ns string) string {
 }
 
 // Note that the hashName argument is the portGroup's Name without network scope prefix
-func (ncni *NetworkControllerNetInfo) buildPortGroup(hashName, name string, ports []*nbdb.LogicalSwitchPort, acls []*nbdb.ACL) *nbdb.PortGroup {
+func (bnc *BaseNetworkController) buildPortGroup(hashName, name string, ports []*nbdb.LogicalSwitchPort, acls []*nbdb.ACL) *nbdb.PortGroup {
 	var externalIds map[string]string
-	pgName := ncni.GetNetworkScopedName(hashName)
+	pgName := bnc.GetNetworkScopedName(hashName)
 	externalIds = map[string]string{"name": name}
-	if ncni.IsSecondary() {
-		externalIds[types.NetworkExternalID] = ncni.GetNetworkName()
+	if bnc.IsSecondary() {
+		externalIds[types.NetworkExternalID] = bnc.GetNetworkName()
 	}
-	return libovsdbops.BuildPortGroup(pgName, name, ports, acls, externalIds)
+	return libovsdbops.BuildPortGroup(pgName, ports, acls, externalIds)
 }
 
 func defaultDenyPortGroupName(namespace, gressSuffix string) string {
@@ -510,10 +515,10 @@ func defaultDenyPortGroupName(namespace, gressSuffix string) string {
 func (bnc *BaseNetworkController) buildDenyACLs(namespace, pg string, aclLogging *ACLLoggingLevels, aclT aclType) (denyACL, allowACL *nbdb.ACL) {
 	denyMatch := bnc.getACLMatch(pg, "", aclT)
 	allowMatch := bnc.getACLMatch(pg, arpAllowPolicyMatch, aclT)
-	denyACL = bnc.BuildACL(getDefaultDenyPolicyACLName(namespace, aclT), types.DefaultDenyPriority, denyMatch,
-		nbdb.ACLActionDrop, aclLogging, aclT, getDefaultDenyPolicyExternalIDs(aclT))
-	allowACL = bnc.BuildACL(getARPAllowACLName(namespace), types.DefaultAllowPriority, allowMatch,
-		nbdb.ACLActionAllow, nil, aclT, getDefaultDenyPolicyExternalIDs(aclT))
+	denyACL = BuildACL(getDefaultDenyPolicyACLName(namespace, aclT), types.DefaultDenyPriority, denyMatch,
+		nbdb.ACLActionDrop, aclLogging, aclT, getDefaultDenyPolicyExternalIDs(aclT), bnc.NetInfo)
+	allowACL = BuildACL(getARPAllowACLName(namespace), types.DefaultAllowPriority, allowMatch,
+		nbdb.ACLActionAllow, nil, aclT, getDefaultDenyPolicyExternalIDs(aclT), bnc.NetInfo)
 	return
 }
 
@@ -722,6 +727,7 @@ func (bnc *BaseNetworkController) getNewLocalPolicyPorts(np *networkPolicy,
 		on, networkMap, err := util.GetPodNADToNetworkMapping(pod, bnc.NetInfo)
 		if err != nil || !on {
 			if err != nil {
+				// continue to handle other pods even if this pod has invalid Network Attachment Selection Annotation
 				klog.Warningf("Failed to determine if pod %s/%s needs to be plumb interface on network %s: %v",
 					pod.Namespace, pod.Name, bnc.GetNetworkName(), err)
 			}
@@ -798,6 +804,7 @@ func (bnc *BaseNetworkController) getExistingLocalPolicyPorts(np *networkPolicy,
 		on, networkMap, err := util.GetPodNADToNetworkMapping(pod, bnc.NetInfo)
 		if err != nil || !on {
 			if err != nil {
+				// continue to handle other pods even if this pod has invalid Network Attachment Selection Annotation
 				klog.Warningf("Failed to determine if pod %s/%s needs to be plumb interface on network %s: %v",
 					pod.Namespace, pod.Name, bnc.GetNetworkName(), err)
 			}
@@ -1052,7 +1059,7 @@ func (bnc *BaseNetworkController) addLocalPodHandler(policy *knet.NetworkPolicy,
 		_ = bnc.handleLocalPodSelectorAddFunc(np, objs...)
 		return nil
 	}
-	retryLocalPods := bnc.newRetryFrameworkWithParameters(
+	retryLocalPods := bnc.newNetpolRetryFramework(
 		factory.LocalPodSelectorType,
 		syncFunc,
 		&NetworkPolicyExtraParameters{
@@ -1161,7 +1168,7 @@ func (bnc *BaseNetworkController) createNetworkPolicy(policy *knet.NetworkPolicy
 		for i, ingressJSON := range policy.Spec.Ingress {
 			klog.V(5).Infof("Network policy ingress is %+v", ingressJSON)
 
-			ingress := newGressPolicy(knet.PolicyTypeIngress, i, policy.Namespace, policy.Name, bnc.controllerName, statelessNetPol, bnc.NetInfo)
+			ingress := newGressPolicy(knet.PolicyTypeIngress, i, policy.Namespace, policy.Name, bnc.controllerName, statelessNetPol, bnc.NetInfo, bnc.NetConfInfo)
 			// append ingress policy to be able to cleanup created address set
 			// see cleanupNetworkPolicy for details
 			np.ingressPolicies = append(np.ingressPolicies, ingress)
@@ -1187,7 +1194,7 @@ func (bnc *BaseNetworkController) createNetworkPolicy(policy *knet.NetworkPolicy
 		for i, egressJSON := range policy.Spec.Egress {
 			klog.V(5).Infof("Network policy egress is %+v", egressJSON)
 
-			egress := newGressPolicy(knet.PolicyTypeEgress, i, policy.Namespace, policy.Name, bnc.controllerName, statelessNetPol, bnc.NetInfo)
+			egress := newGressPolicy(knet.PolicyTypeEgress, i, policy.Namespace, policy.Name, bnc.controllerName, statelessNetPol, bnc.NetInfo, bnc.NetConfInfo)
 			// append ingress policy to be able to cleanup created address set
 			// see cleanupNetworkPolicy for details
 			np.egressPolicies = append(np.egressPolicies, egress)
@@ -1668,7 +1675,7 @@ func (bnc *BaseNetworkController) addPeerNamespaceHandler(
 		_ = bnc.handlePeerNamespaceSelectorAdd(np, gress, objs...)
 		return nil
 	}
-	retryPeerNamespaces := bnc.newRetryFrameworkWithParameters(
+	retryPeerNamespaces := bnc.newNetpolRetryFramework(
 		factory.PeerNamespaceSelectorType,
 		syncFunc,
 		&NetworkPolicyExtraParameters{gp: gress, np: np},
@@ -1743,28 +1750,26 @@ func (bnc *BaseNetworkController) getNetpolDefaultACLDbIDs(direction string) *li
 func (bnc *BaseNetworkController) addHairpinAllowACL() error {
 	var v4Match, v6Match, match string
 
-	if bnc.IsSecondary() {
-		return nil
-	}
-	if config.IPv4Mode {
+	ipv4Mode, ipv6Mode := bnc.IPMode()
+	if ipv4Mode {
 		v4Match = fmt.Sprintf("%s.src == %s", "ip4", types.V4OVNServiceHairpinMasqueradeIP)
 		match = v4Match
 	}
-	if config.IPv6Mode {
+	if ipv6Mode {
 		v6Match = fmt.Sprintf("%s.src == %s", "ip6", types.V6OVNServiceHairpinMasqueradeIP)
 		match = v6Match
 	}
-	if config.IPv4Mode && config.IPv6Mode {
+	if ipv4Mode && ipv6Mode {
 		match = fmt.Sprintf("(%s || %s)", v4Match, v6Match)
 	}
 
 	ingressACLIDs := bnc.getNetpolDefaultACLDbIDs(string(knet.PolicyTypeIngress))
-	ingressACL := bnc.BuildACL("", types.DefaultAllowPriority, match,
-		nbdb.ACLActionAllowRelated, nil, lportIngress, ingressACLIDs.GetExternalIDs())
+	ingressACL := BuildACL("", types.DefaultAllowPriority, match,
+		nbdb.ACLActionAllowRelated, nil, lportIngress, ingressACLIDs.GetExternalIDs(), bnc.NetInfo)
 
 	egressACLIDs := bnc.getNetpolDefaultACLDbIDs(string(knet.PolicyTypeEgress))
-	egressACL := bnc.BuildACL("", types.DefaultAllowPriority, match,
-		nbdb.ACLActionAllowRelated, nil, lportEgressAfterLB, egressACLIDs.GetExternalIDs())
+	egressACL := BuildACL("", types.DefaultAllowPriority, match,
+		nbdb.ACLActionAllowRelated, nil, lportEgressAfterLB, egressACLIDs.GetExternalIDs(), bnc.NetInfo)
 
 	ops, err := libovsdbops.CreateOrUpdateACLsOps(bnc.nbClient, nil, ingressACL, egressACL)
 	if err != nil {
@@ -1788,6 +1793,12 @@ func (bnc *BaseNetworkController) addHairpinAllowACL() error {
 // back the appropriate handler logic
 func (bnc *BaseNetworkController) WatchNetworkPolicy() error {
 	if bnc.IsSecondary() && !config.OVNKubernetesFeature.EnableMultiNetworkPolicy {
+		return nil
+	}
+
+	// if this network does not have ipam, network policy is not supported.
+	if !bnc.doesNetworkRequireIPAM() {
+		klog.Infof("Network policy is not supported on network %s", bnc.GetNetworkName())
 		return nil
 	}
 

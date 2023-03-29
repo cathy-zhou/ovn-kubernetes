@@ -36,12 +36,14 @@ import (
 
 func getFakeController(controllerName string) *DefaultNetworkController {
 	controller := &DefaultNetworkController{
-		BaseNetworkController: BaseNetworkController{controllerName: controllerName},
+		BaseNetworkController: BaseNetworkController{
+			controllerName: controllerName,
+			NetInfo:        &util.DefaultNetInfo{},
+			NetConfInfo:    &util.DefaultNetConfInfo{},
+		},
 	}
 	return controller
 }
-
-var defaultNetworkControllerNetInfo NetworkControllerNetInfo = NetworkControllerNetInfo{NetInfo: &util.DefaultNetInfo{}}
 
 func newNetworkPolicy(name, namespace string, podSelector metav1.LabelSelector, ingress []knet.NetworkPolicyIngressRule,
 	egress []knet.NetworkPolicyEgressRule, policyTypes ...knet.PolicyType) *knet.NetworkPolicy {
@@ -160,11 +162,12 @@ func getDefaultDenyData(networkPolicy *knet.NetworkPolicy, ports []string,
 		lsps = append(lsps, &nbdb.LogicalSwitchPort{UUID: uuid})
 	}
 
+	fakeController := getFakeController(DefaultNetworkControllerName)
 	var egressDenyPorts []*nbdb.LogicalSwitchPort
 	if policyTypeEgress {
 		egressDenyPorts = lsps
 	}
-	egressDenyPG := defaultNetworkControllerNetInfo.buildPortGroup(
+	egressDenyPG := fakeController.buildPortGroup(
 		egressPGName,
 		egressPGName,
 		egressDenyPorts,
@@ -176,7 +179,7 @@ func getDefaultDenyData(networkPolicy *knet.NetworkPolicy, ports []string,
 	if policyTypeIngress {
 		ingressDenyPorts = lsps
 	}
-	ingressDenyPG := defaultNetworkControllerNetInfo.buildPortGroup(
+	ingressDenyPG := fakeController.buildPortGroup(
 		ingressPGName,
 		ingressPGName,
 		ingressDenyPorts,
@@ -348,8 +351,9 @@ func getPolicyData(networkPolicy *knet.NetworkPolicy, localPortUUIDs []string, p
 		lsps = append(lsps, &nbdb.LogicalSwitchPort{UUID: uuid})
 	}
 
+	fakeController := getFakeController(DefaultNetworkControllerName)
 	pgName, readableName := getNetworkPolicyPGName(networkPolicy.Namespace, networkPolicy.Name)
-	pg := defaultNetworkControllerNetInfo.buildPortGroup(
+	pg := fakeController.buildPortGroup(
 		pgName,
 		readableName,
 		lsps,
@@ -511,6 +515,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 		gomegaFormatMaxLength int
 		logicalSwitch         *nbdb.LogicalSwitch
 		clusterPortGroup      *nbdb.PortGroup
+		fakeController        *DefaultNetworkController
 	)
 
 	ginkgo.BeforeEach(func() {
@@ -522,6 +527,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 		app.Flags = config.Flags
 
 		fakeOvn = NewFakeOVN()
+		fakeController = getFakeController(DefaultNetworkControllerName)
 
 		gomegaFormatMaxLength = format.MaxLength
 		format.MaxLength = 0
@@ -755,7 +761,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 					},
 				)
 				staleACL.UUID = "staleACL-UUID"
-				pg := defaultNetworkControllerNetInfo.buildPortGroup(
+				pg := fakeController.buildPortGroup(
 					pgName,
 					readableName,
 					nil,
@@ -1276,7 +1282,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 					egressOptions,
 				)
 				leftOverACL1FromUpgrade.UUID = *leftOverACL1FromUpgrade.Name + "-egressAllowACL-UUID"
-				testOnlyEgressDenyPG := defaultNetworkControllerNetInfo.buildPortGroup(
+				testOnlyEgressDenyPG := fakeController.buildPortGroup(
 					egressPGName,
 					egressPGName,
 					nil,
@@ -1299,7 +1305,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 					nil,
 				)
 				leftOverACL2FromUpgrade.UUID = *leftOverACL2FromUpgrade.Name + "-ingressAllowACL-UUID"
-				testOnlyIngressDenyPG := defaultNetworkControllerNetInfo.buildPortGroup(
+				testOnlyIngressDenyPG := fakeController.buildPortGroup(
 					ingressPGName,
 					ingressPGName,
 					nil,
@@ -1436,7 +1442,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 					nil,
 				)
 				leftOverACL1FromUpgrade.UUID = *leftOverACL1FromUpgrade.Name + "-egressAllowACL-UUID"
-				testOnlyEgressDenyPG := defaultNetworkControllerNetInfo.buildPortGroup(
+				testOnlyEgressDenyPG := fakeController.buildPortGroup(
 					egressPGName,
 					egressPGName,
 					nil,
@@ -1476,7 +1482,7 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Operations", func() {
 					nil,
 				)
 				leftOverACL3FromUpgrade.UUID = *leftOverACL3FromUpgrade.Name + "-ingressAllowACL-UUID1"
-				testOnlyIngressDenyPG := defaultNetworkControllerNetInfo.buildPortGroup(
+				testOnlyIngressDenyPG := fakeController.buildPortGroup(
 					ingressPGName,
 					ingressPGName,
 					nil,
@@ -2285,7 +2291,8 @@ var _ = ginkgo.Describe("OVN NetworkPolicy Low-Level Operations", func() {
 		config.IPv4Mode = true
 		config.IPv6Mode = false
 		asIDs := getPodSelectorAddrSetDbIDs("test_name", DefaultNetworkControllerName)
-		gp := newGressPolicy(knet.PolicyTypeIngress, 0, "testing", "policy", controllerName, false, &util.DefaultNetInfo{})
+		gp := newGressPolicy(knet.PolicyTypeIngress, 0, "testing", "policy", controllerName,
+			false, &util.DefaultNetInfo{}, &util.DefaultNetConfInfo{})
 		gp.hasPeerSelector = true
 		gp.addPeerAddressSets(addressset.GetHashNamesForAS(asIDs))
 
