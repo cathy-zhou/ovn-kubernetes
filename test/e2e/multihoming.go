@@ -34,7 +34,8 @@ var _ = Describe("Multi Homing", func() {
 		secondaryLocalnetNetworkCIDR = "60.128.0.0/24"
 		netPrefixLengthPerNode       = 24
 		localnetVLANID               = 10
-		secondaryIPv6CIDR            = "10:100:200::0/64"
+		secondaryIPv6CIDR            = "2010:100:200::0/60"
+		netPrefixLengthIPv6PerNode   = 64
 	)
 	f := wrappedTestFramework("multi-homing")
 
@@ -84,7 +85,9 @@ var _ = Describe("Multi Homing", func() {
 			if netConfig.excludeCIDRs != nil {
 				podIP, err := podIPForAttachment(cs, pod.GetNamespace(), pod.GetName(), secondaryNetworkName, 0)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(inRange(popCIDRsPerNodePrefix(netConfig.cidr, netPrefixLengthPerNode), podIP)).To(Succeed())
+				subnet, err := getNetCIDRSubnet(netConfig.cidr)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(inRange(subnet, podIP)).To(Succeed())
 				for _, excludedRange := range netConfig.excludeCIDRs {
 					Expect(inRange(excludedRange, podIP)).To(
 						MatchError(fmt.Errorf("ip [%s] is NOT in range %s", podIP, excludedRange)))
@@ -106,7 +109,7 @@ var _ = Describe("Multi Homing", func() {
 			table.Entry(
 				"when attaching to an L3 - routed - network with IPv6 network",
 				networkAttachmentConfig{
-					cidr:     netCIDR("2001:db8:abcd:0012::0/60", 64),
+					cidr:     netCIDR(secondaryIPv6CIDR, netPrefixLengthIPv6PerNode),
 					name:     secondaryNetworkName,
 					topology: "layer3",
 				},
@@ -320,12 +323,15 @@ var _ = Describe("Multi Homing", func() {
 					serverIP = strings.ReplaceAll(staticServerIP, "/24", "")
 				}
 
-				for i, subnet := range strings.Split(netConfig.cidr, ",") {
-					if subnet != "" {
+				for i, cidr := range strings.Split(netConfig.cidr, ",") {
+					if cidr != "" {
 						By("asserting the server pod has an IP from the configured range")
 						serverIP, err = podIPForAttachment(cs, f.Namespace.Name, serverPod.GetName(), netConfig.name, i)
 						Expect(err).NotTo(HaveOccurred())
-						Expect(inRange(popCIDRsPerNodePrefix(subnet, netPrefixLengthPerNode), serverIP)).To(Succeed())
+						By(fmt.Sprintf("asserting the server pod IP %v is from the configured range %v/%v", serverIP, cidr, netPrefixLengthPerNode))
+						subnet, err := getNetCIDRSubnet(cidr)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(inRange(subnet, serverIP)).To(Succeed())
 					}
 
 					By("asserting the *client* pod can contact the server pod exposed endpoint")
@@ -386,6 +392,23 @@ var _ = Describe("Multi Homing", func() {
 					name:     secondaryNetworkName,
 					topology: "layer3",
 					cidr:     netCIDR(secondaryNetworkCIDR, netPrefixLengthPerNode),
+				},
+				podConfiguration{
+					attachments: []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
+					name:        clientPodName,
+				},
+				podConfiguration{
+					attachments:  []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
+					name:         podName,
+					containerCmd: httpServerContainerCmd(port),
+				},
+			),
+			table.Entry(
+				"can communicate over an L3 - routed - secondary network with IPv6 subnet",
+				networkAttachmentConfig{
+					name:     secondaryNetworkName,
+					topology: "layer3",
+					cidr:     netCIDR(secondaryIPv6CIDR, netPrefixLengthIPv6PerNode),
 				},
 				podConfiguration{
 					attachments: []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
@@ -649,11 +672,14 @@ func netCIDR(netCIDR string, netPrefixLengthPerNode int) string {
 	return fmt.Sprintf("%s/%d", netCIDR, netPrefixLengthPerNode)
 }
 
-func popCIDRsPerNodePrefix(netCIDR string, netPrefixLengthPerNode int) string {
-	if strings.Count(netCIDR, "/") > 1 {
-		return strings.ReplaceAll(netCIDR, fmt.Sprintf("/%d", netPrefixLengthPerNode), "")
+func getNetCIDRSubnet(netCIDR string) (string, error) {
+	subStrings := strings.Split(netCIDR, "/")
+	if len(subStrings) == 3 {
+		return subStrings[0] + "/" + subStrings[1], nil
+	} else if len(subStrings) == 2 {
+		return netCIDR, nil
 	}
-	return netCIDR
+	return "", fmt.Errorf("invalid network cidr %s", netCIDR)
 }
 
 type networkAttachmentConfig struct {
