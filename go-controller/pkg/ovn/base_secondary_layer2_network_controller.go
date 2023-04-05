@@ -134,8 +134,10 @@ type BaseSecondaryLayer2NetworkController struct {
 
 func (oc *BaseSecondaryLayer2NetworkController) initRetryFramework() {
 	oc.retryPods = oc.newRetryFramework(factory.PodType)
-	oc.retryNamespaces = oc.newRetryFramework(factory.NamespaceType)
-	oc.BaseSecondaryNetworkController.initRetryFramework()
+	if oc.doesNetworkRequireIPAM() {
+		oc.retryNamespaces = oc.newRetryFramework(factory.NamespaceType)
+		oc.BaseSecondaryNetworkController.initRetryFramework()
+	}
 }
 
 // newRetryFramework builds and returns a retry framework for the input resource type;
