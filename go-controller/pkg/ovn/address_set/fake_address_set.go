@@ -155,6 +155,24 @@ func (f *FakeAddressSetFactory) removeAddressSet(name string) {
 	delete(f.sets, name)
 }
 
+// expectAddressSetHasIPs ensures the named address set has the given set of IPs
+func (f *FakeAddressSetFactory) expectAddressSetHasIPs(g gomega.Gomega, dbIDs *libovsdbops.DbObjectIDs, ips []string) {
+	as := f.getAddressSet(dbIDs)
+	gomega.Expect(as).ToNot(gomega.BeNil(), fmt.Sprintf("expected address set %s to exist", dbIDs.String()))
+	defer as.Unlock()
+	as4 := as.ipv4
+	as6 := as.ipv6
+	for _, ip := range ips {
+		if utilnet.IsIPv6(net.ParseIP(ip)) {
+			g.Expect(as6).NotTo(gomega.BeNil())
+			g.Expect(as6.ips).To(gomega.HaveKey(ip))
+		} else {
+			g.Expect(as4).NotTo(gomega.BeNil())
+			g.Expect(as4.ips).To(gomega.HaveKey(ip))
+		}
+	}
+}
+
 // ExpectAddressSetWithIPs ensures the named address set exists with the given set of IPs
 func (f *FakeAddressSetFactory) expectAddressSetWithIPs(g gomega.Gomega, dbIDs *libovsdbops.DbObjectIDs, ips []string) {
 	var lenAddressSet int
@@ -192,7 +210,7 @@ func (f *FakeAddressSetFactory) expectAddressSetWithIPs(g gomega.Gomega, dbIDs *
 			}
 		}
 
-		klog.Errorf("IPv4 addresses mismatch in cache: %#v, expected: %#v", addrs, ips)
+		klog.Errorf("Cathy IPv4 addresses mismatch in cache: %#v, expected: %#v", addrs, ips)
 	}
 
 	g.Expect(lenAddressSet).To(gomega.Equal(len(ips)))
@@ -208,6 +226,14 @@ func (f *FakeAddressSetFactory) getDbIDsFromNsNameOrDbIDs(dbIDsOrNsName any) *li
 		panic("unexpected type of argument passed to ExpectAddressSetWithIPs")
 	}
 	return dbIDs
+}
+
+// ExpectAddressSetHasIPs ensure address set has the given set of ips.
+// Address set is identified by dbIDsOrNsName, which may be a namespace name (string) or a *libovsdbops.DbObjectIDs.
+func (f *FakeAddressSetFactory) ExpectAddressSetHasIPs(dbIDsOrNsName any, ips []string) {
+	dbIDs := f.getDbIDsFromNsNameOrDbIDs(dbIDsOrNsName)
+	g := gomega.Default
+	f.expectAddressSetHasIPs(g, dbIDs, ips)
 }
 
 // ExpectAddressSetWithIPs ensure address set exists with the given set of ips.
