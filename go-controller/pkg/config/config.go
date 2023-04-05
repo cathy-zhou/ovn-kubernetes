@@ -1664,6 +1664,10 @@ func buildOVNKubernetesFeatureConfig(ctx *cli.Context, cli, file *config) error 
 	if err := overrideFields(&OVNKubernetesFeature, &cli.OVNKubernetesFeature, &savedOVNKubernetesFeature); err != nil {
 		return err
 	}
+	if !OVNKubernetesFeature.EnableMultiNetwork && OVNKubernetesFeature.EnableMultiNetworkPolicy {
+		klog.Warningf("Disable multinetwork policy support as multinetwork support is disabled")
+		OVNKubernetesFeature.EnableMultiNetworkPolicy = false
+	}
 	return nil
 }
 
