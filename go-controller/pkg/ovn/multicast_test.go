@@ -186,11 +186,11 @@ func getDefaultPortGroups() (clusterPortGroup, clusterRtrPortGroup *nbdb.PortGro
 }
 
 func getMulticastPolicyExpectedData(ns string, ports []string) []libovsdb.TestData {
-	fakeController := getFakeController(DefaultNetworkControllerName)
+	fakeController := getFakeBaseController(&util.DefaultNetInfo{}, &util.DefaultNetConfInfo{})
 	pg_hash := fakeController.getMulticastPortGroupName(ns)
 	egressMatch := getACLMatch(pg_hash, fakeController.getMulticastACLEgrMatch(), aclEgress)
 
-	ip4AddressSet, ip6AddressSet := getNsAddrSetHashNames(ns)
+	ip4AddressSet, ip6AddressSet := getNsAddrSetHashNames(ns, "default-network-controller")
 	mcastMatch := getACLMatchAF(getMulticastACLIgrMatchV4(ip4AddressSet), getMulticastACLIgrMatchV6(ip6AddressSet), config.IPv4Mode, config.IPv6Mode)
 	ingressMatch := getACLMatch(pg_hash, mcastMatch, aclIngress)
 

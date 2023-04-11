@@ -130,7 +130,7 @@ var _ = ginkgo.Describe("OVN EgressFirewall Operations", func() {
 				config.Gateway.Mode = gwMode
 				app.Action = func(ctx *cli.Context) error {
 					// owned by non-existing namespace
-					fakeController := getFakeController(DefaultNetworkControllerName)
+					fakeController := &DefaultNetworkController{BaseNetworkController: *getFakeBaseController(&util.DefaultNetInfo{}, &util.DefaultNetConfInfo{})}
 					purgeIDs := fakeController.getEgressFirewallACLDbIDs("none", 0)
 					purgeACL := libovsdbops.BuildACL(
 						"purgeACL1",
@@ -236,7 +236,7 @@ var _ = ginkgo.Describe("OVN EgressFirewall Operations", func() {
 					// check severity was reset from default to nil
 					updateACL.Severity = nil
 					// match shouldn't have cluster exclusion
-					asHash, _ := getNsAddrSetHashNames(namespace1.Name)
+					asHash, _ := getNsAddrSetHashNames(namespace1.Name, "default-network-controller")
 					updateACL.Match = "(ip4.dst == 1.2.3.4/23) && ip4.src == $" + asHash
 
 					expectedDatabaseState := []libovsdb.TestData{
@@ -277,7 +277,7 @@ var _ = ginkgo.Describe("OVN EgressFirewall Operations", func() {
 					_, err := fakeOVN.fakeClient.EgressFirewallClient.K8sV1().EgressFirewalls(egressFirewall.Namespace).
 						Get(context.TODO(), egressFirewall.Name, metav1.GetOptions{})
 					gomega.Expect(err).NotTo(gomega.HaveOccurred())
-					asHash, _ := getNsAddrSetHashNames(namespace1.Name)
+					asHash, _ := getNsAddrSetHashNames(namespace1.Name, "default-network-controller")
 					dbIDs := fakeOVN.controller.getEgressFirewallACLDbIDs(egressFirewall.Namespace, 0)
 					ipv4ACL := libovsdbops.BuildACL(
 						getACLName(dbIDs),
@@ -323,7 +323,7 @@ var _ = ginkgo.Describe("OVN EgressFirewall Operations", func() {
 
 					_, err := fakeOVN.fakeClient.EgressFirewallClient.K8sV1().EgressFirewalls(egressFirewall.Namespace).Get(context.TODO(), egressFirewall.Name, metav1.GetOptions{})
 					gomega.Expect(err).NotTo(gomega.HaveOccurred())
-					_, asHash6 := getNsAddrSetHashNames(namespace1.Name)
+					_, asHash6 := getNsAddrSetHashNames(namespace1.Name, "default-network-controller")
 					dbIDs := fakeOVN.controller.getEgressFirewallACLDbIDs(egressFirewall.Namespace, 0)
 					ipv6ACL := libovsdbops.BuildACL(
 						getACLName(dbIDs),
@@ -376,7 +376,7 @@ var _ = ginkgo.Describe("OVN EgressFirewall Operations", func() {
 					_, err := fakeOVN.fakeClient.EgressFirewallClient.K8sV1().EgressFirewalls(egressFirewall.Namespace).Get(context.TODO(), egressFirewall.Name, metav1.GetOptions{})
 					gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-					asHash, _ := getNsAddrSetHashNames(namespace1.Name)
+					asHash, _ := getNsAddrSetHashNames(namespace1.Name, "default-network-controller")
 					dbIDs := fakeOVN.controller.getEgressFirewallACLDbIDs(egressFirewall.Namespace, 0)
 					udpACL := libovsdbops.BuildACL(
 						getACLName(dbIDs),
@@ -423,7 +423,7 @@ var _ = ginkgo.Describe("OVN EgressFirewall Operations", func() {
 
 					startOvn(dbSetup, []v1.Namespace{namespace1}, []egressfirewallapi.EgressFirewall{*egressFirewall})
 
-					asHash, _ := getNsAddrSetHashNames(namespace1.Name)
+					asHash, _ := getNsAddrSetHashNames(namespace1.Name, "default-network-controller")
 					dbIDs := fakeOVN.controller.getEgressFirewallACLDbIDs(egressFirewall.Namespace, 0)
 					ipv4ACL := libovsdbops.BuildACL(
 						getACLName(dbIDs),
@@ -483,7 +483,7 @@ var _ = ginkgo.Describe("OVN EgressFirewall Operations", func() {
 
 					startOvn(dbSetup, []v1.Namespace{namespace1}, []egressfirewallapi.EgressFirewall{*egressFirewall})
 
-					asHash, _ := getNsAddrSetHashNames(namespace1.Name)
+					asHash, _ := getNsAddrSetHashNames(namespace1.Name, "default-network-controller")
 					dbIDs := fakeOVN.controller.getEgressFirewallACLDbIDs(egressFirewall.Namespace, 0)
 					ipv4ACL := libovsdbops.BuildACL(
 						getACLName(dbIDs),
@@ -600,7 +600,7 @@ var _ = ginkgo.Describe("OVN EgressFirewall Operations", func() {
 					_, err = fakeOVN.fakeClient.KubeClient.CoreV1().Nodes().Patch(context.TODO(), nodeName,
 						types.MergePatchType, patchData, metav1.PatchOptions{})
 					gomega.Expect(err).NotTo(gomega.HaveOccurred())
-					asHash, _ := getNsAddrSetHashNames(namespace1.Name)
+					asHash, _ := getNsAddrSetHashNames(namespace1.Name, "default-network-controller")
 					dbIDs := fakeOVN.controller.getEgressFirewallACLDbIDs(egressFirewall.Namespace, 0)
 					ipv4ACL := libovsdbops.BuildACL(
 						getACLName(dbIDs),
@@ -684,7 +684,7 @@ var _ = ginkgo.Describe("OVN EgressFirewall Operations", func() {
 
 					fakeOVN.controller.WatchEgressFirewall()
 
-					asHash, _ := getNsAddrSetHashNames(namespace1.Name)
+					asHash, _ := getNsAddrSetHashNames(namespace1.Name, "default-network-controller")
 					dbIDs := fakeOVN.controller.getEgressFirewallACLDbIDs(egressFirewall.Namespace, 0)
 					ipv4ACL := libovsdbops.BuildACL(
 						getACLName(dbIDs),
@@ -769,7 +769,7 @@ var _ = ginkgo.Describe("OVN EgressFirewall Operations", func() {
 
 					startOvn(dbSetup, []v1.Namespace{namespace1}, []egressfirewallapi.EgressFirewall{*egressFirewall})
 
-					asHash, _ := getNsAddrSetHashNames(namespace1.Name)
+					asHash, _ := getNsAddrSetHashNames(namespace1.Name, "default-network-controller")
 					dbIDs := fakeOVN.controller.getEgressFirewallACLDbIDs(egressFirewall.Namespace, 0)
 					ipv4ACL := libovsdbops.BuildACL(
 						getACLName(dbIDs),
@@ -849,7 +849,7 @@ var _ = ginkgo.Describe("OVN EgressFirewall Operations", func() {
 
 					startOvn(dbSetup, []v1.Namespace{namespace1}, []egressfirewallapi.EgressFirewall{*egressFirewall})
 
-					asHash, _ := getNsAddrSetHashNames(namespace1.Name)
+					asHash, _ := getNsAddrSetHashNames(namespace1.Name, "default-network-controller")
 					dbIDs := fakeOVN.controller.getEgressFirewallACLDbIDs(egressFirewall.Namespace, 0)
 					ipv4ACL := libovsdbops.BuildACL(
 						getACLName(dbIDs),
@@ -959,7 +959,7 @@ var _ = ginkgo.Describe("OVN EgressFirewall Operations", func() {
 						gomega.Expect(err).NotTo(gomega.HaveOccurred())
 						err = fakeOVN.controller.WatchEgressFwNodes()
 						gomega.Expect(err).NotTo(gomega.HaveOccurred())
-						asHashv4, asHashv6 := getNsAddrSetHashNames(namespace1.Name)
+						asHashv4, asHashv6 := getNsAddrSetHashNames(namespace1.Name, "default-network-controller")
 						var match string
 						if config.IPv4Mode {
 							match = fmt.Sprintf("(ip4.dst == %s) && ip4.src == $%s",
@@ -1016,7 +1016,7 @@ var _ = ginkgo.Describe("OVN EgressFirewall Operations", func() {
 					_, err := fakeOVN.fakeClient.EgressFirewallClient.K8sV1().EgressFirewalls(egressFirewall.Namespace).Get(context.TODO(), egressFirewall.Name, metav1.GetOptions{})
 					gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-					asHash, _ := getNsAddrSetHashNames(namespace1.Name)
+					asHash, _ := getNsAddrSetHashNames(namespace1.Name, "default-network-controller")
 					dbIDs := fakeOVN.controller.getEgressFirewallACLDbIDs(egressFirewall.Namespace, 0)
 					acl := libovsdbops.BuildACL(
 						getACLName(dbIDs),
@@ -1063,7 +1063,7 @@ var _ = ginkgo.Describe("OVN EgressFirewall Operations", func() {
 
 					startOvn(dbSetup, []v1.Namespace{namespace1}, []egressfirewallapi.EgressFirewall{*egressFirewall})
 
-					asHash, _ := getNsAddrSetHashNames(namespace1.Name)
+					asHash, _ := getNsAddrSetHashNames(namespace1.Name, "default-network-controller")
 					aclIDs1 := fakeOVN.controller.getEgressFirewallACLDbIDs(namespace1.Name, 0)
 					ipv4ACL1 := libovsdbops.BuildACL(
 						getACLName(aclIDs1),
