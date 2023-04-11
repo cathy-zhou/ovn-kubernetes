@@ -130,7 +130,7 @@ var _ = ginkgo.Describe("OVN EgressFirewall Operations", func() {
 				config.Gateway.Mode = gwMode
 				app.Action = func(ctx *cli.Context) error {
 					// owned by non-existing namespace
-					fakeController := getFakeController(DefaultNetworkControllerName)
+					fakeController := &DefaultNetworkController{BaseNetworkController: *getFakeBaseController(&util.DefaultNetInfo{}, &util.DefaultNetConfInfo{})}
 					purgeIDs := fakeController.getEgressFirewallACLDbIDs("none", 0)
 					purgeACL := libovsdbops.BuildACL(
 						"purgeACL1",
