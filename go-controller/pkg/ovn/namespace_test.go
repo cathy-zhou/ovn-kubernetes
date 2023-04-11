@@ -65,8 +65,8 @@ func newNamespace(namespace string) *v1.Namespace {
 	}
 }
 
-func getNsAddrSetHashNames(ns string) (string, string) {
-	return addressset.GetHashNamesForAS(getNamespaceAddrSetDbIDs(ns, DefaultNetworkControllerName))
+func getNsAddrSetHashNames(ns, controllerName string) (string, string) {
+	return addressset.GetHashNamesForAS(getNamespaceAddrSetDbIDs(ns, controllerName))
 }
 
 var _ = ginkgo.Describe("OVN Namespace Operations", func() {

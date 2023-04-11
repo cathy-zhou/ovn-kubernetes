@@ -52,7 +52,7 @@ func setIpMode(m ipMode) {
 	config.IPv6Mode = m.IPv6Mode
 }
 
-func getMulticastDefaultExpectedData(fakeController *DefaultNetworkController, clusterPortGroup, clusterRtrPortGroup *nbdb.PortGroup) []libovsdb.TestData {
+func getMulticastDefaultExpectedData(fakeController *BaseNetworkController, clusterPortGroup, clusterRtrPortGroup *nbdb.PortGroup) []libovsdb.TestData {
 	match := getMulticastACLMatch()
 	aclIDs := getDefaultMcastACLDbIDs(mcastDefaultDenyID, aclEgress, DefaultNetworkControllerName)
 	aclName := getACLName(aclIDs)
@@ -135,7 +135,7 @@ func getMulticastDefaultExpectedData(fakeController *DefaultNetworkController, c
 	}
 }
 
-func getMulticastDefaultStaleData(fakeController *DefaultNetworkController, clusterPortGroup, clusterRtrPortGroup *nbdb.PortGroup) []libovsdb.TestData {
+func getMulticastDefaultStaleData(fakeController *BaseNetworkController, clusterPortGroup, clusterRtrPortGroup *nbdb.PortGroup) []libovsdb.TestData {
 	testData := getMulticastDefaultExpectedData(fakeController, clusterPortGroup, clusterRtrPortGroup)
 	defaultDenyIngressACL := testData[0].(*nbdb.ACL)
 	newName := joinACLName(types.ClusterPortGroupName, "DefaultDenyMulticastIngress")
@@ -185,11 +185,11 @@ func getDefaultPortGroups() (clusterPortGroup, clusterRtrPortGroup *nbdb.PortGro
 	return
 }
 
-func getMulticastPolicyExpectedData(fakeController *DefaultNetworkController, ns string, ports []string) []libovsdb.TestData {
+func getMulticastPolicyExpectedData(fakeController *BaseNetworkController, ns string, ports []string) []libovsdb.TestData {
 	pg_hash := fakeController.getMulticastPortGroupName(ns)
 	egressMatch := getACLMatch(pg_hash, fakeController.getMulticastACLEgrMatch(), aclEgress)
 
-	ip4AddressSet, ip6AddressSet := getNsAddrSetHashNames(ns)
+	ip4AddressSet, ip6AddressSet := getNsAddrSetHashNames(ns, "default-network-controller")
 	mcastMatch := getACLMatchAF(getMulticastACLIgrMatchV4(ip4AddressSet), getMulticastACLIgrMatchV6(ip6AddressSet), config.IPv4Mode, config.IPv6Mode)
 	ingressMatch := getACLMatch(pg_hash, mcastMatch, aclIngress)
 
@@ -247,7 +247,7 @@ func getMulticastPolicyExpectedData(fakeController *DefaultNetworkController, ns
 	}
 }
 
-func getMulticastPolicyStaleData(fakeController *DefaultNetworkController, ns string, ports []string) []libovsdb.TestData {
+func getMulticastPolicyStaleData(fakeController *BaseNetworkController, ns string, ports []string) []libovsdb.TestData {
 	testData := getMulticastPolicyExpectedData(fakeController, ns, ports)
 
 	egressACL := testData[0].(*nbdb.ACL)
@@ -329,7 +329,7 @@ var _ = ginkgo.Describe("OVN Multicast with IP Address Family", func() {
 	var (
 		app                   *cli.App
 		fakeOvn               *FakeOVN
-		fakeController        *DefaultNetworkController // used before fakeOvn.start()
+		fakeController        *BaseNetworkController // used before fakeOvn.start()
 		gomegaFormatMaxLength int
 	)
 
@@ -344,7 +344,7 @@ var _ = ginkgo.Describe("OVN Multicast with IP Address Family", func() {
 		app.Flags = config.Flags
 
 		fakeOvn = NewFakeOVN()
-		fakeController = getFakeController(DefaultNetworkControllerName)
+		fakeController = getFakeBaseController(&util.DefaultNetInfo{}, &util.DefaultNetConfInfo{})
 		gomegaFormatMaxLength = format.MaxLength
 		format.MaxLength = 0
 	})
@@ -371,7 +371,7 @@ var _ = ginkgo.Describe("OVN Multicast with IP Address Family", func() {
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 				gomega.Eventually(fakeOvn.nbClient).Should(libovsdb.HaveData(
-					getMulticastDefaultExpectedData(fakeOvn.controller, clusterPortGroup, clusterRtrPortGroup)))
+					getMulticastDefaultExpectedData(&fakeOvn.controller.BaseNetworkController, clusterPortGroup, clusterRtrPortGroup)))
 				return nil
 			}
 			err := app.Run([]string{app.Name})
@@ -391,7 +391,7 @@ var _ = ginkgo.Describe("OVN Multicast with IP Address Family", func() {
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				// check acls are updated
 				gomega.Eventually(fakeOvn.nbClient).Should(libovsdb.HaveData(
-					getMulticastDefaultExpectedData(fakeOvn.controller, clusterPortGroup, clusterRtrPortGroup)))
+					getMulticastDefaultExpectedData(&fakeOvn.controller.BaseNetworkController, clusterPortGroup, clusterRtrPortGroup)))
 				return nil
 			}
 			err := app.Run([]string{app.Name})
@@ -447,7 +447,7 @@ var _ = ginkgo.Describe("OVN Multicast with IP Address Family", func() {
 				)
 				err := fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-				expectedData = append(expectedData, getMulticastPolicyExpectedData(fakeOvn.controller, namespaceName1, nil)...)
+				expectedData = append(expectedData, getMulticastPolicyExpectedData(&fakeOvn.controller.BaseNetworkController, namespaceName1, nil)...)
 				gomega.Eventually(fakeOvn.nbClient).Should(libovsdb.HaveData(expectedData))
 				return nil
 			}
@@ -473,8 +473,8 @@ var _ = ginkgo.Describe("OVN Multicast with IP Address Family", func() {
 				err := fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-				expectedData = getMulticastDefaultExpectedData(fakeOvn.controller, clusterPortGroup, clusterRtrPortGroup)
-				expectedData = append(expectedData, getMulticastPolicyExpectedData(fakeOvn.controller, namespaceName1, nil)...)
+				expectedData = getMulticastDefaultExpectedData(&fakeOvn.controller.BaseNetworkController, clusterPortGroup, clusterRtrPortGroup)
+				expectedData = append(expectedData, getMulticastPolicyExpectedData(&fakeOvn.controller.BaseNetworkController, namespaceName1, nil)...)
 				gomega.Eventually(fakeOvn.nbClient).Should(libovsdb.HaveData(expectedData))
 				return nil
 			}
@@ -559,7 +559,7 @@ var _ = ginkgo.Describe("OVN Multicast with IP Address Family", func() {
 
 					// Enable multicast in the namespace.
 					updateMulticast(fakeOvn, ns, true)
-					expectedData := getMulticastPolicyExpectedData(fakeOvn.controller, namespace1.Name, nil)
+					expectedData := getMulticastPolicyExpectedData(&fakeOvn.controller.BaseNetworkController, namespace1.Name, nil)
 					gomega.Eventually(fakeOvn.nbClient).Should(libovsdb.HaveData(expectedData...))
 
 					// Disable multicast in the namespace.
@@ -609,7 +609,7 @@ var _ = ginkgo.Describe("OVN Multicast with IP Address Family", func() {
 					for _, tPod := range tPods {
 						ports = append(ports, tPod.portUUID)
 					}
-					expectedData := getMulticastPolicyExpectedData(fakeOvn.controller, namespace1.Name, ports)
+					expectedData := getMulticastPolicyExpectedData(&fakeOvn.controller.BaseNetworkController, namespace1.Name, ports)
 					expectedData = append(expectedData, getExpectedDataPodsAndSwitches(tPods, []string{nodeName})...)
 					gomega.Eventually(fakeOvn.nbClient).Should(libovsdb.HaveData(expectedData...))
 					fakeOvn.asf.ExpectAddressSetWithIPs(namespace1.Name, tPodIPs)
@@ -648,14 +648,14 @@ var _ = ginkgo.Describe("OVN Multicast with IP Address Family", func() {
 					gomega.Expect(ns2).NotTo(gomega.BeNil())
 
 					portsns1 := []string{}
-					expectedData := getMulticastPolicyExpectedData(fakeOvn.controller, longNameSpace1Name, portsns1)
+					expectedData := getMulticastPolicyExpectedData(&fakeOvn.controller.BaseNetworkController, longNameSpace1Name, portsns1)
 					acl := expectedData[0].(*nbdb.ACL)
 					// Post ACL indexing work, multicast ACL's don't have names
 					// We use externalIDs instead; so we can check if the expected IDs exist for the long namespace so that
 					// isEquivalent logic will be correct
 					gomega.Expect(acl.Name).To(gomega.BeNil())
 					gomega.Expect(acl.ExternalIDs[libovsdbops.ObjectNameKey.String()]).To(gomega.Equal(longNameSpace1Name))
-					expectedData = append(expectedData, getMulticastPolicyExpectedData(fakeOvn.controller, longNameSpace2Name, nil)...)
+					expectedData = append(expectedData, getMulticastPolicyExpectedData(&fakeOvn.controller.BaseNetworkController, longNameSpace2Name, nil)...)
 					acl = expectedData[3].(*nbdb.ACL)
 					gomega.Expect(acl.Name).To(gomega.BeNil())
 					gomega.Expect(acl.ExternalIDs[libovsdbops.ObjectNameKey.String()]).To(gomega.Equal(longNameSpace2Name))
@@ -701,7 +701,7 @@ var _ = ginkgo.Describe("OVN Multicast with IP Address Family", func() {
 					// Enable multicast in the namespace.
 					updateMulticast(fakeOvn, ns, true)
 					// Check expected data without pods
-					expectedDataWithoutPods := getMulticastPolicyExpectedData(fakeOvn.controller, namespace1.Name, nil)
+					expectedDataWithoutPods := getMulticastPolicyExpectedData(&fakeOvn.controller.BaseNetworkController, namespace1.Name, nil)
 					expectedDataWithoutPods = append(expectedDataWithoutPods, getNodeSwitch(nodeName)...)
 					gomega.Eventually(fakeOvn.nbClient).Should(libovsdb.HaveData(expectedDataWithoutPods))
 
@@ -714,7 +714,7 @@ var _ = ginkgo.Describe("OVN Multicast with IP Address Family", func() {
 					}
 					// Check pods were added
 					fakeOvn.asf.EventuallyExpectAddressSetWithIPs(namespace1.Name, tPodIPs)
-					expectedDataWithPods := getMulticastPolicyExpectedData(fakeOvn.controller, namespace1.Name, ports)
+					expectedDataWithPods := getMulticastPolicyExpectedData(&fakeOvn.controller.BaseNetworkController, namespace1.Name, ports)
 					expectedDataWithPods = append(expectedDataWithPods, getExpectedDataPodsAndSwitches(tPods, []string{nodeName})...)
 					gomega.Eventually(fakeOvn.nbClient).Should(libovsdb.HaveData(expectedDataWithPods...))
 
