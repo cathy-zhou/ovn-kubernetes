@@ -344,7 +344,7 @@ var _ = Describe("Multi Homing", func() {
 						}
 
 						if updatedPod.Status.Phase == v1.PodRunning {
-							return connectToServer(f.Namespace.Name, clientPodName, serverIP, port)
+							return connectToServer(clientPodConfig, serverIP, port)
 						}
 
 						return fmt.Errorf("pod not running. /me is sad")
@@ -754,21 +754,16 @@ var _ = Describe("Multi Homing", func() {
 					}
 
 					if updatedPod.Status.Phase == v1.PodRunning {
-						return connectToServer(allowedClientPodConfig.namespace, allowedClientPodConfig.name, serverIP, port)
+						return connectToServer(allowedClientPodConfig, serverIP, port)
 					}
 
 					return fmt.Errorf("pod not running. /me is sad")
 				}, 2*time.Minute, 6*time.Second).Should(Succeed())
 
 				By("asserting the *blocked-client* pod **cannot** contact the server pod exposed endpoint")
-				Expect(connectToServer(
-					blockedClientPodConfig.namespace,
-					blockedClientPodConfig.name,
-					serverIP,
-					port,
-				)).To(
-					MatchError(
-						MatchRegexp("Connection timeout after 200[0-1] ms")))
+				Expect(
+					connectToServer(blockedClientPodConfig, serverIP, port),
+				).To(MatchError(MatchRegexp("Connection timeout after 200[0-1] ms")))
 			},
 			table.Entry(
 				"for a pure L2 overlay when the multi-net policy describes the allowlist using pod selectors",
