@@ -13,6 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/rand"
@@ -629,12 +630,46 @@ var _ = Describe("Multi Homing", func() {
 
 		table.DescribeTable(
 			"multi-network policies configure traffic allow lists",
-			func(netConfig networkAttachmentConfig, allowedClientPodConfig podConfiguration, blockedClientPodConfig podConfiguration, serverPodConfig podConfiguration, policy *mnpapi.MultiNetworkPolicy) {
-				netConfig.namespace = f.Namespace.Name
-				blockedClientPodConfig.namespace = f.Namespace.Name
-				allowedClientPodConfig.namespace = f.Namespace.Name
-				serverPodConfig.namespace = f.Namespace.Name
+			func(netConfig networkAttachmentConfig, allowedClientPodConfig podConfiguration, blockedClientPodConfig podConfiguration, serverPodConfig podConfiguration, policy *mnpapi.MultiNetworkPolicy, extraNamespaces ...v1.Namespace) {
+				for i := range extraNamespaces {
+					createdNamespace, err := cs.CoreV1().Namespaces().Create(context.Background(), &extraNamespaces[i], metav1.CreateOptions{})
+					Expect(err).NotTo(HaveOccurred())
+					extraNamespaces[i] = *createdNamespace
+					netConfig.namespace = createdNamespace.Name
+					allowedClientPodConfig.namespace = createdNamespace.Name
+					By("creating the attachment configuration for the extra-namespace")
+					_, err = nadClient.NetworkAttachmentDefinitions(createdNamespace.Name).Create(
+						context.Background(),
+						generateNAD(netConfig),
+						metav1.CreateOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+				}
 
+				blockUntilEverythingIsGone := metav1.DeletePropagationForeground
+				defer func() {
+					for _, ns := range extraNamespaces {
+						Expect(cs.CoreV1().Namespaces().Delete(
+							context.Background(),
+							ns.Name,
+							metav1.DeleteOptions{PropagationPolicy: &blockUntilEverythingIsGone},
+						)).To(Succeed())
+						Eventually(func() bool {
+							_, err := cs.CoreV1().Namespaces().Get(context.Background(), ns.Name, metav1.GetOptions{})
+							nsPods, podCatchErr := cs.CoreV1().Pods(ns.Name).List(context.Background(), metav1.ListOptions{})
+							return podCatchErr == nil && errors.IsNotFound(err) && len(nsPods.Items) == 0
+						}, 2*time.Minute, 5*time.Second).Should(BeTrue())
+					}
+				}()
+
+				netConfig.namespace = f.Namespace.Name
+				if blockedClientPodConfig.namespace == "" {
+					blockedClientPodConfig.namespace = f.Namespace.Name
+				}
+				if allowedClientPodConfig.namespace == "" {
+					allowedClientPodConfig.namespace = f.Namespace.Name
+				}
+				serverPodConfig.namespace = f.Namespace.Name
 				By("creating the attachment configuration")
 				_, err := nadClient.NetworkAttachmentDefinitions(f.Namespace.Name).Create(
 					context.Background(),
@@ -732,7 +767,12 @@ var _ = Describe("Multi Homing", func() {
 				}, 2*time.Minute, 6*time.Second).Should(Succeed())
 
 				By("asserting the *blocked-client* pod **cannot** contact the server pod exposed endpoint")
-				Expect(connectToServer(blockedClientPodConfig.namespace, blockedClientPodConfig.name, serverIP, port)).To(
+				Expect(connectToServer(
+					blockedClientPodConfig.namespace,
+					blockedClientPodConfig.name,
+					serverIP,
+					port,
+				)).To(
 					MatchError(
 						MatchRegexp("Connection timeout after 200[0-1] ms")))
 			},
@@ -873,6 +913,86 @@ var _ = Describe("Multi Homing", func() {
 					},
 					port,
 				),
+			),
+			table.Entry(
+				"for a pure L2 overlay when the multi-net policy describes the allowlist via namespace selectors",
+				networkAttachmentConfig{
+					name:        secondaryNetworkName,
+					topology:    "layer2",
+					cidr:        secondaryFlatL2NetworkCIDR,
+					networkName: uniqueNadName("spans-multiple-namespaces"),
+				},
+				podConfiguration{
+					attachments: []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
+					name:        allowedClient(clientPodName),
+					namespace:   "pepe",
+				},
+				podConfiguration{
+					attachments: []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
+					name:        blockedClient(clientPodName),
+				},
+				podConfiguration{
+					attachments:  []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
+					name:         podName,
+					containerCmd: httpServerContainerCmd(port),
+					labels:       map[string]string{"app": "stuff-doer"},
+				},
+				multiNetIngressLimitingPolicyAllowFromNamespace(
+					secondaryNetworkName,
+					metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "stuff-doer"},
+					},
+					metav1.LabelSelector{
+						MatchLabels: map[string]string{"role": "trusted"},
+					},
+					port,
+				),
+				v1.Namespace{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels:       map[string]string{"role": "trusted"},
+						GenerateName: "pepe",
+					},
+				},
+			),
+			table.Entry(
+				"for a routed topology when the multi-net policy describes the allowlist via namespace selectors",
+				networkAttachmentConfig{
+					name:        secondaryNetworkName,
+					topology:    "layer3",
+					cidr:        netCIDR(secondaryNetworkCIDR, netPrefixLengthPerNode),
+					networkName: uniqueNadName("spans-multiple-namespaces"),
+				},
+				podConfiguration{
+					attachments: []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
+					name:        allowedClient(clientPodName),
+					namespace:   "pepe",
+				},
+				podConfiguration{
+					attachments: []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
+					name:        blockedClient(clientPodName),
+				},
+				podConfiguration{
+					attachments:  []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
+					name:         podName,
+					containerCmd: httpServerContainerCmd(port),
+					labels:       map[string]string{"app": "stuff-doer"},
+				},
+				multiNetIngressLimitingPolicyAllowFromNamespace(
+					secondaryNetworkName,
+					metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "stuff-doer"},
+					},
+					metav1.LabelSelector{
+						MatchLabels: map[string]string{"role": "trusted"},
+					},
+					port,
+				),
+				v1.Namespace{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels:       map[string]string{"role": "trusted"},
+						GenerateName: "pepe",
+					},
+				},
 			),
 		)
 	})
@@ -1273,4 +1393,46 @@ func setBlockedClientIPInPolicyIPBlockExcludedRanges(policy *mnpapi.MultiNetwork
 			}
 		}
 	}
+}
+
+func multiNetIngressLimitingPolicyAllowFromNamespace(
+	policyFor string, appliesFor metav1.LabelSelector, allowForSelector metav1.LabelSelector, allowPorts ...int,
+) *mnpapi.MultiNetworkPolicy {
+	return &mnpapi.MultiNetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
+			PolicyForAnnotation: policyFor,
+		},
+			Name: "allow-ports-same-ns",
+		},
+
+		Spec: mnpapi.MultiNetworkPolicySpec{
+			PodSelector: appliesFor,
+			Ingress: []mnpapi.MultiNetworkPolicyIngressRule{
+				{
+					Ports: allowedTCPPortsForPolicy(allowPorts...),
+					From: []mnpapi.MultiNetworkPolicyPeer{
+						{
+							NamespaceSelector: &allowForSelector,
+						},
+					},
+				},
+			},
+			PolicyTypes: []mnpapi.MultiPolicyType{mnpapi.PolicyTypeIngress},
+		},
+	}
+}
+
+func allowedTCPPortsForPolicy(allowPorts ...int) []mnpapi.MultiNetworkPolicyPort {
+	var (
+		portAllowlist []mnpapi.MultiNetworkPolicyPort
+	)
+	tcp := v1.ProtocolTCP
+	for _, port := range allowPorts {
+		p := intstr.FromInt(port)
+		portAllowlist = append(portAllowlist, mnpapi.MultiNetworkPolicyPort{
+			Protocol: &tcp,
+			Port:     &p,
+		})
+	}
+	return portAllowlist
 }
