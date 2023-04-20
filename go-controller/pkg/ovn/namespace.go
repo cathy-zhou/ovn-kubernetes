@@ -267,21 +267,7 @@ func (oc *DefaultNetworkController) ensureNamespaceLocked(ns string, readOnly bo
 		ips = oc.getAllNamespacePodAddresses(ns)
 	}
 
-	namespace, nsInfo, unlockFunc, err := oc.ensureNamespaceLockedCommon(ns, readOnly, namespace, ips)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer oc.namespacesMutex.Unlock()
-
-	if namespace != nil {
-		// if we have the namespace, attempt to configure nsInfo with it
-		if err := oc.configureNamespace(nsInfo, namespace); err != nil {
-			unlockFunc()
-			return nil, nil, fmt.Errorf("failed to configure namespace %s: %v", ns, err)
-		}
-	}
-
-	return nsInfo, unlockFunc, nil
+	return oc.ensureNamespaceLockedCommon(ns, readOnly, namespace, ips, oc.configureNamespace)
 }
 
 func (oc *DefaultNetworkController) getAllHostNamespaceAddresses() []net.IP {

@@ -417,22 +417,7 @@ func (bsnc *BaseSecondaryNetworkController) AddNamespaceForSecondaryNetwork(ns *
 // ns is the name of the namespace, while namespace is the optional k8s namespace object
 func (bsnc *BaseSecondaryNetworkController) ensureNamespaceLockedForSecondaryNetwork(ns string, readOnly bool, namespace *kapi.Namespace) (*namespaceInfo, func(), error) {
 	ips := bsnc.getAllNamespacePodAddresses(ns)
-
-	namespace, nsInfo, unlockFunc, err := bsnc.ensureNamespaceLockedCommon(ns, readOnly, namespace, ips)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer bsnc.namespacesMutex.Unlock()
-
-	if namespace != nil {
-		// if we have the namespace, attempt to configure nsInfo with it
-		if err := bsnc.configureNamespaceCommon(nsInfo, namespace); err != nil {
-			unlockFunc()
-			return nil, nil, fmt.Errorf("failed to configure namespace %s: %v", ns, err)
-		}
-	}
-
-	return nsInfo, unlockFunc, nil
+	return bsnc.ensureNamespaceLockedCommon(ns, readOnly, namespace, ips, bsnc.configureNamespaceCommon)
 }
 
 func (bsnc *BaseSecondaryNetworkController) updateNamespaceForSecondaryNetwork(old, newer *kapi.Namespace) error {

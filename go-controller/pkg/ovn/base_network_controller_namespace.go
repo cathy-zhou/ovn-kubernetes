@@ -222,7 +222,7 @@ func (bnc *BaseNetworkController) multicastDeleteNamespace(ns *kapi.Namespace, n
 // Note that controller's namespacesMutex may or may not be hold, which is indicated by returned
 // needUnlockNamespace boolean value. Caller needs to release it after configure nsInfo.
 func (bnc *BaseNetworkController) ensureNamespaceLockedCommon(ns string, readOnly bool, namespace *kapi.Namespace,
-	ips []net.IP) (*kapi.Namespace, *namespaceInfo, func(), error) {
+	ips []net.IP, configureNamespace func(nsInfo *namespaceInfo, ns *kapi.Namespace) error) (*namespaceInfo, func(), error) {
 	bnc.namespacesMutex.Lock()
 	nsInfo := bnc.namespaces[ns]
 	nsInfoExisted := false
@@ -235,12 +235,12 @@ func (bnc *BaseNetworkController) ensureNamespaceLockedCommon(ns string, readOnl
 		}
 		// we are creating nsInfo and going to set it in namespaces map
 		// so safe to hold the lock while we create and add it
+		defer bnc.namespacesMutex.Unlock()
 		// create the adddress set for the new namespace
 		var err error
 		nsInfo.addressSet, err = bnc.createNamespaceAddrSetAllPods(ns, ips)
 		if err != nil {
-			bnc.namespacesMutex.Unlock()
-			return nil, nil, nil, fmt.Errorf("failed to create address set for namespace: %s, error: %v", ns, err)
+			return nil, nil, fmt.Errorf("failed to create address set for namespace: %s, error: %v", ns, err)
 		}
 		bnc.namespaces[ns] = nsInfo
 	} else {
@@ -262,10 +262,10 @@ func (bnc *BaseNetworkController) ensureNamespaceLockedCommon(ns string, readOnl
 	if nsInfoExisted {
 		// Check that the namespace wasn't deleted while we were waiting for the lock
 		bnc.namespacesMutex.Lock()
+		defer bnc.namespacesMutex.Unlock()
 		if nsInfo != bnc.namespaces[ns] {
 			unlockFunc()
-			bnc.namespacesMutex.Unlock()
-			return nil, nil, nil, fmt.Errorf("namespace %s, was removed during ensure", ns)
+			return nil, nil, fmt.Errorf("namespace %s, was removed during ensure", ns)
 		}
 	}
 
@@ -282,7 +282,15 @@ func (bnc *BaseNetworkController) ensureNamespaceLockedCommon(ns string, readOnl
 		}
 	}
 
-	return namespace, nsInfo, unlockFunc, nil
+	if namespace != nil {
+		// if we have the namespace, attempt to configure nsInfo with it
+		if err := configureNamespace(nsInfo, namespace); err != nil {
+			unlockFunc()
+			return nil, nil, fmt.Errorf("failed to configure namespace %s: %v", ns, err)
+		}
+	}
+
+	return nsInfo, unlockFunc, nil
 }
 
 func (bnc *BaseNetworkController) configureNamespaceCommon(nsInfo *namespaceInfo, ns *kapi.Namespace) error {
