@@ -12,17 +12,18 @@ const (
 	EgressQoSOwnerType         ownerType = "EgressQoS"
 	// NetworkPolicyOwnerType is deprecated for address sets, should only be used for sync.
 	// New owner of network policy address sets, is PodSelectorOwnerType.
-	NetworkPolicyOwnerType      ownerType = "NetworkPolicy"
-	NetpolDefaultOwnerType      ownerType = "NetpolDefault"
-	PodSelectorOwnerType        ownerType = "PodSelector"
-	NamespaceOwnerType          ownerType = "Namespace"
-	HybridNodeRouteOwnerType    ownerType = "HybridNodeRoute"
-	EgressIPOwnerType           ownerType = "EgressIP"
-	EgressServiceOwnerType      ownerType = "EgressService"
-	MulticastNamespaceOwnerType ownerType = "MulticastNS"
-	MulticastClusterOwnerType   ownerType = "MulticastCluster"
-	NetpolNodeOwnerType         ownerType = "NetpolNode"
-	NetpolNamespaceOwnerType    ownerType = "NetpolNamespace"
+	NetworkPolicyOwnerType         ownerType = "NetworkPolicy"
+	NetpolDefaultOwnerType         ownerType = "NetpolDefault"
+	PodSelectorOwnerType           ownerType = "PodSelector"
+	NamespaceOwnerType             ownerType = "Namespace"
+	HybridNodeRouteOwnerType       ownerType = "HybridNodeRoute"
+	EgressIPOwnerType              ownerType = "EgressIP"
+	EgressServiceOwnerType         ownerType = "EgressService"
+	MulticastNamespaceOwnerType    ownerType = "MulticastNS"
+	MulticastClusterOwnerType      ownerType = "MulticastCluster"
+	NetpolNodeOwnerType            ownerType = "NetpolNode"
+	NetpolNamespaceOwnerType       ownerType = "NetpolNamespace"
+	NetpolSharedPortGroupOwnerType ownerType = "NetpolSharedPortGroup"
 
 	// owner extra IDs, make sure to define only 1 ExternalIDKey for every string value
 	PriorityKey           ExternalIDKey = "priority"
@@ -157,4 +158,13 @@ var ACLEgressFirewall = newObjectIDsType(acl, EgressFirewallOwnerType, []Externa
 	// there can only be 1 egress firewall object in every namespace, named "default"
 	// The only additional id we need is the index of the EgressFirewall.Spec.Egress rule.
 	RuleIndex,
+})
+
+var ACLNetpolSharedPortGroup = newObjectIDsType(acl, NetpolSharedPortGroupOwnerType, []ExternalIDKey{
+	// shared port group
+	ObjectNameKey,
+	// in the same namespace there can be 2 default deny port groups, egress and ingress
+	PolicyDirectionKey,
+	// every port group has default deny and arp allow acl.
+	TypeKey,
 })

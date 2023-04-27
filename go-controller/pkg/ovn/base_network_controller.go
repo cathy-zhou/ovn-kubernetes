@@ -120,12 +120,8 @@ type BaseNetworkController struct {
 	// Don't take namespace Lock while holding networkPolicy key lock to avoid deadlock.
 	networkPolicies *syncmap.SyncMap[*networkPolicy]
 
-	// map of existing shared port groups for network policies
-	// port group exists in the db if and only if port group key is present in this map
-	// key is namespace
-	// allowed locking order is namespace Lock -> networkPolicy.Lock -> sharedNetpolPortGroups key Lock
-	// make sure to keep this order to avoid deadlocks
-	sharedNetpolPortGroups *syncmap.SyncMap[*defaultDenyPortGroups]
+	// map of the sharedPortGroupInfo, key is namespace + uniqiue label selector string
+	sharedPortGroupInfos *syncmap.SyncMap[*sharedPortGroupInfo]
 
 	podSelectorAddressSets *syncmap.SyncMap[*PodSelectorAddressSet]
 

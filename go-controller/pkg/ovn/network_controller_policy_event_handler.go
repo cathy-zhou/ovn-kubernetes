@@ -161,9 +161,8 @@ func (h *networkControllerPolicyEventHandler) AddResource(obj interface{}, fromR
 
 	case factory.LocalPodSelectorType:
 		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.bnc.handleLocalPodSelectorAddFunc(
-			extraParameters.np,
-			obj)
+		_, err := h.bnc.handleLocalPodSelectorAddFunc(extraParameters.spgInfo, nil, nil, obj)
+		return err
 
 	default:
 		return fmt.Errorf("no add function for object type %s", h.objType)
@@ -182,9 +181,8 @@ func (h *networkControllerPolicyEventHandler) UpdateResource(oldObj, newObj inte
 
 	case factory.LocalPodSelectorType:
 		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.bnc.handleLocalPodSelectorAddFunc(
-			extraParameters.np,
-			newObj)
+		_, err := h.bnc.handleLocalPodSelectorAddFunc(extraParameters.spgInfo, nil, nil, newObj)
+		return err
 	}
 	return fmt.Errorf("no update function for object type %s", h.objType)
 }
@@ -208,9 +206,7 @@ func (h *networkControllerPolicyEventHandler) DeleteResource(obj, cachedObj inte
 
 	case factory.LocalPodSelectorType:
 		extraParameters := h.extraParameters.(*NetworkPolicyExtraParameters)
-		return h.bnc.handleLocalPodSelectorDelFunc(
-			extraParameters.np,
-			obj)
+		return h.bnc.handleLocalPodSelectorDelFunc(extraParameters.spgInfo, obj)
 
 	default:
 		return fmt.Errorf("object type %s not supported", h.objType)
