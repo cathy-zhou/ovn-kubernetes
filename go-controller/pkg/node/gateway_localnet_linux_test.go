@@ -11,6 +11,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
+	OFManager "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/openflow-manager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
@@ -47,7 +48,9 @@ func initFakeNodePortWatcher(iptV4, iptV6 util.IPTablesHelper) *nodePortWatcher 
 	f6 := iptV6.(*util.FakeIPTables)
 	err = f6.MatchState(initIPTable)
 	Expect(err).NotTo(HaveOccurred())
+	bridgeName := "brp0"
 
+	id := OFManager.OpenFlowCacheManager.CreateFlowCache(bridgeName, false)
 	fNPW := nodePortWatcher{
 		ofportPhys:  "eth0",
 		ofportPatch: "patch-breth0_ov",
@@ -55,7 +58,7 @@ func initFakeNodePortWatcher(iptV4, iptV6 util.IPTablesHelper) *nodePortWatcher 
 		gatewayIPv6: v6localnetGatewayIP,
 		serviceInfo: make(map[k8stypes.NamespacedName]*serviceConfig),
 		ofm: &openflowManager{
-			flowCache: map[string][]string{},
+			defaultBridgeFlowID: id,
 		},
 	}
 	return &fNPW
@@ -257,6 +260,7 @@ var _ = Describe("Node Operations", func() {
 			ipv4:      &fakeMgmtPortIPFamilyConfig,
 			ipv6:      nil,
 		}
+		OFManager.NewOpenFlowCacheManager(&sync.WaitGroup{}, make(chan struct{}))
 		fNPW = initFakeNodePortWatcher(iptV4, iptV6)
 	})
 
@@ -614,7 +618,7 @@ var _ = Describe("Node Operations", func() {
 				f4 := iptV4.(*util.FakeIPTables)
 				err = f4.MatchState(expectedTables)
 				Expect(err).NotTo(HaveOccurred())
-				flows := fNPW.ofm.flowCache["NodePort_namespace1_service1_tcp_31111"]
+				flows := fNPW.ofm.getFlowCacheEntry("NodePort_namespace1_service1_tcp_31111")
 				Expect(flows).To(BeNil())
 				return nil
 			}
@@ -820,11 +824,11 @@ var _ = Describe("Node Operations", func() {
 				f4 := iptV4.(*util.FakeIPTables)
 				err = f4.MatchState(expectedTables)
 				Expect(err).NotTo(HaveOccurred())
-				flows := fNPW.ofm.flowCache["NodePort_namespace1_service1_tcp_31111"]
+				flows := fNPW.ofm.getFlowCacheEntry("NodePort_namespace1_service1_tcp_31111")
 				Expect(flows).To(BeNil())
-				flows = fNPW.ofm.flowCache["Ingress_namespace1_service1_5.5.5.5_8080"]
+				flows = fNPW.ofm.getFlowCacheEntry("Ingress_namespace1_service1_5.5.5.5_8080")
 				Expect(flows).To(Equal(expectedLBIngressFlows))
-				flows = fNPW.ofm.flowCache["External_namespace1_service1_1.1.1.1_8080"]
+				flows = fNPW.ofm.getFlowCacheEntry("External_namespace1_service1_1.1.1.1_8080")
 				Expect(flows).To(Equal(expectedLBExternalIPFlows))
 
 				return nil
@@ -954,8 +958,8 @@ var _ = Describe("Node Operations", func() {
 
 				f4 := iptV4.(*util.FakeIPTables)
 				Expect(f4.MatchState(expectedTables)).To(Succeed())
-				Expect(fNPW.ofm.flowCache["Ingress_namespace1_service1_5.5.5.5_80"]).To(Equal(expectedLBIngressFlows))
-				Expect(fNPW.ofm.flowCache["External_namespace1_service1_1.1.1.1_80"]).To(Equal(expectedLBExternalIPFlows))
+				Expect(fNPW.ofm.getFlowCacheEntry("Ingress_namespace1_service1_5.5.5.5_80")).To(Equal(expectedLBIngressFlows))
+				Expect(fNPW.ofm.getFlowCacheEntry("External_namespace1_service1_1.1.1.1_80")).To(Equal(expectedLBExternalIPFlows))
 				return nil
 			}
 			Expect(app.Run([]string{app.Name})).To(Succeed())
@@ -1060,11 +1064,11 @@ var _ = Describe("Node Operations", func() {
 				f4 := iptV4.(*util.FakeIPTables)
 				err = f4.MatchState(expectedTables)
 				Expect(err).NotTo(HaveOccurred())
-				flows := fNPW.ofm.flowCache["NodePort_namespace1_service1_tcp_31111"]
+				flows := fNPW.ofm.getFlowCacheEntry("NodePort_namespace1_service1_tcp_31111")
 				Expect(flows).To(BeNil())
-				flows = fNPW.ofm.flowCache["Ingress_namespace1_service1_5.5.5.5_8080"]
+				flows = fNPW.ofm.getFlowCacheEntry("Ingress_namespace1_service1_5.5.5.5_8080")
 				Expect(flows).To(Equal(expectedLBIngressFlows))
-				flows = fNPW.ofm.flowCache["External_namespace1_service1_1.1.1.1_8080"]
+				flows = fNPW.ofm.getFlowCacheEntry("External_namespace1_service1_1.1.1.1_8080")
 				Expect(flows).To(Equal(expectedLBExternalIPFlows))
 
 				return nil
@@ -1184,11 +1188,11 @@ var _ = Describe("Node Operations", func() {
 				f4 := iptV4.(*util.FakeIPTables)
 				err = f4.MatchState(expectedTables)
 				Expect(err).NotTo(HaveOccurred())
-				flows := fNPW.ofm.flowCache["NodePort_namespace1_service1_tcp_31111"]
+				flows := fNPW.ofm.getFlowCacheEntry("NodePort_namespace1_service1_tcp_31111")
 				Expect(flows).To(Equal(expectedNodePortFlows))
-				flows = fNPW.ofm.flowCache["Ingress_namespace1_service1_5.5.5.5_8080"]
+				flows = fNPW.ofm.getFlowCacheEntry("Ingress_namespace1_service1_5.5.5.5_8080")
 				Expect(flows).To(Equal(expectedLBIngressFlows))
-				flows = fNPW.ofm.flowCache["External_namespace1_service1_1.1.1.1_8080"]
+				flows = fNPW.ofm.getFlowCacheEntry("External_namespace1_service1_1.1.1.1_8080")
 				Expect(flows).To(Equal(expectedLBExternalIPFlows))
 
 				return nil
@@ -1993,7 +1997,7 @@ var _ = Describe("Node Operations", func() {
 				f4 := iptV4.(*util.FakeIPTables)
 				err = f4.MatchState(expectedTables)
 				Expect(err).NotTo(HaveOccurred())
-				flows := fNPW.ofm.flowCache["NodePort_namespace1_service1_tcp_31111"]
+				flows := fNPW.ofm.getFlowCacheEntry("NodePort_namespace1_service1_tcp_31111")
 				Expect(flows).To(BeNil())
 
 				addConntrackMocks(netlinkMock, []ctFilterDesc{{"10.129.0.2", 8080}, {"192.168.18.15", 31111}})
@@ -2035,7 +2039,7 @@ var _ = Describe("Node Operations", func() {
 				err = f4.MatchState(expectedTables)
 				Expect(err).NotTo(HaveOccurred())
 
-				flows = fNPW.ofm.flowCache["NodePort_namespace1_service1_tcp_31111"]
+				flows = fNPW.ofm.getFlowCacheEntry("NodePort_namespace1_service1_tcp_31111")
 				Expect(flows).To(BeNil())
 
 				return nil
@@ -2135,7 +2139,7 @@ var _ = Describe("Node Operations", func() {
 				f4 := iptV4.(*util.FakeIPTables)
 				err = f4.MatchState(expectedTables)
 				Expect(err).NotTo(HaveOccurred())
-				flows := fNPW.ofm.flowCache["NodePort_namespace1_service1_tcp_31111"]
+				flows := fNPW.ofm.getFlowCacheEntry("NodePort_namespace1_service1_tcp_31111")
 				Expect(flows).To(Equal(expectedFlows))
 
 				addConntrackMocks(netlinkMock, []ctFilterDesc{{"10.129.0.2", 8080}, {"192.168.18.15", 31111}})
@@ -2177,7 +2181,7 @@ var _ = Describe("Node Operations", func() {
 				err = f4.MatchState(expectedTables)
 				Expect(err).NotTo(HaveOccurred())
 
-				flows = fNPW.ofm.flowCache["NodePort_namespace1_service1_tcp_31111"]
+				flows = fNPW.ofm.getFlowCacheEntry("NodePort_namespace1_service1_tcp_31111")
 				Expect(flows).To(BeNil())
 
 				return nil
@@ -2282,7 +2286,7 @@ var _ = Describe("Node Operations", func() {
 				f4 := iptV4.(*util.FakeIPTables)
 				err = f4.MatchState(expectedTables)
 				Expect(err).NotTo(HaveOccurred())
-				flows := fNPW.ofm.flowCache["NodePort_namespace1_service1_tcp_31111"]
+				flows := fNPW.ofm.getFlowCacheEntry("NodePort_namespace1_service1_tcp_31111")
 				Expect(flows).To(Equal(expectedFlows))
 
 				addConntrackMocks(netlinkMock, []ctFilterDesc{{"10.129.0.2", 8080}, {"192.168.18.15", 31111}})
@@ -2324,7 +2328,7 @@ var _ = Describe("Node Operations", func() {
 				err = f4.MatchState(expectedTables)
 				Expect(err).NotTo(HaveOccurred())
 
-				flows = fNPW.ofm.flowCache["NodePort_namespace1_service1_tcp_31111"]
+				flows = fNPW.ofm.getFlowCacheEntry("NodePort_namespace1_service1_tcp_31111")
 				Expect(flows).To(BeNil())
 
 				return nil
@@ -2425,7 +2429,7 @@ var _ = Describe("Node Operations", func() {
 				f4 := iptV4.(*util.FakeIPTables)
 				err = f4.MatchState(expectedTables)
 				Expect(err).NotTo(HaveOccurred())
-				flows := fNPW.ofm.flowCache["NodePort_namespace1_service1_tcp_31111"]
+				flows := fNPW.ofm.getFlowCacheEntry("NodePort_namespace1_service1_tcp_31111")
 				Expect(flows).To(Equal(expectedFlows))
 
 				addConntrackMocks(netlinkMock, []ctFilterDesc{{"10.129.0.2", 8080}, {"192.168.18.15", 31111}})
@@ -2467,7 +2471,7 @@ var _ = Describe("Node Operations", func() {
 				err = f4.MatchState(expectedTables)
 				Expect(err).NotTo(HaveOccurred())
 
-				flows = fNPW.ofm.flowCache["NodePort_namespace1_service1_tcp_31111"]
+				flows = fNPW.ofm.getFlowCacheEntry("NodePort_namespace1_service1_tcp_31111")
 				Expect(flows).To(BeNil())
 
 				return nil
@@ -2571,7 +2575,7 @@ var _ = Describe("Node Operations", func() {
 				f4 := iptV4.(*util.FakeIPTables)
 				err = f4.MatchState(expectedTables)
 				Expect(err).NotTo(HaveOccurred())
-				flows := fNPW.ofm.flowCache["NodePort_namespace1_service1_tcp_31111"]
+				flows := fNPW.ofm.getFlowCacheEntry("NodePort_namespace1_service1_tcp_31111")
 				Expect(flows).To(Equal(expectedFlows))
 
 				addConntrackMocks(netlinkMock, []ctFilterDesc{{"10.129.0.2", 8080}, {"192.168.18.15", 31111}})
@@ -2613,7 +2617,7 @@ var _ = Describe("Node Operations", func() {
 				err = f4.MatchState(expectedTables)
 				Expect(err).NotTo(HaveOccurred())
 
-				flows = fNPW.ofm.flowCache["NodePort_namespace1_service1_tcp_31111"]
+				flows = fNPW.ofm.getFlowCacheEntry("NodePort_namespace1_service1_tcp_31111")
 				Expect(flows).To(BeNil())
 
 				return nil

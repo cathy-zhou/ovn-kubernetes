@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	OFManager "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/openflow-manager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	"github.com/pkg/errors"
 
@@ -14,73 +15,30 @@ import (
 type openflowManager struct {
 	defaultBridge         *bridgeConfiguration
 	externalGatewayBridge *bridgeConfiguration
-	// flow cache, use map instead of array for readability when debugging
-	flowCache     map[string][]string
-	flowMutex     sync.Mutex
-	exGWFlowCache map[string][]string
-	exGWFlowMutex sync.Mutex
-	// channel to indicate we need to update flows immediately
-	flowChan chan struct{}
+	defaultBridgeFlowID   string
+	extGWBridgeFlowID     string
 }
 
 func (c *openflowManager) updateFlowCacheEntry(key string, flows []string) {
-	c.flowMutex.Lock()
-	defer c.flowMutex.Unlock()
-	c.flowCache[key] = flows
+	OFManager.OpenFlowCacheManager.UpdateFlowCacheEntry(c.defaultBridgeFlowID, key, flows, false)
 }
 
 func (c *openflowManager) deleteFlowsByKey(key string) {
-	c.flowMutex.Lock()
-	defer c.flowMutex.Unlock()
-	delete(c.flowCache, key)
+	OFManager.OpenFlowCacheManager.DeleteFlowsByKey(c.defaultBridgeFlowID, key, false)
+}
+
+func (c *openflowManager) getFlowCacheEntry(key string) []string {
+	return OFManager.OpenFlowCacheManager.GetFlowsByKey(c.defaultBridgeFlowID, key)
 }
 
 func (c *openflowManager) updateExBridgeFlowCacheEntry(key string, flows []string) {
-	c.exGWFlowMutex.Lock()
-	defer c.exGWFlowMutex.Unlock()
-	c.exGWFlowCache[key] = flows
+	OFManager.OpenFlowCacheManager.UpdateFlowCacheEntry(c.extGWBridgeFlowID, key, flows, false)
 }
 
 func (c *openflowManager) requestFlowSync() {
-	select {
-	case c.flowChan <- struct{}{}:
-		klog.V(5).Infof("Gateway OpenFlow sync requested")
-	default:
-		klog.V(5).Infof("Gateway OpenFlow sync already requested")
-	}
-}
-
-func (c *openflowManager) syncFlows() {
-	// protect gwBridge config from being updated by gw.nodeIPManager
-	c.defaultBridge.Lock()
-	defer c.defaultBridge.Unlock()
-
-	c.flowMutex.Lock()
-	defer c.flowMutex.Unlock()
-
-	flows := []string{}
-	for _, entry := range c.flowCache {
-		flows = append(flows, entry...)
-	}
-
-	_, stderr, err := util.ReplaceOFFlows(c.defaultBridge.bridgeName, flows)
-	if err != nil {
-		klog.Errorf("Failed to add flows, error: %v, stderr, %s, flows: %s", err, stderr, c.flowCache)
-	}
-
+	OFManager.OpenFlowCacheManager.RequestFlowSync(c.defaultBridgeFlowID)
 	if c.externalGatewayBridge != nil {
-		c.exGWFlowMutex.Lock()
-		defer c.exGWFlowMutex.Unlock()
-
-		flows := []string{}
-		for _, entry := range c.exGWFlowCache {
-			flows = append(flows, entry...)
-		}
-
-		_, stderr, err := util.ReplaceOFFlows(c.externalGatewayBridge.bridgeName, flows)
-		if err != nil {
-			klog.Errorf("Failed to add flows, error: %v, stderr, %s, flows: %s", err, stderr, c.exGWFlowCache)
-		}
+		OFManager.OpenFlowCacheManager.RequestFlowSync(c.extGWBridgeFlowID)
 	}
 }
 
@@ -109,10 +67,6 @@ func (c *openflowManager) Run(stopChan <-chan struct{}, doneWg *sync.WaitGroup) 
 						continue
 					}
 				}
-				c.syncFlows()
-			case <-c.flowChan:
-				c.syncFlows()
-				timer.Reset(syncPeriod)
 			case <-stopChan:
 				return
 			}

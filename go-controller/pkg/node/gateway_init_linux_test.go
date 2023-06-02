@@ -27,6 +27,7 @@ import (
 	adminpolicybasedrouteclient "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/adminpolicybasedroute/v1/apis/clientset/versioned/fake"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
+	OFManager "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/openflow-manager"
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
 	linkMock "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/mocks/github.com/vishvananda/netlink"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
@@ -265,6 +266,7 @@ func shareGatewayInterfaceTest(app *cli.App, testNS ns.NetNS,
 
 			gatewayNextHops, gatewayIntf, err := getGatewayNextHops()
 			Expect(err).NotTo(HaveOccurred())
+			OFManager.NewOpenFlowCacheManager(wg, stop)
 			ifAddrs := ovntest.MustParseIPNets(eth0CIDR)
 			sharedGw, err := newSharedGateway(nodeName, ovntest.MustParseIPNets(nodeSubnet), gatewayNextHops, gatewayIntf, "", ifAddrs, nodeAnnotator, k,
 				&fakeMgmtPortConfig, wf, rm)
@@ -629,6 +631,7 @@ func shareGatewayInterfaceDPUTest(app *cli.App, testNS ns.NetNS,
 
 			gatewayNextHops, gatewayIntf, err := getGatewayNextHops()
 			Expect(err).NotTo(HaveOccurred())
+			OFManager.NewOpenFlowCacheManager(wg, stop)
 			sharedGw, err := newSharedGateway(nodeName, ovntest.MustParseIPNets(nodeSubnet), gatewayNextHops,
 				gatewayIntf, "", ifAddrs, nodeAnnotator, k, &fakeMgmtPortConfig, wf, rm)
 			Expect(err).NotTo(HaveOccurred())
@@ -1058,6 +1061,7 @@ OFPT_GET_CONFIG_REPLY (xid=0x4): frags=normal miss_send_len=0`,
 
 			gatewayNextHops, gatewayIntf, err := getGatewayNextHops()
 			Expect(err).NotTo(HaveOccurred())
+			OFManager.NewOpenFlowCacheManager(wg, stop)
 			ifAddrs := ovntest.MustParseIPNets(eth0CIDR)
 			localGw, err := newLocalGateway(nodeName, ovntest.MustParseIPNets(nodeSubnet), gatewayNextHops, gatewayIntf, "", ifAddrs,
 				nodeAnnotator, &fakeMgmtPortConfig, k, wf, rm)
