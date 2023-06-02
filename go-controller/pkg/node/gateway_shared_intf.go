@@ -13,6 +13,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/controllers/egressservice"
 	nodeipt "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/iptables"
+	OFManager "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/openflow-manager"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	"github.com/vishvananda/netlink"
@@ -1025,14 +1026,17 @@ func (npwipt *nodePortWatcherIptables) SyncServices(services []interface{}) erro
 // -- to handle external -> service(ExternalTrafficPolicy: Local) -> host access without SNAT
 func newGatewayOpenFlowManager(gwBridge, exGWBridge *bridgeConfiguration, subnets []*net.IPNet, extraIPs []net.IP) (*openflowManager, error) {
 	// add health check function to check default OpenFlow flows are on the shared gateway bridge
+	klog.Infof("Cathy newGatewayOpenFlowManager gwBridge %+v exGWBridge %+v", gwBridge, exGWBridge)
+	var dftID, extID string
+	dftID = OFManager.OpenFlowCacheManager.CreateFlowCache(gwBridge.bridgeName, true)
+	if exGWBridge != nil {
+		extID = OFManager.OpenFlowCacheManager.CreateFlowCache(exGWBridge.bridgeName, true)
+	}
 	ofm := &openflowManager{
 		defaultBridge:         gwBridge,
 		externalGatewayBridge: exGWBridge,
-		flowCache:             make(map[string][]string),
-		flowMutex:             sync.Mutex{},
-		exGWFlowCache:         make(map[string][]string),
-		exGWFlowMutex:         sync.Mutex{},
-		flowChan:              make(chan struct{}, 1),
+		defaultBridgeFlowID:   dftID,
+		extGWBridgeFlowID:     extID,
 	}
 
 	if err := ofm.updateBridgeFlowCache(subnets, extraIPs); err != nil {
