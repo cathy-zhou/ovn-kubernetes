@@ -981,9 +981,11 @@ install_multus() {
 }
 
 install_mpolicy_crd() {
+
   echo "Installing multi-network-policy CRD ..."
-  mpolicy_manifest="https://raw.githubusercontent.com/k8snetworkplumbingwg/multi-networkpolicy/master/scheme.yml"
-  run_kubectl apply -f "$mpolicy_manifest"
+  pushd ${MANIFEST_OUTPUT_DIR}
+  run_kubectl apply -f k8s.cni.cncf.io_multi-networkpolicies.yaml
+  popd
 }
 
 install_ipamclaim_crd() {
