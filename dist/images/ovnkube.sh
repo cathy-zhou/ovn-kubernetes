@@ -1827,14 +1827,6 @@ ovnkube-controller-with-node() {
   ovn_encap_ip_flag=
   if [[ ${ovn_encap_ip} != "" ]]; then
     ovn_encap_ip_flag="--encap-ip=${ovn_encap_ip}"
-  else
-    ovn_encap_ip=$(ovs-vsctl --if-exists get Open_vSwitch . external_ids:ovn-encap-ip)
-    if [[ $? == 0 ]]; then
-      ovn_encap_ip=$(echo ${ovn_encap_ip} | tr -d '\"')
-      if [[ "${ovn_encap_ip}" != "" ]]; then
-        ovn_encap_ip_flag="--encap-ip=${ovn_encap_ip}"
-      fi
-    fi
   fi
 
   ovnkube_node_mode_flag=
@@ -2429,14 +2421,6 @@ ovn-node() {
   ovn_encap_ip_flag=
   if [[ ${ovn_encap_ip} != "" ]]; then
     ovn_encap_ip_flag="--encap-ip=${ovn_encap_ip}"
-  else
-    ovn_encap_ip=$(ovs-vsctl --if-exists get Open_vSwitch . external_ids:ovn-encap-ip)
-    if [[ $? == 0 ]]; then
-      ovn_encap_ip=$(echo ${ovn_encap_ip} | tr -d '\"')
-      if [[ "${ovn_encap_ip}" != "" ]]; then
-        ovn_encap_ip_flag="--encap-ip=${ovn_encap_ip}"
-      fi
-    fi
   fi
 
   ovnkube_node_mode_flag=
