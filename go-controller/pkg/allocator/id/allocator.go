@@ -213,6 +213,11 @@ func (idsAllocator *idsAllocator) allocateIDs(name string, numOfIDs int) ([]int,
 func (idsAllocator *idsAllocator) ReserveIDs(name string, ids []int) error {
 	idsAllocator.nameIdsMap.LockKey(name)
 	defer idsAllocator.nameIdsMap.UnlockKey(name)
+	return idsAllocator.reserveIDs(name, ids)
+}
+
+// reserveIDs requires the caller to hold the resource's key lock.
+func (idsAllocator *idsAllocator) reserveIDs(name string, ids []int) error {
 	existingIDs, ok := idsAllocator.nameIdsMap.Load(name)
 	if ok {
 		if slices.Equal(existingIDs, ids) {

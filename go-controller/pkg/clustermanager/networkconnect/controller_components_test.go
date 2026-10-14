@@ -19,7 +19,9 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 
@@ -901,6 +903,86 @@ func TestController_reconcileClusterNetworkConnect(t *testing.T) {
 					}
 				}
 			}
+		})
+	}
+}
+
+func TestSyncCNCRepairsChangedTunnelKeyAnnotation(t *testing.T) {
+	g := gomega.NewWithT(t)
+	g.Expect(config.PrepareTestConfig()).To(gomega.Succeed())
+	config.IPv4Mode = true
+	config.IPv6Mode = true
+	config.OVNKubernetesFeature.EnableMultiNetwork = true
+	config.OVNKubernetesFeature.EnableNetworkSegmentation = true
+	config.OVNKubernetesFeature.EnableNetworkConnect = true
+	fakeClient := util.GetOVNClientset().GetClusterManagerClientset()
+	cncClient := fakeClient.NetworkConnectClient.(*networkconnectfake.Clientset)
+	ovntest.AddNetworkConnectApplyReactor(cncClient)
+	wf, err := factory.NewClusterManagerWatchFactory(fakeClient)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	fakeNM := &networkmanager.FakeNetworkManager{}
+	allocator := id.NewTunnelKeyAllocator("TunnelKeys")
+	c := NewController(wf, fakeClient, fakeNM.Interface(), allocator)
+	cnc, err := cncClient.K8sV1().ClusterNetworkConnects().Create(context.Background(),
+		testCNC{Name: "test-cnc"}.ClusterNetworkConnect(), metav1.CreateOptions{})
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(c.syncClusterNetworkConnect(cnc.Name, cnc)).To(gomega.Succeed())
+	ownedKey := c.cncCache[cnc.Name].tunnelID
+	g.Expect(ownedKey).NotTo(gomega.BeZero())
+
+	failPatch := false
+	patches := 0
+	cncClient.PrependReactor("patch", "clusternetworkconnects", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+		patches++
+		if failPatch {
+			return true, nil, fmt.Errorf("temporary API failure")
+		}
+		return false, nil, nil
+	})
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{name: "missing"},
+		{name: "empty", value: ""},
+		{name: "malformed", value: "invalid"},
+		{name: "zero", value: "0"},
+		{name: "negative", value: "-1"},
+		{name: "preserved", value: "16711684"},
+		{name: "out of range", value: fmt.Sprint(types.MaxDatapathTunnelKey + 1)},
+		{name: "different valid key", value: fmt.Sprint(ownedKey + 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			current, err := cncClient.K8sV1().ClusterNetworkConnects().Get(context.Background(), cnc.Name, metav1.GetOptions{})
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+			changed := current.DeepCopy()
+			if tc.name == "missing" {
+				delete(changed.Annotations, util.OvnConnectRouterTunnelKeyAnnotation)
+			} else {
+				changed.Annotations[util.OvnConnectRouterTunnelKeyAnnotation] = tc.value
+			}
+			g.Expect(cncNeedsUpdate(current, changed)).To(gomega.BeTrue())
+			_, err = cncClient.K8sV1().ClusterNetworkConnects().Update(context.Background(), changed, metav1.UpdateOptions{})
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+
+			failPatch = true
+			g.Expect(c.syncClusterNetworkConnect(changed.Name, changed)).To(gomega.MatchError(gomega.ContainSubstring("temporary API failure")))
+			g.Expect(c.cncCache[cnc.Name].tunnelID).To(gomega.Equal(ownedKey))
+			g.Expect(allocator.ReserveKeys("other", []int{ownedKey})).NotTo(gomega.Succeed())
+
+			failPatch = false
+			g.Expect(c.syncClusterNetworkConnect(changed.Name, changed)).To(gomega.Succeed())
+			repaired, err := cncClient.K8sV1().ClusterNetworkConnects().Get(context.Background(), cnc.Name, metav1.GetOptions{})
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+			g.Expect(repaired.Annotations[util.OvnConnectRouterTunnelKeyAnnotation]).To(gomega.Equal(fmt.Sprint(ownedKey)))
+			g.Expect(c.cncCache[cnc.Name].tunnelID).To(gomega.Equal(ownedKey))
+			g.Expect(allocator.ReserveKeys("other", []int{ownedKey})).NotTo(gomega.Succeed())
+			g.Expect(cncNeedsUpdate(changed, repaired)).To(gomega.BeTrue())
+			patchesBefore := patches
+			g.Expect(c.syncClusterNetworkConnect(repaired.Name, repaired)).To(gomega.Succeed())
+			g.Expect(patches).To(gomega.Equal(patchesBefore), "the repair event must not trigger another patch")
+			g.Expect(cncNeedsUpdate(repaired, repaired.DeepCopy())).To(gomega.BeFalse())
 		})
 	}
 }
@@ -2522,7 +2604,7 @@ func TestController_initialSync(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "cnc1",
 						Annotations: map[string]string{
-							util.OvnConnectRouterTunnelKeyAnnotation: "5",
+							util.OvnConnectRouterTunnelKeyAnnotation: "16715779",
 							// IPv6 /120 blocks within fd00:10:244::/112 range (256 /120 blocks available)
 							"k8s.ovn.org/network-connect-subnet": `{"layer3_1":{"ipv4":"192.168.0.0/24","ipv6":"fd00:10:244::/120"},"layer3_2":{"ipv4":"192.168.1.0/24","ipv6":"fd00:10:244::100/120"}}`,
 						},
@@ -2537,7 +2619,7 @@ func TestController_initialSync(t *testing.T) {
 				},
 			},
 			expectCacheEntries: map[string]expectedCNCCacheState{
-				"cnc1": {tunnelID: 5, selectedNetworks: []string{"layer3_1", "layer3_2"}},
+				"cnc1": {tunnelID: 16715779, selectedNetworks: []string{"layer3_1", "layer3_2"}},
 			},
 			verifyAllocations: map[string][]expectedSubnetAllocation{
 				"cnc1": {
@@ -2553,7 +2635,7 @@ func TestController_initialSync(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "cnc1",
 						Annotations: map[string]string{
-							util.OvnConnectRouterTunnelKeyAnnotation: "1",
+							util.OvnConnectRouterTunnelKeyAnnotation: "16715779",
 							// IPv6 /120 block within fd00:10:244::/112 range
 							"k8s.ovn.org/network-connect-subnet": `{"layer3_10":{"ipv4":"192.168.0.0/24","ipv6":"fd00:10:244::/120"}}`,
 						},
@@ -2570,7 +2652,7 @@ func TestController_initialSync(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "cnc2",
 						Annotations: map[string]string{
-							util.OvnConnectRouterTunnelKeyAnnotation: "2",
+							util.OvnConnectRouterTunnelKeyAnnotation: "16715780",
 							"k8s.ovn.org/network-connect-subnet":     `{"layer3_20":{"ipv4":"10.100.0.0/24"},"layer3_21":{"ipv4":"10.100.1.0/24"}}`,
 						},
 					},
@@ -2583,8 +2665,8 @@ func TestController_initialSync(t *testing.T) {
 				},
 			},
 			expectCacheEntries: map[string]expectedCNCCacheState{
-				"cnc1": {tunnelID: 1, selectedNetworks: []string{"layer3_10"}},
-				"cnc2": {tunnelID: 2, selectedNetworks: []string{"layer3_20", "layer3_21"}},
+				"cnc1": {tunnelID: 16715779, selectedNetworks: []string{"layer3_10"}},
+				"cnc2": {tunnelID: 16715780, selectedNetworks: []string{"layer3_20", "layer3_21"}},
 			},
 			verifyAllocations: map[string][]expectedSubnetAllocation{
 				"cnc1": {
@@ -2603,7 +2685,7 @@ func TestController_initialSync(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "cnc-layer2",
 						Annotations: map[string]string{
-							util.OvnConnectRouterTunnelKeyAnnotation: "10",
+							util.OvnConnectRouterTunnelKeyAnnotation: "16715779",
 							"k8s.ovn.org/network-connect-subnet":     `{"layer2_100":{"ipv4":"192.168.0.0/31","ipv6":"fd00:10:244::/127"},"layer2_101":{"ipv4":"192.168.0.2/31","ipv6":"fd00:10:244::2/127"}}`,
 						},
 					},
@@ -2617,7 +2699,7 @@ func TestController_initialSync(t *testing.T) {
 				},
 			},
 			expectCacheEntries: map[string]expectedCNCCacheState{
-				"cnc-layer2": {tunnelID: 10, selectedNetworks: []string{"layer2_100", "layer2_101"}},
+				"cnc-layer2": {tunnelID: 16715779, selectedNetworks: []string{"layer2_100", "layer2_101"}},
 			},
 			verifyAllocations: map[string][]expectedSubnetAllocation{
 				"cnc-layer2": {
@@ -2633,7 +2715,7 @@ func TestController_initialSync(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "cnc-mixed",
 						Annotations: map[string]string{
-							util.OvnConnectRouterTunnelKeyAnnotation: "7",
+							util.OvnConnectRouterTunnelKeyAnnotation: "16715779",
 							// Layer3 gets /120 block, Layer2 gets /127 subnet within a /120 block
 							// IPv6 addresses must be within fd00:10:244::/112 range
 							"k8s.ovn.org/network-connect-subnet": `{"layer3_5":{"ipv4":"192.168.0.0/24","ipv6":"fd00:10:244::/120"},"layer2_6":{"ipv4":"192.168.1.0/31","ipv6":"fd00:10:244::100/127"}}`,
@@ -2649,13 +2731,40 @@ func TestController_initialSync(t *testing.T) {
 				},
 			},
 			expectCacheEntries: map[string]expectedCNCCacheState{
-				"cnc-mixed": {tunnelID: 7, selectedNetworks: []string{"layer3_5", "layer2_6"}},
+				"cnc-mixed": {tunnelID: 16715779, selectedNetworks: []string{"layer3_5", "layer2_6"}},
 			},
 			verifyAllocations: map[string][]expectedSubnetAllocation{
 				"cnc-mixed": {
 					{owner: "layer3_5", topology: types.Layer3Topology, ipv4: "192.168.0.0/24", ipv6: "fd00:10:244::/120"},
 					{owner: "layer2_6", topology: types.Layer2Topology, ipv4: "192.168.1.0/31", ipv6: "fd00:10:244::100/127"},
 				},
+			},
+		},
+		{
+			// a key preserved for a network transit switch is not a CNC's to keep:
+			// ReserveKeys would strip it, so initialSync drops it and lets a
+			// replacement be allocated later, while the subnet state is restored
+			name: "clears the tunnel ID when the restored key is in the preserved range",
+			existingCNCs: []*networkconnectv1.ClusterNetworkConnect{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "cnc-preserved",
+						Annotations: map[string]string{
+							util.OvnConnectRouterTunnelKeyAnnotation: "16711684",
+							"k8s.ovn.org/network-connect-subnet":     `{"layer3_1":{"ipv4":"192.168.0.0/24","ipv6":"fd00:10:244::/120"}}`,
+						},
+					},
+					Spec: networkconnectv1.ClusterNetworkConnectSpec{
+						ConnectSubnets: []networkconnectv1.ConnectSubnet{
+							{CIDR: "192.168.0.0/16", NetworkPrefix: 24},
+							{CIDR: "fd00:10:244::/112", NetworkPrefix: 120},
+						},
+						Connectivity: []networkconnectv1.ConnectivityType{networkconnectv1.PodNetwork},
+					},
+				},
+			},
+			expectCacheEntries: map[string]expectedCNCCacheState{
+				"cnc-preserved": {tunnelID: 0, selectedNetworks: []string{"layer3_1"}},
 			},
 		},
 		{
@@ -2789,6 +2898,44 @@ func TestController_initialSync(t *testing.T) {
 					}
 				}
 			}
+		})
+	}
+}
+
+func TestControllerSameNamedNetworkAndCNCHaveDistinctTunnelKeys(t *testing.T) {
+	for _, annotatedKey := range []string{"16715780", "16711684", "16715779", "notanumber", "18446744073709551616"} {
+		t.Run(annotatedKey, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			g.Expect(config.PrepareTestConfig()).To(gomega.Succeed())
+			config.IPv4Mode = true
+			config.IPv6Mode = true
+			config.OVNKubernetesFeature.EnableMultiNetwork = true
+			config.OVNKubernetesFeature.EnableNetworkSegmentation = true
+			config.OVNKubernetesFeature.EnableNetworkConnect = true
+			cnc := (testCNC{Name: "shared"}).ClusterNetworkConnect()
+			cnc.Annotations = map[string]string{util.OvnConnectRouterTunnelKeyAnnotation: annotatedKey}
+			nad := (testNAD{Name: "nad", Namespace: "ns", Network: "shared", IsPrimary: true, Topology: types.Layer2Topology, Subnet: "10.0.0.0/24", NetworkID: "2", Annotations: map[string]string{types.OvnNetworkTunnelKeysAnnotation: "[16711685,16715779]"}}).NAD()
+			clients := util.GetOVNClientset(cnc, nad).GetClusterManagerClientset()
+			ovntest.AddNetworkConnectApplyReactor(clients.NetworkConnectClient.(*networkconnectfake.Clientset))
+			wf, err := factory.NewClusterManagerWatchFactory(clients)
+			g.Expect(err).ToNot(gomega.HaveOccurred())
+			g.Expect(wf.Start()).To(gomega.Succeed())
+			defer wf.Shutdown()
+			fakeNM := &networkmanager.FakeNetworkManager{PrimaryNetworks: map[string]util.NetInfo{}}
+			allocator := id.NewTunnelKeyAllocator("TunnelKeys")
+			// initTunnelKeysAllocator reserves NADs before CNCs, so the network owns this key.
+			g.Expect(allocator.ReserveKeys(id.NetworkTunnelKeyOwner("shared"), []int{16711685, 16715779})).To(gomega.Succeed())
+			c := NewController(wf, clients, fakeNM.Interface(), allocator)
+			g.Expect(c.initialSync()).To(gomega.Succeed())
+			g.Expect(c.cncCache["shared"]).NotTo(gomega.BeNil(), "an unusable tunnel key must not skip restoring the CNC state")
+			g.Expect(c.syncClusterNetworkConnect("shared", cnc)).To(gomega.Succeed())
+			updated, err := clients.NetworkConnectClient.K8sV1().ClusterNetworkConnects().Get(context.Background(), "shared", metav1.GetOptions{})
+			g.Expect(err).ToNot(gomega.HaveOccurred())
+			g.Expect(updated.Annotations[util.OvnConnectRouterTunnelKeyAnnotation]).To(gomega.Equal("16715780"), "the network's switch and the CNC router must have distinct dynamic keys")
+			g.Expect(c.syncClusterNetworkConnect("shared", nil)).To(gomega.Succeed())
+			g.Expect(allocator.ReserveKeys("other", []int{16715779})).ToNot(gomega.Succeed())
+			g.Expect(allocator.ReserveKeys("other", []int{16715780})).To(gomega.Succeed())
+
 		})
 	}
 }

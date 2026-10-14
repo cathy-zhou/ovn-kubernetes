@@ -4,6 +4,7 @@
 package networkmanager
 
 import (
+	stderrors "errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -930,57 +931,39 @@ func (c *nadController) syncAll() (err error) {
 		return fmt.Errorf("%s: failed to list NADs: %w", c.name, err)
 	}
 
-	syncNAD := func(nad *nettypes.NetworkAttachmentDefinition) error {
-		key, err := cache.MetaNamespaceKeyFunc(nad)
-		if err != nil {
-			klog.Errorf("%s: failed to sync %v: %v", c.name, nad, err)
-			return nil
-		}
-		err = c.syncNAD(key, nad)
-		if err != nil {
-			return fmt.Errorf("%s: failed to sync %s: %v", c.name, key, err)
-		}
-		return nil
-	}
-
-	// create all networks with their updated list of NADs and only then start
-	// the corresponding controllers so as to avoid to the extent possible the
-	// errors and retries that would result if the controller attempted to
-	// process pods attached with NADs we wouldn't otherwise know about yet
-	nadsWithoutID := []*nettypes.NetworkAttachmentDefinition{}
+	// Reserve existing IDs before any reconciliation can allocate replacements.
+	// Parse configuration separately so malformed allocation annotations do not
+	// prevent a valid network ID from being reserved.
+	networksWithoutID := []util.NetInfo{}
 	for _, nad := range existingNADs {
-		// skip NADs that are not annotated with an ID
-		if nad.Annotations[types.OvnNetworkIDAnnotation] == "" {
-			nadsWithoutID = append(nadsWithoutID, nad)
-			continue
-		}
-		err := syncNAD(nad)
+		netconf, err := util.ParseNetConf(nad)
 		if err != nil {
-			return err
-		}
-	}
-
-	if len(nadsWithoutID) == 0 {
-		return nil
-	}
-
-	// preallocate all node IDs to avoid new NADs taking them post start up
-	// If we are missing IDs, get them from the nodes which is where we
-	// originally had them
-	klog.Infof("%s: %d NADs are missing the network ID annotation, fetching from nodes", c.name, len(nadsWithoutID))
-	for _, nad := range nadsWithoutID {
-		nadNetwork, err := util.ParseNADInfo(nad)
-		if err != nil {
-			// in case the type for the NAD is not ovn-k we should not record the error event
 			if err.Error() != util.ErrorAttachDefNotOvnManaged.Error() {
 				klog.Errorf("%s: failed parsing NAD %s/%s: %v", c.name, nad.Namespace, nad.Name, err)
 			}
 			continue
 		}
+		nadNetwork, err := util.NewNetInfo(netconf)
+		if err != nil {
+			klog.Errorf("%s: failed parsing NAD %s/%s: %v", c.name, nad.Namespace, nad.Name, err)
+			continue
+		}
+		netID, err := strconv.Atoi(nad.Annotations[types.OvnNetworkIDAnnotation])
+		if err != nil || netID <= types.DefaultNetworkID || netID >= types.MaxNetworks {
+			networksWithoutID = append(networksWithoutID, nadNetwork)
+			continue
+		}
+		// Conflicting IDs are repaired during reconciliation after all other
+		// valid IDs have been reserved.
+		_ = c.networkIDAllocator.ReserveID(nadNetwork.GetNetworkName(), netID)
+	}
+
+	// Recover legacy IDs from nodes before allocating any replacement IDs.
+	for _, nadNetwork := range networksWithoutID {
 		netID, err := c.getNetworkIDFromNode(nadNetwork)
 		if err != nil {
-			return fmt.Errorf("%s: failed to fetch network ID from nodes for nad %s/%s: %v",
-				c.name, nad.Namespace, nad.Name, err)
+			return fmt.Errorf("%s: failed to fetch network ID from nodes for network %s: %v",
+				c.name, nadNetwork.GetNetworkName(), err)
 		}
 		if netID != types.InvalidID {
 			// Reserve the id for the network name. We can safely
@@ -991,11 +974,16 @@ func (c *nadController) syncAll() (err error) {
 		}
 	}
 
-	// finally process the pending NADs
-	for _, nad := range nadsWithoutID {
-		err := syncNAD(nad)
+	// Collect every network's NADs before starting the network controllers, so
+	// they do not reconcile pods against incomplete network definitions.
+	for _, nad := range existingNADs {
+		key, err := cache.MetaNamespaceKeyFunc(nad)
 		if err != nil {
-			return err
+			klog.Errorf("%s: failed to sync %v: %v", c.name, nad, err)
+			continue
+		}
+		if err := c.syncNAD(key, nad); err != nil {
+			return fmt.Errorf("%s: failed to sync %s: %v", c.name, key, err)
 		}
 	}
 
@@ -1085,6 +1073,23 @@ func (c *nadController) syncNAD(key string, nad *nettypes.NetworkAttachmentDefin
 
 	if nad != nil {
 		nadNetwork, err = util.ParseNADInfo(nad)
+		if err != nil && c.isClusterManagerMode() {
+			// Our own malformed allocation annotations are corrupt output, not
+			// user config. Blank the bad ones so parsing succeeds and the
+			// allocation path below re-annotates valid values.
+			idBad := stderrors.Is(err, util.ErrorMalformedNetworkIDAnnotation)
+			keysBad := stderrors.Is(err, util.ErrorMalformedTunnelKeysAnnotation)
+			if idBad || keysBad {
+				nad = nad.DeepCopy()
+				if idBad {
+					delete(nad.Annotations, types.OvnNetworkIDAnnotation)
+				}
+				if keysBad {
+					delete(nad.Annotations, types.OvnNetworkTunnelKeysAnnotation)
+				}
+				nadNetwork, err = util.ParseNADInfo(nad)
+			}
+		}
 		if err != nil {
 			// in case the type for the NAD is not ovn-k we should not record the error event
 			if err.Error() == util.ErrorAttachDefNotOvnManaged.Error() {
@@ -1331,6 +1336,7 @@ func (c *nadController) nadNeedsUpdate(oldNAD, newNAD *nettypes.NetworkAttachmen
 	return !reflect.DeepEqual(oldNAD.Spec, newNAD.Spec) ||
 		oldNAD.Annotations[types.OvnRouteAdvertisementsKey] != newNAD.Annotations[types.OvnRouteAdvertisementsKey] ||
 		oldNAD.Annotations[types.OvnNetworkIDAnnotation] != newNAD.Annotations[types.OvnNetworkIDAnnotation] ||
+		oldNAD.Annotations[types.OvnNetworkTunnelKeysAnnotation] != newNAD.Annotations[types.OvnNetworkTunnelKeysAnnotation] ||
 		oldNAD.Annotations[types.OvnNetworkNameAnnotation] != newNAD.Annotations[types.OvnNetworkNameAnnotation]
 }
 
@@ -1561,10 +1567,15 @@ func (c *nadController) handleNetworkAnnotations(new util.MutableNetInfo, nad *n
 		if c.networkReferencedLocked(previousNetworkName, nadKey) {
 			klog.V(5).Infof("%s: NADs still reference network %s; skipping ID release", c.name, previousNetworkName)
 		} else {
-			c.networkIDAllocator.ReleaseID(previousNetworkName)
-			if c.isClusterManagerMode() {
-				c.tunnelKeysAllocator.ReleaseKeys(previousNetworkName)
-			}
+			// Keep the old allocation reserved until its replacement is persisted.
+			defer func() {
+				if err == nil {
+					c.networkIDAllocator.ReleaseID(previousNetworkName)
+					if c.isClusterManagerMode() {
+						c.tunnelKeysAllocator.ReleaseKeys(id.NetworkTunnelKeyOwner(previousNetworkName))
+					}
+				}
+			}()
 		}
 	}
 
@@ -1572,24 +1583,35 @@ func (c *nadController) handleNetworkAnnotations(new util.MutableNetInfo, nad *n
 		return nil
 	}
 
-	id := types.InvalidID
+	tunnelKeysOwner := id.NetworkTunnelKeyOwner(newNetworkName)
+	networkID := types.InvalidID
 
 	// check if in cache first
 	if new != nil {
-		id = c.networkIDAllocator.GetID(new.GetNetworkName())
-		if id != types.InvalidID {
-			klog.V(5).Infof("Previously cached network ID %d found for network: %s", id, new.GetNetworkName())
+		networkID = c.networkIDAllocator.GetID(new.GetNetworkName())
+		if networkID != types.InvalidID {
+			klog.V(5).Infof("Previously cached network ID %d found for network: %s", networkID, new.GetNetworkName())
 		}
 	}
-	if nad != nil && id == types.InvalidID {
+	if nad != nil && networkID == types.InvalidID {
 		// check what ID is currently annotated
 		if nad.Annotations[types.OvnNetworkIDAnnotation] != "" {
 			annotated := nad.Annotations[types.OvnNetworkIDAnnotation]
-			id, err = strconv.Atoi(annotated)
+			networkID, err = strconv.Atoi(annotated)
 			if err != nil {
 				return fmt.Errorf("failed to parse annotated network ID: %w", err)
 			}
-			klog.V(5).Infof("Previously annotated network ID %d found for NAD: %s/%s", id, nad.Namespace, nad.Name)
+			// anyone who can write a NAD can set this, so an out of range ID is
+			// discarded and reallocated rather than used: it would otherwise
+			// escape the ID allocator and collide with the tunnel keys derived
+			// from it.
+			if networkID <= types.DefaultNetworkID || networkID >= types.MaxNetworks {
+				klog.Warningf("%s: ignoring out of range network ID %q annotated on NAD %s/%s, expected (%d, %d)",
+					c.name, annotated, nad.Namespace, nad.Name, types.DefaultNetworkID, types.MaxNetworks)
+				networkID = types.InvalidID
+			} else {
+				klog.V(5).Infof("Previously annotated network ID %d found for NAD: %s/%s", networkID, nad.Namespace, nad.Name)
+			}
 		}
 	}
 
@@ -1608,70 +1630,98 @@ func (c *nadController) handleNetworkAnnotations(new util.MutableNetInfo, nad *n
 	}
 	name := new.GetNetworkName()
 
+	// Roll back both newly reserved and newly allocated IDs, keeping prior ownership.
+	allocatedNetworkID := c.networkIDAllocator.GetID(name) == types.InvalidID
 	// a network ID was annotated, check if it is free to use or stale
-	if id != types.InvalidID {
-		err = c.networkIDAllocator.ReserveID(name, id)
+	if networkID != types.InvalidID {
+		err = c.networkIDAllocator.ReserveID(name, networkID)
 		if err != nil {
 			// already reserved for a different network, allocate a new id
-			id = types.InvalidID
+			networkID = types.InvalidID
 		}
 	}
 
 	// this is not the cluster manager nad controller, and we are not allocating
 	// so just return what ids we already found
 	if !c.isClusterManagerMode() {
-		new.SetNetworkID(id)
+		new.SetNetworkID(networkID)
 		new.SetTunnelKeys(tunnelKeys)
 		return nil
 	}
 
-	// tunnel key annotation doesn't need the same check ^ because it is initialized outside the
-	// nad controller and has already assured that all annotated tunnel keys are reserved.
-
 	// we are about to allocate resources, so prepare a cleanup function
 	// in case of error to release them.
-	var allocatedNetworkID, allocatedTunnelKeys bool
+	var rollbackTunnelKeys, rollbackReservedTunnelKeys func()
 	defer func() {
 		if err != nil {
 			if allocatedNetworkID {
 				c.networkIDAllocator.ReleaseID(name)
 			}
-			if allocatedTunnelKeys {
-				c.tunnelKeysAllocator.ReleaseKeys(name)
+			if rollbackTunnelKeys != nil {
+				rollbackTunnelKeys()
+			}
+			if rollbackReservedTunnelKeys != nil {
+				rollbackReservedTunnelKeys()
 			}
 		}
 	}()
 	// we don't have an ID, allocate a new one
-	if id == types.InvalidID {
-		id, err = c.networkIDAllocator.AllocateID(name)
+	if networkID == types.InvalidID {
+		networkID, err = c.networkIDAllocator.AllocateID(name)
 		if err != nil {
 			return fmt.Errorf("failed to allocate network ID: %w", err)
 		}
-		allocatedNetworkID = true
 
 		// check if there is still a network running with that ID in the process
 		// of being stopped
-		other := c.networkController.getRunningNetwork(id)
+		other := c.networkController.getRunningNetwork(networkID)
 		if other != "" && c.networkController.getNetwork(other) == nil {
-			return fmt.Errorf("found other network %s being stopped with allocated ID %d, will retry", other, id)
+			return fmt.Errorf("found other network %s being stopped with allocated ID %d, will retry", other, networkID)
 		}
 	}
 
-	// allocate tunnel keys
-	if len(tunnelKeys) != getNumberOfTunnelKeys(new) {
-		if len(tunnelKeys) > 0 {
-			// this should never happen, but if it does
-			// AllocateKeys will add missing keys, when len(tunnelKeys) < getNumberOfTunnelKeys(new)
-			// and will return an error when len(tunnelKeys) > getNumberOfTunnelKeys(new)
-			// log an error for visibility
-			klog.Errorf("Unexpected number of tunnel keys annotated on NAD for network %s, expected %d got %d",
-				name, getNumberOfTunnelKeys(new), len(tunnelKeys))
+	// anyone who can write a NAD can set the tunnel keys annotation, and a NAD
+	// created after start up was never seen by initTunnelKeysAllocator, so the
+	// annotated keys are checked against this network's ID rather than taken on
+	// trust. A set that does not check out structurally is dropped; a structurally
+	// valid set is kept so its keys, which may already be programmed into OVN, are
+	// preserved across a reconcile.
+	neededKeys := util.GetNumberOfTunnelKeys(new)
+	// Keep surplus keys reserved until the annotation no longer references them.
+	defer func() {
+		if err == nil {
+			c.tunnelKeysAllocator.TrimKeys(tunnelKeysOwner, networkID, neededKeys)
 		}
-		tunnelKeys, err = c.tunnelKeysAllocator.AllocateKeys(name, id, getNumberOfTunnelKeys(new))
+	}()
+	if len(tunnelKeys) > 0 {
+		if len(tunnelKeys) > neededKeys {
+			// Validate only the keys this network needs, so invalid extra keys
+			// do not cause valid keys to be replaced.
+			tunnelKeys = tunnelKeys[:neededKeys]
+		}
+		keysErr := c.tunnelKeysAllocator.ValidateKeys(networkID, tunnelKeys)
+		if keysErr == nil {
+			rollbackReservedTunnelKeys, keysErr = c.tunnelKeysAllocator.ReserveKeysWithRollback(tunnelKeysOwner, tunnelKeys)
+		}
+		if keysErr != nil {
+			klog.Warningf("%s: ignoring tunnel keys %v annotated on NAD %s for network %s, reconciling from the keys the network already owns: %v",
+				c.name, tunnelKeys, nadKey, name, keysErr)
+			// the annotation is unusable or disagrees with the keys this network
+			// already owns (reserved by initTunnelKeysAllocator at start up or a
+			// previous reconcile, and possibly already programmed into OVN). Drop
+			// the annotation but recover from the owned allocation below, keeping
+			// all existing reservations until the annotation update succeeds.
+			tunnelKeys = nil
+		}
+	}
+
+	// Select the keys this network needs from its existing allocation, topping up
+	// a short set while keeping any surplus reserved until the annotation is saved.
+	if len(tunnelKeys) != neededKeys {
+		tunnelKeys, rollbackTunnelKeys, err = c.tunnelKeysAllocator.AllocateKeysWithRollback(tunnelKeysOwner, networkID, neededKeys)
 		if err != nil {
 			return fmt.Errorf("failed to allocate tunnel keys: %w", err)
 		}
-		allocatedTunnelKeys = true
 	}
 
 	// set and annotate the network ID
@@ -1681,7 +1731,7 @@ func (c *nadController) handleNetworkAnnotations(new util.MutableNetInfo, nad *n
 	}
 	annotations := map[string]string{
 		types.OvnNetworkNameAnnotation:       name,
-		types.OvnNetworkIDAnnotation:         strconv.Itoa(id),
+		types.OvnNetworkIDAnnotation:         strconv.Itoa(networkID),
 		types.OvnNetworkTunnelKeysAnnotation: tunnelKeyAnno,
 	}
 	if nad.Annotations[types.OvnNetworkNameAnnotation] == annotations[types.OvnNetworkNameAnnotation] {
@@ -1694,7 +1744,7 @@ func (c *nadController) handleNetworkAnnotations(new util.MutableNetInfo, nad *n
 		delete(annotations, types.OvnNetworkTunnelKeysAnnotation)
 	}
 	if len(annotations) == 0 {
-		new.SetNetworkID(id)
+		new.SetNetworkID(networkID)
 		new.SetTunnelKeys(tunnelKeys)
 		return nil
 	}
@@ -1712,7 +1762,7 @@ func (c *nadController) handleNetworkAnnotations(new util.MutableNetInfo, nad *n
 	if err != nil {
 		return fmt.Errorf("failed to annotate network ID and/or tunnel keys on NAD: %w", err)
 	}
-	new.SetNetworkID(id)
+	new.SetNetworkID(networkID)
 	new.SetTunnelKeys(tunnelKeys)
 
 	return nil
@@ -1814,19 +1864,4 @@ func (c *nadController) GetNetworkByID(id int) util.NetInfo {
 
 func (c *nadController) isClusterManagerMode() bool {
 	return c.tunnelKeysAllocator != nil
-}
-
-func getNumberOfTunnelKeys(netInfo util.NetInfo) int {
-	if netInfo.IsDefault() {
-		// default network does not need tunnel keys allocation because it always uses network ID 0.
-		return 0
-	}
-	// Layer3, Secondary Layer2 and Localnet topologies need only 1 tunnel key for now that is derived from the network ID
-	// and is limited by the MaxNetworks. Don't annotate any tunnel keys in that case until we decide to
-	// increase the MaxNetworks.
-	if netInfo.TopologyType() != types.Layer2Topology || !netInfo.IsPrimaryNetwork() {
-		return 0
-	}
-	// Primary Layer2 UDNs need 2 tunnel keys: one for the layer2 switch and one for the transit router
-	return 2
 }
